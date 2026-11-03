@@ -12,6 +12,7 @@ export class FakeIo implements Io {
   failing: string[] = []
   missing: string[] = []
   dirty = false
+  untracked = false
   spawnDeny: string | undefined = undefined
   spawnDenies: Record<string, string> = {}
   commands: string[] = []
@@ -34,7 +35,8 @@ export class FakeIo implements Io {
     if (known !== undefined) return answer(known)
     if (command === 'git rev-parse --show-toplevel') return this.rootOf(cwd)
     if (command === 'git rev-parse HEAD') return answer(HEAD)
-    if (command === 'git status --porcelain') return answer(this.dirty ? ' M src/a.ts' : '')
+    if (command === 'git status --porcelain') return answer([this.dirty ? ' M src/a.ts' : '', this.untracked ? '?? notes.md' : ''].filter(Boolean).join('\n'))
+    if (command === 'git status --porcelain --untracked-files=no') return answer(this.dirty ? ' M src/a.ts' : '')
     if (command === 'jj --version') return refusal('jj: not found')
     return answer('')
   }

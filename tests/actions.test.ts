@@ -506,6 +506,12 @@ test('deliver refuses a checkout with uncommitted changes', async () => {
   expect(io.ran('git merge')).toBe(false)
 })
 
+test('deliver merges past an untracked file in the checkout', async () => {
+  const io = ioWith(runOf(declareFinal(runOf(takeIntegration(working(), 'w2', NOW)), 'w2', FULL, 'Done', NOW)))
+  io.untracked = true
+  expect(await deliver(io)).toBe(`Merged ${FULL.slice(0, 7)} into your branch.`)
+})
+
 test('deliver merges the final commit, then removes the workspaces', async () => {
   const io = ioWith(runOf(declareFinal(runOf(takeIntegration(working(), 'w2', NOW)), 'w2', FULL, 'Done', NOW)))
   expect(await deliver(io)).toBe(`Merged ${FULL.slice(0, 7)} into your branch.`)

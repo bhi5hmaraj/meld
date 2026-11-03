@@ -526,7 +526,8 @@ export async function stopOne(io: Io, id: WorkerId): Promise<string> {
 export async function deliver(io: Io): Promise<string> {
   const run = await readRun(io)
   if (!run || run.state !== 'ready' || !run.final) return 'There is no final commit to deliver.'
-  if (await isDirty(io, run.repo)) return 'Commit or stash the changes in your checkout first, then deliver.'
+  // An untracked file can stay: git stops a merge that would overwrite one, and the merge is then aborted.
+  if (await isDirty(io, run.repo, { untracked: false })) return 'Commit or stash the changes in your checkout first, then deliver.'
   const vcs = vcsFor(run.vcs)
   const merged = await vcs.deliver(io, run, run.final.commit, `meld: ${run.request.split('\n')[0]?.slice(0, 72)}`)
   if (!merged.ok) return `The merge stopped, and nothing changed: ${merged.err || merged.out}`

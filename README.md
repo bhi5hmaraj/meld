@@ -63,7 +63,7 @@ If Claude Code refuses to start a worker, meld stops that worker and shows the r
 - **The preset steers** give every agent a fixed instruction: **+ Tests**, **Smaller**, **Fix checks** and **Integrate now**. Above them, a field takes an instruction in your words. On a ready run, the field asks for changes. The mobile app has no field: send `/meld-steer` and the instruction.
 - **The start form** shows in a pane with no run: the task, the number of agents, the model and the version control. **Start** starts the run with these options. On mobile, the pane tells you to send `/meld` and the task.
 
-**Deliver** merges the final commit into your current branch with a merge commit, and removes the workspaces. Your checkout must have no uncommitted changes. If the merge stops, meld aborts it, and nothing changes. **Discard** removes the workspaces with no merge. **Clear** removes a delivered run from the pane.
+**Deliver** merges the final commit into your current branch with a merge commit, and removes the workspaces. Your checkout must have no uncommitted changes. Untracked files may stay, unless the merge would overwrite one. If the merge stops, meld aborts it, and nothing changes. **Discard** removes the workspaces with no merge. **Clear** removes a delivered run from the pane.
 
 What you type in the chat goes to Claude, not to the workers. To steer the workers, use the pane or `/meld-steer`, or ask Claude to steer them.
 

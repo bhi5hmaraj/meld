@@ -30,8 +30,9 @@ export async function headCommit(io: Io, repo: string): Promise<string> {
   return (await git(io, repo, ['rev-parse', 'HEAD'])).out
 }
 
-export async function isDirty(io: Io, cwd: string): Promise<boolean> {
-  const status = await git(io, cwd, ['status', '--porcelain'])
+/** Whether the checkout holds changes, counting untracked files unless `untracked` is false. */
+export async function isDirty(io: Io, cwd: string, { untracked = true } = {}): Promise<boolean> {
+  const status = await git(io, cwd, ['status', '--porcelain', ...(untracked ? [] : ['--untracked-files=no'])])
   return status.ok && status.out.length > 0
 }
 
