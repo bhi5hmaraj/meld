@@ -26,9 +26,9 @@ function tokensOf(usage: TurnUsage | undefined): number {
 /**
  * Each hook builds its own Io below: a hooks module spells `$` only at its call sites, never passes it on.
  *
- * An agent that a hook spawns runs under that hook and skips it. So workers are spawned only in the command hook, and
- * the tool calls of the workers have hooks of their own: one serves the start and stop tools of the main session, one
- * serves the board, one guards every other tool.
+ * An agent that a hook spawns runs under that hook and skips it. So a hook that spawns workers never serves them: the
+ * start and stop tools of the main session have a hook of their own, the board another, and the guard of every other
+ * tool a third. The Start button of the pane runs /meld, which the command hook serves.
  */
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
@@ -122,7 +122,7 @@ export const register: Register = on => {
       toast: text => $.ui.toast(text),
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
     }
-    return serveTool(io, e)
+    return serveTool(io, e, sessionCwd)
   }).catch(($, e, next) => (next.called ? next(e) : { deny: 'meld: the run could not start or stop. Try the call again.' }))
 
   on(

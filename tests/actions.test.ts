@@ -288,12 +288,11 @@ test('facts show the commits of each worker, and the change of a ready run', asy
   expect(io.facts?.result).toMatchObject({ commit: FULL, fileCount: 1, added: 2 })
 })
 
-test('the start tool starts the run through the meld command, so that no worker runs under a tool hook', async () => {
+test('the start tool starts a run of the workers it names, in the folder of the session', async () => {
   const io = ioWith(null)
-  const replied = await serveTool(io, call({ tool: 'mcp__meld__start', request: 'Add a dark theme', agents: '3', vcs: 'git' }))
-  expect(parsed(replied.result)).toEqual({ text: 'started' })
-  expect(io.ranCommands).toEqual(['/meld --agents meld:worker,meld:worker,meld:worker --vcs git Add a dark theme'])
-  expect(io.spawned).toHaveLength(0)
+  const replied = await serveTool(io, call({ tool: 'mcp__meld__start', request: 'Add a dark theme', agents: 'opus,Explore,haiku', vcs: 'git' }), '/repo')
+  expect(parsed(replied.result)).toEqual({ text: `Run ${ID}: 3 workers on git, from commit ${HEAD.slice(0, 7)}.` })
+  expect(io.spawned.map(spawn => [spawn.subagentType, spawn.model])).toEqual([['meld:worker', 'opus'], ['Explore', undefined], ['meld:worker', 'haiku']])
 })
 
 test('the start tool refuses options that /meld refuses', async () => {
