@@ -361,7 +361,6 @@ function describeCall(e: ToolCallInput): string {
   return path ? `${tool} ${path.split('/').pop()}` : tool
 }
 
-/** The tokens a turn added: its input, the context it wrote to the cache and its output, not the cached context it read again. */
 /** Why meld approves the start of its own worker, as the permission check records it. */
 export const SPAWN_APPROVAL = 'meld starts a worker of a run that the person started.'
 
@@ -376,6 +375,7 @@ export function spawnVerdict<V extends { decision: string }>(verdict: V, plugin:
   return { decision: 'allow', reason: SPAWN_APPROVAL }
 }
 
+/** The tokens a turn added: its input, the context it wrote to the cache and its output, not the cached context it read again. */
 export function freshTokens(usage: TurnUsage | undefined): number {
   if (!usage) return 0
   return usage.input_tokens + usage.cache_creation_input_tokens + usage.output_tokens
