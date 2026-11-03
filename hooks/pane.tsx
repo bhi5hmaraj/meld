@@ -31,6 +31,7 @@ const SLOW_MS = 120_000
 const STUCK_MS = 300_000
 const ACTIVITY_CHARS = 22
 const CHECK_CHIPS = 6
+const CARD_INDENT = 3
 const CLAIMED_ROWS = 4
 const SUMMARY_WORDS = 24
 const REQUEST_CHARS = 72
@@ -62,7 +63,7 @@ export function paneTree(input: PaneInput) {
   if (!run) return <Box flexDirection="column">{startSection(input)}</Box>
   const facts = input.facts?.run === run.id ? input.facts : null
   return (
-    <Box flexDirection="column" gap={1}>
+    <Box flexDirection="column" gap="lg">
       {headerSection(input, run)}
       {agentsSection(input, run, facts)}
       {tasksSection(input, run)}
@@ -80,29 +81,33 @@ function headerSection(input: PaneInput, run: Run) {
   const calls = run.workers.reduce((sum, worker) => sum + (worker.calls ?? 0), 0)
   const shared = sharedSpec(run)
   return (
-    <Box key="sec-top" flexDirection="column">
-      <Box flexDirection="row" gap={1} flexWrap="wrap" alignItems="center">
-        <Text color={STATE_TONE[run.state]} bold>
-          ● {STATE_WORD[run.state]}
-        </Text>
-        <Text dimColor>
-          {run.vcs} · {run.workers.length} agents{shared ? ` · ${shared}` : ''} · {ago(input.now - run.startedAt)} · {costOf(calls, tokens)}
-        </Text>
-        {(run.state === 'starting' || run.state === 'working') && (
-          <Button key="stop" onPress={() => void act(io, () => stopAll(io))}>
-            ■ Stop all
-          </Button>
-        )}
-        {!LIVE.has(run.state) && (
-          <Button key="discard" onPress={() => void act(io, () => discard(io))}>
-            {run.state === 'delivered' ? 'Clear' : '✗ Discard'}
-          </Button>
-        )}
-        {run.state === 'ready' && (
-          <Button key="discard" dimColor onPress={() => void act(io, () => discard(io))}>
-            ✗ Discard
-          </Button>
-        )}
+    <Box key="sec-top" flexDirection="column" gap="xs">
+      <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="md">
+        <Box flexDirection="row" gap="sm" alignItems="center" flexWrap="wrap">
+          <Text color={STATE_TONE[run.state]} bold>
+            ● {STATE_WORD[run.state]}
+          </Text>
+          <Text dimColor>
+            {run.vcs} · {run.workers.length} agents{shared ? ` · ${shared}` : ''} · {ago(input.now - run.startedAt)} · {costOf(calls, tokens)}
+          </Text>
+        </Box>
+        <Box flexDirection="row" gap="sm">
+          {(run.state === 'starting' || run.state === 'working') && (
+            <Button key="stop" onPress={() => void act(io, () => stopAll(io))}>
+              ■ Stop all
+            </Button>
+          )}
+          {!LIVE.has(run.state) && (
+            <Button key="discard" onPress={() => void act(io, () => discard(io))}>
+              {run.state === 'delivered' ? 'Clear' : '✗ Discard'}
+            </Button>
+          )}
+          {run.state === 'ready' && (
+            <Button key="discard" dimColor onPress={() => void act(io, () => discard(io))}>
+              ✗ Discard
+            </Button>
+          )}
+        </Box>
       </Box>
       <Text dimColor wrap="truncate-end">
         {cut(run.request.split('\n')[0] ?? '', REQUEST_CHARS)}
@@ -115,7 +120,7 @@ function agentsSection(input: PaneInput, run: Run, facts: Facts | null) {
   const { Box } = input.table
   const checks = run.log.filter(entry => entry.kind === 'check')
   return (
-    <Box key="sec-agents" flexDirection="column">
+    <Box key="sec-agents" flexDirection="column" gap="md">
       {run.workers.map((worker, index) => laneRow(input, run, worker, index, laneOf(facts, worker), checks))}
     </Box>
   )
@@ -131,27 +136,33 @@ function laneRow(input: PaneInput, run: Run, worker: Worker, index: number, lane
   const tone = busy && age > STUCK_MS ? 'error' : busy && age > SLOW_MS ? 'warning' : undefined
   const spec = sharedSpec(run) === undefined ? specLabel(worker.agent) : ''
   return (
-    <Box key={`lane-${worker.id}`} flexDirection="row" gap={1} alignItems="center">
-      <Text color={WORKER_TONE[worker.state]}>●</Text>
-      <Text bold>{worker.id}</Text>
-      {Svg ? (
-        <Svg source={laneSvg(marks)} alt={laneAlt(worker.id, lane)} width={LANE_WIDTH} height={LANE_HEIGHT} isInteractive />
-      ) : (
-        <Text color={agentColor(index).light}>{laneGlyphs(marks)}</Text>
-      )}
-      <Text dimColor wrap="truncate-end">
-        {activityOf(run, worker)}
-      </Text>
-      <Text color={tone} dimColor={!tone}>
-        {ago(age)}
-      </Text>
-      <Text dimColor>{costOf(worker.calls ?? 0, worker.tokens)}</Text>
-      {spec && <Text dimColor>{spec}</Text>}
-      {LIVE.has(run.state) && worker.state !== 'stopped' && (
-        <Button key={`stop-${worker.id}`} dimColor onPress={() => void act(io, () => stopOne(io, worker.id))}>
-          ■ Stop
-        </Button>
-      )}
+    <Box key={`lane-${worker.id}`} flexDirection="column" gap="xs">
+      <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="md">
+        <Box flexDirection="row" gap="sm" alignItems="center">
+          <Text color={WORKER_TONE[worker.state]}>●</Text>
+          <Text bold>{worker.id}</Text>
+          {Svg ? (
+            <Svg source={laneSvg(marks)} alt={laneAlt(worker.id, lane)} width={LANE_WIDTH} height={LANE_HEIGHT} isInteractive />
+          ) : (
+            <Text color={agentColor(index).light}>{laneGlyphs(marks)}</Text>
+          )}
+        </Box>
+        {LIVE.has(run.state) && worker.state !== 'stopped' && (
+          <Button key={`stop-${worker.id}`} dimColor onPress={() => void act(io, () => stopOne(io, worker.id))}>
+            ■ Stop
+          </Button>
+        )}
+      </Box>
+      <Box flexDirection="row" gap="md" paddingLeft={CARD_INDENT}>
+        <Text dimColor wrap="truncate-end">
+          {activityOf(run, worker)}
+        </Text>
+        <Text color={tone} dimColor={!tone}>
+          {ago(age)}
+        </Text>
+        <Text dimColor>{costOf(worker.calls ?? 0, worker.tokens)}</Text>
+        {spec && <Text dimColor>{spec}</Text>}
+      </Box>
     </Box>
   )
 }
@@ -169,7 +180,7 @@ function tasksSection(input: PaneInput, run: Run) {
     )
   }
   return (
-    <Box key="sec-tasks" flexDirection="column">
+    <Box key="sec-tasks" flexDirection="column" gap="sm">
       {Svg ? (
         <Svg source={taskBarSvg(counts)} alt={`Tasks: ${counts.done} done, ${counts.doing} in progress, ${counts.open} open`} width={BAR_WIDTH} height={BAR_HEIGHT} />
       ) : (
@@ -179,16 +190,18 @@ function tasksSection(input: PaneInput, run: Run) {
           <Text dimColor>{'░'.repeat(scaled(counts.open, counts))}</Text>
         </Box>
       )}
-      <Box flexDirection="row" gap={2} flexWrap="wrap">
+      <Box flexDirection="row" gap="lg" flexWrap="wrap">
         <Text color={STATUS.good}>■ {counts.done} done</Text>
         <Text color={agentColor(0).light}>■ {counts.doing} doing</Text>
         <Text dimColor>■ {counts.open} open</Text>
       </Box>
-      {claimed.map(task => (
-        <Text key={`task-${task.id}`} dimColor wrap="truncate-end">
-          #{task.id} {task.owner} · {task.title}
-        </Text>
-      ))}
+      <Box flexDirection="column" gap="xs">
+        {claimed.map(task => (
+          <Text key={`task-${task.id}`} dimColor wrap="truncate-end">
+            #{task.id} {task.owner} · {task.title}
+          </Text>
+        ))}
+      </Box>
     </Box>
   )
 }
@@ -198,9 +211,9 @@ function checksSection(input: PaneInput, run: Run) {
   const latest = latestChecks(run).slice(-CHECK_CHIPS)
   if (!latest.length) return undefined
   return (
-    <Box key="sec-checks" flexDirection="row" gap={2} flexWrap="wrap">
+    <Box key="sec-checks" flexDirection="row" gap="lg" flexWrap="wrap">
       {latest.map(check => (
-        <Box key={`check-${check.id}`} flexDirection="row" gap={1}>
+        <Box key={`check-${check.id}`} flexDirection="row" gap="sm">
           <Text color={check.passed ? 'success' : 'error'} bold>
             {check.passed ? '✓' : '✗'} {cut(check.text, 28)}
           </Text>
@@ -218,8 +231,8 @@ function resultSection(input: PaneInput, run: Run, result: ResultFacts | undefin
   if (!final) return undefined
   const verdict = verdictOf(run, final.commit)
   return (
-    <Box key="sec-result" flexDirection="column" gap={1} borderStyle="round" borderColor="suggestion" paddingX={1}>
-      <Box flexDirection="row" gap={2} flexWrap="wrap" alignItems="center">
+    <Box key="sec-result" flexDirection="column" gap="md" borderStyle="round" borderColor="suggestion" paddingX="md" paddingY="sm">
+      <Box flexDirection="row" gap="md" flexWrap="wrap" alignItems="center">
         <Text bold>★ {final.commit.slice(0, 7)}</Text>
         {result ? <Text>{result.fileCount} files</Text> : <Text dimColor>reading the change</Text>}
         {result && <Text color="success">+{result.added}</Text>}
@@ -231,7 +244,7 @@ function resultSection(input: PaneInput, run: Run, result: ResultFacts | undefin
       <Text dimColor wrap="wrap">
         {final.by}: {cutWords(final.summary, SUMMARY_WORDS)}
       </Text>
-      <Box flexDirection="row" gap={1} flexWrap="wrap">
+      <Box flexDirection="row" gap="sm" flexWrap="wrap">
         {run.state === 'ready' && (
           <Button key="deliver" variant="primary" hotkey="d" onPress={() => void act(io, () => deliver(io))}>
             ✓ Deliver into your branch
@@ -264,7 +277,7 @@ function steerSection(input: PaneInput, run: Run) {
   const Input = input.surface !== 'mobile' && 'Input' in input.table ? input.table.Input : undefined
   const { io } = input
   return (
-    <Box key="sec-steer" flexDirection="column" gap={1}>
+    <Box key="sec-steer" flexDirection="column" gap="md">
       {Input && (
         <Input
           key="steer"
@@ -274,7 +287,7 @@ function steerSection(input: PaneInput, run: Run) {
           onSubmit={value => void act(io, () => steerRun(io, value.trim()))}
         />
       )}
-      <Box flexDirection="row" gap={1} flexWrap="wrap">
+      <Box flexDirection="row" gap="sm" flexWrap="wrap">
         {STEER_PRESETS.map(preset => (
           <Button key={`preset-${preset.key}`} onPress={() => void act(io, () => steerRun(io, preset.text))}>
             {preset.label}
@@ -292,7 +305,7 @@ function startSection(input: PaneInput) {
   const Select = input.surface !== 'mobile' && 'Select' in input.table ? input.table.Select : undefined
   const { view, setView } = input
   return (
-    <Box key="sec-start" flexDirection="column" gap={1}>
+    <Box key="sec-start" flexDirection="column" gap="md">
       <Text bold>meld</Text>
       <Text dimColor>Several agents, one task, one commit you can check.</Text>
       {Input && Select ? (

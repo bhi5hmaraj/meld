@@ -230,3 +230,16 @@ test('a lane shows a shell command as its name and its target, past flags and ra
   expect(await ui.find({ type: 'Text', text: 'sed contract.ts' })).toBeDefined()
   await ui.unmount()
 })
+
+test('each agent has a card: its lane and Stop on the first line, what it does on the second', async ($, on) => {
+  const state = new FakeState().load(workingRun(2), factsOf(workingRun(2)))
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const [top, detail] = ((await ui.find({ key: 'lane-w1' }))?.children ?? []).map(child => JSON.stringify(child))
+  expect(top).toContain('"Svg"')
+  expect(top).toContain('stop-w1')
+  expect(detail).toContain('#1 ')
+  expect(detail).not.toContain('stop-w1')
+  await ui.unmount()
+})
