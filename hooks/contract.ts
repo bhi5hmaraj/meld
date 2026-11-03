@@ -1,6 +1,7 @@
 import type { ToolSpec } from 'claude-code'
 
 import type { Run, Worker, WorkerId } from '../types'
+import { CONTEXT_KINDS, CONTEXT_TEXT_LIMIT } from './board'
 
 export const TOOL = {
   board: 'mcp__meld__board',
@@ -9,6 +10,7 @@ export const TOOL = {
   release: 'mcp__meld__release',
   finishTask: 'mcp__meld__finish_task',
   note: 'mcp__meld__note',
+  share: 'mcp__meld__share',
   check: 'mcp__meld__check',
   integrate: 'mcp__meld__integrate',
   finish: 'mcp__meld__finish',
@@ -16,6 +18,20 @@ export const TOOL = {
   stop: 'mcp__meld__stop',
   steer: 'mcp__meld__steer',
 } as const
+
+/** The tools of a worker, which the board hook serves. */
+export const BOARD_TOOLS = [
+  TOOL.board,
+  TOOL.addTasks,
+  TOOL.claim,
+  TOOL.release,
+  TOOL.finishTask,
+  TOOL.note,
+  TOOL.share,
+  TOOL.check,
+  TOOL.integrate,
+  TOOL.finish,
+] as const
 
 /** The instructions behind the steer buttons of the pane: each a fixed text, so a press needs no typing. */
 export const STEER_PRESETS = [
@@ -63,7 +79,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: 'board',
     description:
-      'Read the meld board: who you are, your folder, the other workers, the request and the steers of the person, the tasks, and news from the other workers since your last read. The first read also gives your rules.',
+      'Read the meld board: who you are, your folder, the other workers, the request and the steers of the person, the tasks, the news from the other workers since your last read, and the shared context. The first read also gives your rules.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -95,17 +111,39 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: 'finish_task',
-    description: 'Mark a task you claimed as done, with the commit in your folder that does it.',
+    description: 'Mark a task you claimed as done, with the commit in your folder that does it. Its interfaces and the work it leaves show in the shared context.',
     inputSchema: {
       type: 'object',
-      properties: { ...TASK_VERSION, commit: COMMIT, summary: { type: 'string' } },
+      properties: {
+        ...TASK_VERSION,
+        commit: COMMIT,
+        summary: { type: 'string' },
+        interfaces: { type: 'string', maxLength: CONTEXT_TEXT_LIMIT, description: 'The contracts that this task gives to other tasks: each name and its shape.' },
+        unfinished: { type: 'string', maxLength: CONTEXT_TEXT_LIMIT, description: 'The work that this task leaves for other tasks.' },
+      },
       required: ['task', 'version', 'commit', 'summary'],
     },
   },
   {
     name: 'note',
-    description: 'Tell the other workers something they need: an interface, a decision, a file you changed, a problem.',
+    description: 'Tell the other workers something they need: a decision, a file you changed, a problem. For a fact, a fail or an interface, use share.',
     inputSchema: { type: 'object', properties: { text: { type: 'string' }, commit: { type: 'string' } }, required: ['text'] },
+  },
+  {
+    name: 'share',
+    description:
+      'Add an entry to the shared context. Each board reply gives the context to every worker. A fact is a finding with its evidence. A fail is an approach that did not work, with the reason, so that no worker tries it again. An interface is a contract between tasks: a name and its shape.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: [...CONTEXT_KINDS] },
+        text: { type: 'string', maxLength: CONTEXT_TEXT_LIMIT },
+        commit: COMMIT,
+        files: { type: 'array', items: { type: 'string' }, description: 'The paths of the files that the entry is about.' },
+        replaces: { type: 'number', description: 'The id of an older entry that this entry corrects. The older entry leaves the context.' },
+      },
+      required: ['kind', 'text'],
+    },
   },
   {
     name: 'check',
@@ -153,13 +191,14 @@ Your folder: ${you.path}. Your ref: ${you.ref}. The other workers: ${peers.map(p
 The rules for a meld worker:
 1. Work only in your folder. Never edit the main checkout or the folder of another worker. Read CLAUDE.md or AGENTS.md in your folder if they exist. Install dependencies in your folder if your checks need them, and keep dependency folders out of your commits.
 2. Read the board with ${TOOL.board}. Plan the request as a few small tasks that can go on at the same time, and add them all in one call with ${TOOL.addTasks}, with the taskList version of your read. If another worker added tasks since your read, the call fails and shows its tasks: claim the ones that cover your work, and add only what is still missing. Claim a task with ${TOOL.claim} before you start it.
-3. Commit often. When a task is done, call ${TOOL.finishTask} with the commit and a one-line summary. Tell the other workers about interfaces and decisions early with ${TOOL.note}.
-4. Use the work of the other workers through version control, as below. Do not do again what another worker did.
-5. Record each test or build you run with ${TOOL.check}, with the commit it ran on.
-6. When every task is done, one worker integrates: it calls ${TOOL.integrate}, merges the work of every worker into its own, runs the checks, then calls ${TOOL.finish} with the final commit and a summary. While another worker integrates, review its commits, add tests, or fix what the checks show.
-7. A board reply can carry a notice: the person changed the request. Follow the newest instruction.
-8. Do not wait with sleep or loops. When nothing is left for you, end your run with a short report. When there is new work, meld starts a new agent for you in your folder, and it reads the board to go on.
-9. A board error (STALE_VERSION, TAKEN, NOT_OWNER, CONFLICT) fails only that call. Read the board again and go on.
+3. Commit after each step. When a task is done, call ${TOOL.finishTask} with the commit and a one-line summary. Give the contracts that other tasks use in interfaces, and the work that you did not do in unfinished. Tell the other workers about each decision with ${TOOL.note}.
+4. Each board reply carries the shared context: the current entries, newest first. Read it before you start a task, and do not try the approach of a fail. Share with ${TOOL.share}: a fact when a peer can use it, a fail when an approach did not work, and an interface before a peer depends on it. Give a fact with its evidence, a fail with its reason, and an interface as a name and its shape. To correct an entry, share a new entry with replaces and the id of the old entry.
+5. Use the work of the other workers through version control, as below. Do not do again what another worker did.
+6. Record each test or build you run with ${TOOL.check}, with the commit it ran on.
+7. When every task is done, one worker integrates: it calls ${TOOL.integrate}, merges the work of every worker into its own, runs the checks, then calls ${TOOL.finish} with the final commit and a summary. While another worker integrates, review its commits, add tests, or fix what the checks show.
+8. A board reply can carry a notice: the person changed the request. Follow the newest instruction.
+9. Do not wait with sleep or loops. When nothing is left for you, end your run with a short report. When there is new work, meld starts a new agent for you in your folder, and it reads the board to go on.
+10. A board error (STALE_VERSION, TAKEN, NOT_OWNER, CONFLICT, INVALID) fails only that call. Read the board again, fix the call, and go on.
 
 ${run.vcs === 'jj' ? jjGuide(you, peers) : gitGuide(you, peers)}`
 }

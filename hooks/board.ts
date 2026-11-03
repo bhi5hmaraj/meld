@@ -3,6 +3,9 @@ import type {
   Author,
   BoardView,
   Change,
+  ContextEntry,
+  ContextKind,
+  ContextView,
   Entry,
   ErrorCode,
   Failure,
@@ -19,6 +22,10 @@ import type {
 import type { AgentState } from './io'
 
 const LOG_LIMIT = 500
+const CONTEXT_KEPT = 200
+export const CONTEXT_KINDS: readonly ContextKind[] = ['fact', 'fail', 'interface']
+export const CONTEXT_TEXT_LIMIT = 500
+export const CONTEXT_SHOWN = 20
 const ACTIVE = new Set(['starting', 'working'])
 const STEERABLE = new Set(['starting', 'working', 'ready'])
 
@@ -34,6 +41,11 @@ export type StartInput = {
 }
 
 export type CheckInput = { command: string; commit: string; passed: boolean; output: string }
+
+export type ShareInput = { kind: string; text: string; commit?: string; files?: string[]; replaces?: number }
+
+/** What a finished task leaves for the other tasks: the interfaces it made, and the part it did not do. */
+export type Handover = { interfaces?: string; unfinished?: string }
 
 export function startRun(input: StartInput): Run {
   return {
@@ -62,6 +74,7 @@ export function startRun(input: StartInput): Run {
     })),
     tasks: [],
     log: [],
+    context: [],
     nudges: 0,
     taskList: 0,
   }
@@ -168,11 +181,20 @@ export function finishTask(
   commit: string,
   summary: string,
   now: number,
+  handover: Handover = {},
 ): Change<Task> {
   const checked = checkOwnedTask(run, by, id, version)
   if (isTaskFailure(checked)) return checked
+  const interfaces = handover.interfaces?.trim() ?? ''
+  const unfinished = handover.unfinished?.trim() ?? ''
+  const tooLong = lengthFailure('interfaces text', interfaces) ?? lengthFailure('unfinished text', unfinished)
+  if (tooLong) return tooLong
+  const handed = [
+    ...(interfaces ? [{ at: now, kind: 'interface' as const, by, text: `#${id}: ${interfaces}`, commit, files: [] }] : []),
+    ...(unfinished ? [{ at: now, kind: 'fact' as const, by, text: `#${id} unfinished: ${unfinished}`, commit, files: [] }] : []),
+  ].reduce(withContext, run)
   const done: Task = { ...checked, state: 'done', commit, summary, version: checked.version + 1 }
-  return updateTask({ ...run, nudges: 0 }, done, by, now, `finished #${id}: ${summary}`, commit)
+  return updateTask({ ...handed, nudges: 0 }, done, by, now, `finished #${id}: ${summary}`, commit)
 }
 
 export function addNote(run: Run, by: WorkerId, text: string, commit: string | undefined, now: number): Change<Entry> {
@@ -180,6 +202,44 @@ export function addNote(run: Run, by: WorkerId, text: string, commit: string | u
   if (ended) return ended
   const next = withEntry(run, { at: now, by, kind: 'note', text, commit })
   return { run: next, value: lastEntry(next) }
+}
+
+/** Adds an entry to the shared context. An entry that names an older entry in `replaces` takes the place of that entry. */
+export function shareEntry(run: Run, by: WorkerId, input: ShareInput, now: number): Change<ContextEntry> {
+  const ended = endedFailure(run)
+  if (ended) return ended
+  const kind = CONTEXT_KINDS.find(one => one === input.kind)
+  if (!kind) return failure('INVALID', `The kind is fact, fail or interface, not "${input.kind}".`)
+  const text = input.text.trim()
+  if (!text) return failure('INVALID', 'The text is empty.')
+  const tooLong = lengthFailure('text', text)
+  if (tooLong) return tooLong
+  if (input.replaces !== undefined && !run.context.some(entry => entry.id === input.replaces)) {
+    return failure('NOT_FOUND', `There is no entry ${input.replaces} to replace.`)
+  }
+  const shared = withContext(run, { at: now, kind, by, text, commit: input.commit, files: input.files ?? [], replaces: input.replaces })
+  const entry = lastContext(shared)
+  const logged = input.replaces === undefined ? `shared ${kind} ${entry.id}` : `shared ${kind} ${entry.id}, which replaces ${input.replaces}`
+  return { run: withEntry(shared, { at: now, by, kind: 'share', text: logged, commit: entry.commit }), value: entry }
+}
+
+/** The current entries, newest first. An entry that a newer entry replaces is not current. */
+export function currentContext(run: Run, limit = CONTEXT_SHOWN): ContextEntry[] {
+  const replaced = new Set(run.context.map(entry => entry.replaces))
+  return run.context
+    .filter(entry => !replaced.has(entry.id))
+    .reverse()
+    .slice(0, limit)
+}
+
+/** The context that a board reply carries to a worker. Each entry that the reply shows counts the worker as a reader, unless the worker wrote it. */
+export function passContext(run: Run, by: WorkerId): { run: Run; context: ContextView[] } {
+  const shown = new Set(currentContext(run).map(entry => entry.id))
+  const context = run.context.map(entry =>
+    shown.has(entry.id) && entry.by !== by && !entry.seenBy.includes(by) ? { ...entry, seenBy: [...entry.seenBy, by] } : entry,
+  )
+  const passed = { ...run, context }
+  return { run: passed, context: currentContext(passed).map(viewOf) }
 }
 
 export function addCheck(run: Run, by: WorkerId, check: CheckInput, now: number): Change<Entry> {
@@ -232,6 +292,7 @@ export function boardFor(run: Run, by: WorkerId): { run: Run; view: BoardView } 
   const you = findWorker(run, by)
   const steers = unseenSteers(run, you)
   const news = run.log.filter(entry => entry.id > you.seenEntry && entry.by !== by && entry.by !== 'you')
+  const passed = passContext(run, by)
   const view: BoardView = {
     you: { id: you.id, path: you.path, ref: you.ref },
     peers: run.workers
@@ -246,11 +307,12 @@ export function boardFor(run: Run, by: WorkerId): { run: Run; view: BoardView } 
     taskList: run.taskList,
     tasks: run.tasks,
     news,
+    context: passed.context,
     integrator: run.integrator,
     final: run.final,
   }
   const seen: Worker = { ...you, seenRevision: run.revision, seenEntry: run.log.at(-1)?.id ?? 0 }
-  return { run: replaceWorker(run, seen), view }
+  return { run: replaceWorker(passed.run, seen), view }
 }
 
 /**
@@ -326,6 +388,25 @@ function replaceWorker(run: Run, worker: Worker): Run {
 function withEntry(run: Run, entry: Omit<Entry, 'id'> & { by: Author }): Run {
   const id = (run.log.at(-1)?.id ?? 0) + 1
   return { ...run, log: [...run.log, { ...entry, id }].slice(-LOG_LIMIT) }
+}
+
+function withContext(run: Run, entry: Omit<ContextEntry, 'id' | 'seenBy'>): Run {
+  const id = (run.context.at(-1)?.id ?? 0) + 1
+  return { ...run, context: [...run.context, { ...entry, id, seenBy: [] }].slice(-CONTEXT_KEPT) }
+}
+
+function lastContext(run: Run): ContextEntry {
+  const entry = run.context.at(-1)
+  if (!entry) throw new Error('meld: the context is empty')
+  return entry
+}
+
+function viewOf({ at: _at, ...view }: ContextEntry): ContextView {
+  return view
+}
+
+function lengthFailure(field: string, text: string): Failure | undefined {
+  return text.length > CONTEXT_TEXT_LIMIT ? failure('INVALID', `The ${field} has ${text.length} characters. The limit is ${CONTEXT_TEXT_LIMIT}.`) : undefined
 }
 
 function lastEntry(run: Run): Entry {

@@ -7,7 +7,7 @@ import { headCommit, isDirty, repoRoot } from './git'
 import type { Io, Spawned } from './io'
 import { agentsOf, parseStart } from './options'
 import type { StartOptions } from './options'
-import { detectVcs, vcsFor } from './vcs'
+import { detectVcs, runHome, vcsFor } from './vcs'
 import type { Prepared } from './vcs'
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
@@ -29,6 +29,7 @@ type Refused = { error: string; message: string }
 
 let pendingSpawns = 0
 let restarting = false
+let mirroring: Promise<void> = Promise.resolve()
 
 export async function readRun(io: Io): Promise<Run | null> {
   return (await io.read()) ?? null
@@ -36,11 +37,31 @@ export async function readRun(io: Io): Promise<Run | null> {
 
 async function writeRun(io: Io, change: (run: Run) => Run): Promise<Run | null> {
   let written: Run | null = null
-  await io.write(run => {
+  await save(io, run => {
     written = run ? change(run) : null
     return written
   })
   return written
+}
+
+/** Each write of the run goes through here. After the write, meld mirrors the board. */
+async function save(io: Io, change: (run: Run | null) => Run | null): Promise<void> {
+  await io.write(change)
+  await mirrorBoard(io)
+}
+
+/**
+ * Writes the board to board.json in the folder of the run, so that the shared context outlives the session. One mirror
+ * writes at a time, and each one reads the newest run. A delivered run has no folder, and a failed mirror fails no call.
+ */
+function mirrorBoard(io: Io): Promise<void> {
+  mirroring = mirroring
+    .then(async () => {
+      const run = await readRun(io)
+      if (run && run.state !== 'delivered') await io.writeFile(`${runHome(run.id)}/board.json`, `${JSON.stringify(run, null, 2)}\n`)
+    })
+    .catch(() => undefined)
+  return mirroring
 }
 
 export async function startRun(io: Io, cwd: string, options: StartOptions): Promise<CommandRunResult> {
@@ -69,7 +90,7 @@ export async function startRun(io: Io, cwd: string, options: StartOptions): Prom
   const workspaces = prepared.workspaces
   const workers = ids.map((wid, index) => ({ id: wid, agent: options.agents[index] ?? { type: 'meld:worker' }, path: workspaces[index]?.path ?? '', ref: workspaces[index]?.ref ?? '' }))
   const run = board.startRun({ id, request, repo, base, vcs: kind, now, costAtStart: await io.cost(), workers })
-  await io.write(() => run)
+  await save(io, () => run)
   await io.writeFacts(null)
   void io.openPane(false)
   const refused = await spawnWorkers(io, run)
@@ -159,21 +180,23 @@ export async function serveTool(io: Io, e: ToolCallInput, cwd = ''): Promise<Too
   const now = await io.now()
   if (tool === TOOL.board) return reply(await readBoard(io, worker.id, now))
   const checked = await withResolvedCommit(io, tool, e as unknown as Args, worker)
-  if ('error' in checked) return reply(checked)
   let answer: unknown = { error: 'RUN_ENDED', message: 'There is no meld run.' }
-  await io.write(run => {
+  await save(io, run => {
     if (!run) return run
-    const change = mutate(run, worker.id, tool, checked.args, now)
-    if (board.isFailure(change)) {
-      answer = change
-      return board.countCall(board.setWorkerState(run, worker.id, 'working', now), worker.id)
-    }
-    const taken = board.takeNotice(change.run, worker.id)
-    answer = { ok: true, value: change.value, notice: taken.notice }
-    return board.countCall(board.setWorkerState(taken.run, worker.id, 'working', now), worker.id)
+    const done = answered(run, worker.id, 'error' in checked ? checked : mutate(run, worker.id, tool, checked.args, now))
+    const passed = board.passContext(done.run, worker.id)
+    answer = { ...done.answer, context: passed.context }
+    return board.countCall(board.setWorkerState(passed.run, worker.id, 'working', now), worker.id)
   })
   await afterChange(io, worker.id, tool)
   return reply(answer)
+}
+
+/** A refusal leaves the run as it was; a change answers with its value and the steers that the worker has not seen. */
+function answered(run: Run, by: WorkerId, change: Change<unknown> | Refused): { run: Run; answer: object } {
+  if ('error' in change) return { run, answer: change }
+  const taken = board.takeNotice(change.run, by)
+  return { run: taken.run, answer: { ok: true, value: change.value, notice: taken.notice } }
 }
 
 /** The start tool reads its fields as /meld reads its options, so both refuse the same input. */
@@ -188,9 +211,12 @@ function reply(value: unknown): ToolCallResult {
   return { result: JSON.stringify(value) }
 }
 
-/** The board keeps the full id of the commit that a revision names in the folder of the worker; a final commit with a conflict is refused. */
+/**
+ * The board keeps the full id of the commit that a revision names in the folder of the worker; a final commit with a
+ * conflict is refused. A share that gives no commit needs no resolve.
+ */
 async function withResolvedCommit(io: Io, tool: string, args: Args, worker: Worker): Promise<{ args: Args } | Refused> {
-  if (!COMMIT_TOOLS.has(tool)) return { args }
+  if (!COMMIT_TOOLS.has(tool) && !(tool === TOOL.share && text(args.commit))) return { args }
   const run = await readRun(io)
   if (!run) return { args }
   const vcs = vcsFor(run.vcs)
@@ -211,10 +237,16 @@ function mutate(run: Run, by: WorkerId, tool: string, args: Args, now: number): 
       return board.claimTask(run, by, Number(args.task), Number(args.version), now)
     case TOOL.release:
       return board.releaseTask(run, by, Number(args.task), Number(args.version), text(args.note), now)
-    case TOOL.finishTask:
-      return board.finishTask(run, by, Number(args.task), Number(args.version), text(args.commit), text(args.summary), now)
+    case TOOL.finishTask: {
+      const shared = { interfaces: optionalText(args.interfaces), unfinished: optionalText(args.unfinished) }
+      return board.finishTask(run, by, Number(args.task), Number(args.version), text(args.commit), text(args.summary), now, shared)
+    }
     case TOOL.note:
       return board.addNote(run, by, text(args.text), args.commit === undefined ? undefined : text(args.commit), now)
+    case TOOL.share: {
+      const replaces = args.replaces === undefined || args.replaces === null ? undefined : Number(args.replaces)
+      return board.shareEntry(run, by, { kind: text(args.kind), text: text(args.text), commit: optionalText(args.commit), files: paths(args.files), replaces }, now)
+    }
     case TOOL.check:
       return board.addCheck(run, by, { command: text(args.command), commit: text(args.commit), passed: args.passed === true, output: text(args.output) }, now)
     case TOOL.integrate:
@@ -242,10 +274,20 @@ function text(value: unknown): string {
   return typeof value === 'string' ? value : value === undefined ? '' : String(value)
 }
 
+function optionalText(value: unknown): string | undefined {
+  return text(value) || undefined
+}
+
+/** A model can give one path as a string, not as a list. */
+function paths(value: unknown): string[] {
+  if (typeof value === 'string') return value ? [value] : []
+  return Array.isArray(value) ? value.filter((path): path is string => typeof path === 'string' && path !== '') : []
+}
+
 /** The board of a worker; its first read also carries its rules, for an agent of any type. */
 async function readBoard(io: Io, id: WorkerId, now: number): Promise<BoardView | Refused> {
   let view: BoardView | undefined
-  await io.write(run => {
+  await save(io, run => {
     if (!run) return run
     const seen = board.boardFor(run, id)
     const briefed = seen.run.workers.find(worker => worker.id === id)?.briefed ?? true
@@ -276,6 +318,7 @@ async function overview(io: Io): Promise<unknown> {
       tokens: worker.tokens,
     })),
     tasks: run.tasks,
+    context: board.currentContext(run),
     integrator: run.integrator,
     nudges: run.nudges,
     final: run.final,
@@ -477,7 +520,7 @@ export async function steerRun(io: Io, instruction: string): Promise<string> {
   const now = await io.now()
   let outcome = 'There is no run to steer.'
   let revision = 0
-  await io.write(run => {
+  await save(io, run => {
     if (!run) return run
     const change = board.steer(run, instruction, now)
     if (board.isFailure(change)) {
@@ -541,7 +584,7 @@ export async function discard(io: Io): Promise<string> {
   if (!run) return 'There is no run.'
   if (LIVE_STATES.has(run.state)) await stopAll(io)
   if (run.state !== 'delivered') await vcsFor(run.vcs).remove(io, run)
-  await io.write(() => null)
+  await save(io, () => null)
   await io.writeFacts(null)
   return 'The run and its workspaces are gone.'
 }

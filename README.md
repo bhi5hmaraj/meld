@@ -58,6 +58,7 @@ If Claude Code refuses to start a worker, meld stops that worker and shows the r
 - **The agent lanes** show one lane for each agent, drawn from its real commits since the base, from the oldest to the newest. A diamond is a merge, a star is the final commit, and a red cross is a conflict. A hollow dot shows edits that the agent did not commit. A green check above a commit shows a check that passed on it, and a red cross a check that failed. The terminal draws each lane in characters.
 - **Next to each lane**, meld shows the task that the agent claimed, its last action, the time since that action, and the number of its tool calls. If a working agent makes no tool call for 2 minutes, that time turns yellow, and after 5 minutes it turns red. This is the stall warning. **Stop** stops one agent, and its claimed tasks open for the other agents.
 - **The task bar** shows the tasks that are done, in progress and open, and the claimed tasks with their owners.
+- **The shared context** shows the five newest current entries, one line each: a shape for the kind (■ fact, ✕ fail, ◇ interface), the worker that shared the entry, its text, and the number of workers that read it.
 - **The check chips** show the last result of each check command, with its commit. The pane shows six chips at most.
 - **The result** shows the final commit, the number of changed files, the lines added and removed, and the checks that ran on that commit. A warning shows when no check ran on it. **Show diff** (key `v`) opens the diff of the first eight files. **Deliver** (key `d`) merges the result into your branch.
 - **The preset steers** give every agent a fixed instruction: **+ Tests**, **Smaller**, **Fix checks** and **Integrate now**. Above them, a field takes an instruction in your words. On a ready run, the field asks for changes. The mobile app has no field: send `/meld-steer` and the instruction.
@@ -71,13 +72,17 @@ What you type in the chat goes to Claude, not to the workers. To steer the worke
 
 1. `/meld` makes one workspace for each worker from `HEAD`, under `/tmp/meld/<run>/`. With jj, each workspace is a jj workspace with the name of its worker. With git, each workspace is a worktree on the branch `meld/<run>/<worker>`.
 2. meld starts each worker in its own folder. meld knows each worker by the agent id that Claude Code gives it, not by a name that the model writes.
-3. A worker gets its rules at its first board read. The workers plan the task as small tasks on the board, claim them, commit in their own workspaces, and share decisions with notes. A worker takes the commits of another worker with `jj new`, or with `git merge` or `git cherry-pick`.
+3. A worker gets its rules at its first board read. The workers plan the task as small tasks on the board, claim them, commit in their own workspaces, share decisions with notes, and share findings in the shared context. A worker takes the commits of another worker with `jj new`, or with `git merge` or `git cherry-pick`.
 4. One worker takes the integration: it merges the work of every worker, runs the checks, and declares the final commit. The run is ready for you.
 5. If you steer a ready run, the workers change the result, and the run changes to the working state.
 
-The workers use nine board tools: `board`, `add_tasks`, `claim`, `release`, `finish_task`, `note`, `check`, `integrate` and `finish`. The main session uses three more: `start`, `steer` and `stop`.
+The workers use ten board tools: `board`, `add_tasks`, `claim`, `release`, `finish_task`, `note`, `share`, `check`, `integrate` and `finish`. The main session uses three more: `start`, `steer` and `stop`. Each reply of a board tool carries the shared context, the board read of the main session included.
 
-The tools `finish_task`, `check` and `finish` keep the full id of the commit that the revision names in the folder of the worker. `HEAD` or `@-` names the commit of the worker that calls the tool. meld refuses a final commit with a conflict.
+The tools `finish_task`, `check` and `finish` keep the full id of the commit that the revision names in the folder of the worker. `share` does the same when it names a commit. `HEAD` or `@-` names the commit of the worker that calls the tool. meld refuses a final commit with a conflict.
+
+**The shared context.** As in DeLM, the workers keep a shared context of typed entries. A worker adds an entry with `share`: a `kind`, a `text` of 500 characters at most, and an optional `commit`, `files` and `replaces`. A fact is a finding with its evidence. A fail is an approach that did not work, with the reason, so that no worker tries it again. An interface is a contract between tasks: a name and its shape. `replaces` gives the id of an older entry that the new entry corrects. An entry that a newer entry replaces is not current. `finish_task` takes optional `interfaces` and `unfinished` text, and meld adds them to the context as an interface and a fact. Each board reply carries `context`: the current entries, newest first, 20 at most. Each entry has its id, kind, worker, text, commit, files and `seenBy`: the other workers that got the entry in a board reply. The rules tell a worker to share a fact when a peer can use it, a fail when an approach did not work, and an interface before a peer depends on it.
+
+After each change of the board, meld writes the board to `/tmp/meld/<run>/board.json`, with the tasks, the log and the shared context. That file stays when your session ends. Deliver and Discard remove it with the folder of the run.
 
 The task list has a version. A worker adds its tasks in one call, with the version of its last board read. If another worker added tasks since that read, the add fails and shows the current tasks. The worker claims the tasks that cover its work, and adds the tasks that are missing. A claim is a compare-and-set on the task version, so two workers cannot claim one task.
 
@@ -85,7 +90,7 @@ meld refuses an edit that a worker makes outside its own workspace.
 
 **Restarts.** Claude Code ends the run of an agent that meld starts when the agent hands back its work. That agent takes no more messages, and its worker is idle. When a worker ends, Claude Code tells your session. At the end of each turn of your session, meld restarts an idle worker with a new agent in the same folder when there is work for it:
 
-- The board has news that the worker did not read, and there is an open task or a task of that worker. A note, a claim, a finished task or a check of another worker is news.
+- The board has news that the worker did not read, and there is an open task or a task of that worker. A note, a share, a claim, a finished task or a check of another worker is news.
 - Every live worker is idle. In that case, meld restarts the owners of unfinished tasks, and idle workers for the open tasks. With no open task, meld restarts the lead: the integrator, or the first live worker when no worker integrates. The lead plans when there are no tasks, takes your new instruction, or integrates when all tasks are done.
 
 A restarted agent reads its rules at its first board read. Each restart check reads the agent list of Claude Code, so meld finds a worker whose agent ended, though meld did not see the end of its turn. meld does not restart a stopped worker. After three restarts in a row that finish no task, meld stops the restarts and tells you. A finished task or a steer starts the count from zero. A steer goes as a message to each running worker, and the steer restarts the ended workers with it.

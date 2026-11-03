@@ -5,7 +5,8 @@ export type VcsChoice = VcsKind | 'auto'
 export type RunState = 'starting' | 'working' | 'ready' | 'delivered' | 'stopped'
 export type WorkerState = 'starting' | 'working' | 'idle' | 'stopped'
 export type TaskState = 'open' | 'claimed' | 'done'
-export type EntryKind = 'task' | 'note' | 'check' | 'steer' | 'event'
+export type EntryKind = 'task' | 'note' | 'check' | 'steer' | 'event' | 'share'
+export type ContextKind = 'fact' | 'fail' | 'interface'
 export type ErrorCode =
   | 'NOT_FOUND'
   | 'STALE_VERSION'
@@ -16,6 +17,7 @@ export type ErrorCode =
   | 'RUN_ENDED'
   | 'STALE_TASK_LIST'
   | 'CONFLICT'
+  | 'INVALID'
 
 /** What runs one worker: an agent type (`meld:worker`, `general-purpose`, a plugin's agent) and an optional model. */
 export type AgentSpec = { type: string; model?: string }
@@ -60,6 +62,27 @@ export type Entry = {
   passed?: boolean
 }
 
+/**
+ * One entry of the shared context that every worker sees: a fact (a finding with its evidence), a fail (an approach
+ * that did not work, with the reason) or an interface (a contract between tasks: a name and its shape).
+ */
+export type ContextEntry = {
+  id: number
+  at: number
+  kind: ContextKind
+  by: WorkerId
+  text: string
+  commit?: string
+  files: string[]
+  /** The older entry that this entry corrects: that entry is not current. */
+  replaces?: number
+  /** The workers, other than the author, whose board replies carried this entry. */
+  seenBy: WorkerId[]
+}
+
+/** An entry as a board reply shows it. */
+export type ContextView = Omit<ContextEntry, 'at'>
+
 export type Final = { commit: string; summary: string; by: WorkerId }
 
 export type Run = {
@@ -77,6 +100,7 @@ export type Run = {
   workers: Worker[]
   tasks: Task[]
   log: Entry[]
+  context: ContextEntry[]
   integrator?: WorkerId
   final?: Final
   nudges: number
@@ -102,6 +126,7 @@ export type BoardView = {
   taskList: number
   tasks: Task[]
   news: Entry[]
+  context: ContextView[]
   integrator?: WorkerId
   final?: Final
 }

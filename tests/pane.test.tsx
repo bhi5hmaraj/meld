@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
-import { addCheck, addTasks, bindWorker, claimTask, declareFinal, isFailure, refuseWorker, setActivity, startRun, takeIntegration } from '../hooks/board'
-import type { Change, Facts, Run, WorkerId } from '../types'
+import { addCheck, addTasks, bindWorker, boardFor, claimTask, declareFinal, isFailure, refuseWorker, setActivity, shareEntry, startRun, takeIntegration } from '../hooks/board'
+import type { Change, ContextKind, Facts, Run, WorkerId } from '../types'
 
 const NOW = 1_800_000_000_000
 const FULL = 'f'.repeat(40)
@@ -17,6 +17,16 @@ const GRAPHIC_SURFACES = ['desktop', 'mobile', 'vscode'] as const
 const ALL_SURFACES = ['terminal', 'desktop', 'vscode', 'mobile'] as const
 const WORD_LIMIT = 100
 const LONG_ACTIVITY = 'Bash: pnpm --filter api test -- --run apps/api/src/workbench/routes.test.ts --reporter verbose'
+const LONG_SHARE = 'word '.repeat(100).trim()
+const SHARES: { by: WorkerId; kind: ContextKind; text: string }[] = [
+  { by: 'w1', kind: 'fact', text: 'The tokens live in src/theme.css as CSS variables.' },
+  { by: 'w2', kind: 'fail', text: 'A global stylesheet breaks the old pages, as they set colours inline.' },
+  { by: 'w3', kind: 'interface', text: 'toggleTheme(): void flips data-theme on the html element.' },
+  { by: 'w1', kind: 'fact', text: 'The header has no room for a toggle on phones.' },
+  { by: 'w2', kind: 'fact', text: 'The docs build reads docs/theme.md.' },
+  { by: 'w3', kind: 'interface', text: 'useTheme() gives light or dark.' },
+]
+const CORRECTION = 'useTheme(): Theme gives the stored theme, light or dark.'
 
 type Stored = { value: unknown; version: number }
 
@@ -26,7 +36,7 @@ class FakeState {
 
   load(run: Run | null, facts: Facts | null, view?: object): FakeState {
     this.values.clear()
-    if (run) this.values.set('run', { value: { shape: 'run-4', value: run }, version: 1 })
+    if (run) this.values.set('run', { value: { shape: 'run-5', value: run }, version: 1 })
     if (facts) this.values.set('facts', { value: { shape: 'facts-1', value: facts }, version: 1 })
     if (view) this.values.set('view', { value: { shape: 'view-1', value: view }, version: 1 })
     return this
@@ -64,8 +74,21 @@ function workingRun(count: number): Run {
   return run
 }
 
-function readyRun(): Run {
-  return runOf(declareFinal(runOf(takeIntegration(workingRun(3), 'w2', NOW)), 'w2', FULL, 'Adds a dark theme with a toggle, tokens and docs.', NOW))
+function readyRun(run = workingRun(3)): Run {
+  return runOf(declareFinal(runOf(takeIntegration(run, 'w2', NOW)), 'w2', FULL, 'Adds a dark theme with a toggle, tokens and docs.', NOW))
+}
+
+/** Six shared entries and a seventh that corrects the sixth, read by w1 and w2. */
+function sharedRun(run: Run, text?: string): Run {
+  const shared = SHARES.reduce((current, share) => runOf(shareEntry(current, share.by, { kind: share.kind, text: text ?? share.text }, NOW)), run)
+  const corrected = runOf(shareEntry(shared, 'w3', { kind: 'interface', text: text ?? CORRECTION, replaces: SHARES.length }, NOW))
+  return boardFor(boardFor(corrected, 'w1').run, 'w2').run
+}
+
+/** The text of each part of a line: the children of each Text in it. */
+function partsOf(node: unknown): string[] {
+  const line = node as { children?: { children?: unknown[] }[] } | undefined
+  return (line?.children ?? []).map(part => (part.children ?? []).join(''))
 }
 
 function factsOf(run: Run): Facts {
@@ -214,11 +237,11 @@ test('with no run the mobile pane tells how to start', async ($, on) => {
   await ui.unmount()
 })
 
-test('no block of the pane holds more than 100 words, with eight agents or a ready result', async ($, on) => {
+test('no block of the pane holds more than 100 words, with eight agents or a ready result, and long shared entries', async ($, on) => {
   const state = new FakeState()
   on('clock.now', () => ({ value: NOW }))
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
-  for (const run of [workingRun(8), readyRun()]) {
+  for (const run of [sharedRun(workingRun(8), LONG_SHARE), readyRun(sharedRun(workingRun(3), LONG_SHARE))]) {
     state.load(run, factsOf(run), { showDiff: true, task: '', agents: 2, model: 'inherit', vcs: 'auto' })
     for (const surface of ALL_SURFACES) {
       const ui = await $.ui.mount({ ...PANE, surface })
@@ -321,5 +344,48 @@ test('a run that ended with no tasks says so, with no agents planning', async ($
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await ui.find({ type: 'Text', text: 'No tasks: the run ended before the agents planned.' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the shared context shows the five newest current entries, newest first', async ($, on) => {
+  const state = new FakeState().load(sharedRun(workingRun(3)), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const lines = (await ui.findAll({ type: 'Box' })).filter(box => box.key?.startsWith('context-'))
+  expect(lines.map(line => line.key)).toEqual(['context-7', 'context-5', 'context-4', 'context-3', 'context-2'])
+  await ui.unmount()
+})
+
+test('a line of the shared context shows the shape of the kind, the worker, the text and the number of workers that read it', async ($, on) => {
+  const state = new FakeState().load(sharedRun(workingRun(3)), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  for (const surface of ALL_SURFACES) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(partsOf(await ui.find({ key: 'context-7' }))).toEqual(['◇', 'w3', CORRECTION, '2 read'])
+    expect(partsOf(await ui.find({ key: 'context-5' }))).toEqual(['■', 'w2', 'The docs build reads docs/theme.md.', '1 read'])
+    expect(partsOf(await ui.find({ key: 'context-2' }))).toEqual(['✕', 'w2', 'A global stylesheet breaks the old pages, as they set colours inline.', '1 read'])
+    await ui.unmount()
+  }
+})
+
+test('a long shared entry is cut to one line', async ($, on) => {
+  const state = new FakeState().load(sharedRun(workingRun(3), LONG_SHARE), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const cut = `${'word '.repeat(12).trim()}…`
+  expect(await ui.findAll({ type: 'Text', text: cut })).toHaveLength(5)
+  expect((await ui.find({ type: 'Text', text: cut }))?.props).toMatchObject({ wrap: 'truncate-end' })
+  await ui.unmount()
+})
+
+test('a run with no shared entries has no shared context section', async ($, on) => {
+  const state = new FakeState().load(workingRun(2), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ key: 'sec-context' })).toBeUndefined()
   await ui.unmount()
 })

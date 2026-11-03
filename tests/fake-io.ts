@@ -17,6 +17,7 @@ export class FakeIo implements Io {
   commands: string[] = []
   cwds: Record<string, string> = {}
   files: Record<string, string> = {}
+  unwritable: string[] = []
   spawned: SpawnArgs[] = []
   ranCommands: string[] = []
   sent: string[] = []
@@ -81,6 +82,7 @@ export class FakeIo implements Io {
   }
 
   async writeFile(path: string, text: string): Promise<void> {
+    if (this.unwritable.includes(path)) throw new Error(`EACCES: ${path}`)
     this.files[path] = text
   }
 

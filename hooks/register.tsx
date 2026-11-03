@@ -2,29 +2,18 @@ import { atom, read, update } from 'claude-code'
 import type { AgentStatus, Register } from 'claude-code'
 
 import { freshTokens, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll } from './actions'
-import { STEER_PRESETS, TOOL_SPECS, WORKER_SYSTEM } from './contract'
+import { BOARD_TOOLS, STEER_PRESETS, TOOL_SPECS, WORKER_SYSTEM } from './contract'
 import type { AgentState, Io } from './io'
 import { parseStart, WORKER_TYPE } from './options'
 import { DEFAULT_VIEW, paneTree } from './pane'
 
 const MELD_TOOL = 'mcp__meld__'
 // Change a shape tag when the fields of its value change: a value stored by an older version then reads as the initial value.
-const runRef = atom({ plugin: 'meld', key: 'run' } as const, null, { shape: 'run-4' })
+const runRef = atom({ plugin: 'meld', key: 'run' } as const, null, { shape: 'run-5' })
 const factsRef = atom({ plugin: 'meld', key: 'facts' } as const, null, { shape: 'facts-1' })
 const viewRef = atom({ plugin: 'meld', key: 'view' } as const, null, { shape: 'view-1' })
 const PROCESS_TIMEOUT_MS = 120_000
 const FACTS_MS = 3000
-const BOARD_TOOLS = [
-  'mcp__meld__board',
-  'mcp__meld__add_tasks',
-  'mcp__meld__claim',
-  'mcp__meld__release',
-  'mcp__meld__finish_task',
-  'mcp__meld__note',
-  'mcp__meld__check',
-  'mcp__meld__integrate',
-  'mcp__meld__finish',
-] as const
 const ENDED_AGENT = new Set<AgentStatus>(['completed', 'failed', 'killed'])
 const START_KEY = 'start'
 const PRESS_KEYS = [START_KEY, ...STEER_PRESETS.map(preset => `preset-${preset.key}`)]

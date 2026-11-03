@@ -239,6 +239,94 @@ test('the meld tools refuse an agent that is not a worker', async () => {
   expect(parsed(replied.result)).toMatchObject({ error: 'NOT_WORKER' })
 })
 
+test('a share answers with its entry and the context, newest first', async () => {
+  const io = ioWith(working())
+  await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'The tokens are in src/theme.css.', files: ['src/theme.css'], agentId: 'agent-1' }))
+  const replied = await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fail', text: 'jj split opens an editor, and the call hangs.', agentId: 'agent-1' }))
+  expect(parsed(replied.result)).toMatchObject({
+    ok: true,
+    value: { kind: 'fail', by: 'w1' },
+    context: [
+      { kind: 'fail', by: 'w1', text: 'jj split opens an editor, and the call hangs.', files: [], seenBy: [] },
+      { kind: 'fact', by: 'w1', text: 'The tokens are in src/theme.css.', files: ['src/theme.css'], seenBy: [] },
+    ],
+  })
+})
+
+test('a share that replaces an older entry takes that entry out of the context', async () => {
+  const io = ioWith(working())
+  const first = parsed((await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'add() is in src/math.js.', agentId: 'agent-1' }))).result) as { value: { id: number } }
+  const replied = await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'add() is in src/sum.js.', replaces: first.value.id, agentId: 'agent-2' }))
+  expect(parsed(replied.result)).toMatchObject({ ok: true, context: [{ by: 'w2', text: 'add() is in src/sum.js.', replaces: first.value.id }] })
+  expect((parsed(replied.result) as { context: unknown[] }).context).toHaveLength(1)
+})
+
+test('each board tool reply of a worker carries the context, and the entries it carries list that worker in seenBy', async () => {
+  const io = ioWith(runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }] }, NOW)))
+  await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'interface', text: 'tokens(): Record<string, string> in src/theme.ts', agentId: 'agent-1' }))
+  const replied = await serveTool(io, call({ tool: 'mcp__meld__claim', task: 1, version: 1, agentId: 'agent-2' }))
+  expect(parsed(replied.result)).toMatchObject({ ok: true, context: [{ kind: 'interface', by: 'w1', seenBy: ['w2'] }] })
+  expect(io.current?.context[0]?.seenBy).toEqual(['w2'])
+})
+
+test('a refused board call of a worker carries the context', async () => {
+  const io = ioWith(working())
+  await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fail', text: 'jj split opens an editor, and the call hangs.', agentId: 'agent-1' }))
+  const replied = await serveTool(io, call({ tool: 'mcp__meld__claim', task: 9, version: 1, agentId: 'agent-2' }))
+  expect(parsed(replied.result)).toMatchObject({ error: 'NOT_FOUND', context: [{ kind: 'fail', seenBy: ['w2'] }] })
+})
+
+test('a board read of a worker carries the context', async () => {
+  const io = ioWith(working())
+  await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'The tokens are in src/theme.css.', agentId: 'agent-1' }))
+  const view = parsed((await serveTool(io, call({ tool: 'mcp__meld__board', agentId: 'agent-2' }))).result)
+  expect(view).toMatchObject({ context: [{ kind: 'fact', by: 'w1', text: 'The tokens are in src/theme.css.', seenBy: ['w2'] }] })
+})
+
+test('the board read of the main session carries the context, and adds no reader to seenBy', async () => {
+  const io = ioWith(working())
+  await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'The tokens are in src/theme.css.', agentId: 'agent-1' }))
+  const view = parsed((await serveTool(io, call({ tool: 'mcp__meld__board' }))).result)
+  expect(view).toMatchObject({ context: [{ kind: 'fact', by: 'w1', seenBy: [] }] })
+  expect(io.current?.context[0]?.seenBy).toEqual([])
+})
+
+test('the commit of a share is kept as the full id that its revision names in the folder of the worker', async () => {
+  const io = ioWith(working())
+  io.answers['git rev-parse --verify --quiet HEAD^{commit}'] = FULL
+  await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'add() is in src/math.js.', commit: 'HEAD', agentId: 'agent-1' }))
+  expect(io.current?.context[0]?.commit).toBe(FULL)
+  expect(io.cwds['git rev-parse --verify --quiet HEAD^{commit}']).toBe('/tmp/meld/r1/w1')
+})
+
+test('a share with a commit that does not exist is refused, and its reply carries the context', async () => {
+  const io = ioWith(working())
+  io.failing = ['git rev-parse --verify']
+  const replied = await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'add() is in src/math.js.', commit: 'fff0000', agentId: 'agent-1' }))
+  expect(parsed(replied.result)).toMatchObject({ error: 'NOT_FOUND', context: [] })
+  expect(io.current?.context).toEqual([])
+})
+
+test('a share with no commit asks the version control nothing', async () => {
+  const io = ioWith(working())
+  await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'add() is in src/math.js.', agentId: 'agent-1' }))
+  expect(io.commands).toEqual([])
+})
+
+test('finish_task shows its interfaces and the work it left in the context, with the commit of the task', async () => {
+  const io = ioWith(runOf(claimTask(runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }] }, NOW)), 'w1', 1, 1, NOW)))
+  io.answers['git rev-parse --verify --quiet HEAD^{commit}'] = FULL
+  const done = { task: 1, version: 2, commit: 'HEAD', summary: 'Tokens in src/theme.ts', interfaces: 'tokens(): Record<string, string>', unfinished: 'The dark values' }
+  const replied = await serveTool(io, call({ tool: 'mcp__meld__finish_task', ...done, agentId: 'agent-1' }))
+  expect(parsed(replied.result)).toMatchObject({
+    ok: true,
+    context: [
+      { kind: 'fact', by: 'w1', text: '#1 unfinished: The dark values', commit: FULL },
+      { kind: 'interface', by: 'w1', text: '#1: tokens(): Record<string, string>', commit: FULL },
+    ],
+  })
+})
+
 test('a final commit that does not exist is refused', async () => {
   const io = ioWith(runOf(takeIntegration(working(), 'w2', NOW)))
   io.failing = ['git rev-parse --verify']
@@ -597,4 +685,54 @@ test('each tool call of a worker counts, the board tools too', async () => {
   await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
   await serveTool(io, call({ tool: 'mcp__meld__board', agentId: 'agent-2' }))
   expect(io.current?.workers.map(worker => worker.calls)).toEqual([0, 3])
+})
+
+const BOARD_FILE = '/tmp/meld/r1/board.json'
+
+function mirrorOf(io: FakeIo, path = BOARD_FILE): Run | undefined {
+  const text = io.files[path]
+  return text === undefined ? undefined : (JSON.parse(text) as Run)
+}
+
+test('a new run mirrors its board to board.json in the folder of the run', async () => {
+  const io = ioWith(null)
+  await startRun(io, '/repo', { request: 'Add a dark theme', agents: TWO, vcs: 'git' })
+  expect(mirrorOf(io, `/tmp/meld/${ID}/board.json`)).toEqual(io.current ?? undefined)
+})
+
+test('a share mirrors the board with its context', async () => {
+  const io = ioWith(working())
+  await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'The tokens are in src/theme.css.', agentId: 'agent-1' }))
+  expect(mirrorOf(io)?.context.map(entry => [entry.kind, entry.by, entry.text])).toEqual([['fact', 'w1', 'The tokens are in src/theme.css.']])
+})
+
+test('the mirror holds the board of the newest write', async () => {
+  const io = ioWith(working())
+  await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'The tokens are in src/theme.css.', agentId: 'agent-1' }))
+  await serveTool(io, call({ tool: 'mcp__meld__board', agentId: 'agent-2' }))
+  expect(mirrorOf(io)?.context[0]?.seenBy).toEqual(['w2'])
+  expect(mirrorOf(io)).toEqual(io.current ?? undefined)
+})
+
+test('a guarded tool call and a steer mirror the board', async () => {
+  const io = ioWith(working())
+  await guardCall(io, call({ tool: 'Bash', command: 'pnpm test', agentId: 'agent-1' }))
+  expect(mirrorOf(io)?.workers[0]?.activity).toBe('Bash: pnpm test')
+  await steerRun(io, 'Use the brand colours')
+  expect(mirrorOf(io)?.revision).toBe(2)
+})
+
+test('a mirror that cannot be written does not fail the board call', async () => {
+  const io = ioWith(working())
+  io.unwritable = [BOARD_FILE]
+  const replied = await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'The tokens are in src/theme.css.', agentId: 'agent-1' }))
+  expect(parsed(replied.result)).toMatchObject({ ok: true })
+  expect(io.current?.context).toHaveLength(1)
+})
+
+test('deliver writes no mirror into the folder that it removed', async () => {
+  const io = ioWith(runOf(declareFinal(runOf(takeIntegration(working(), 'w2', NOW)), 'w2', FULL, 'Done', NOW)))
+  await deliver(io)
+  expect(io.current?.state).toBe('delivered')
+  expect(io.files[BOARD_FILE]).toBeUndefined()
 })

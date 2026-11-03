@@ -1,8 +1,8 @@
 import type { ElementTable, RenderSurface } from 'claude-code'
 
-import type { AgentSpec, Entry, Facts, LaneFacts, PaneView, ResultFacts, Run, RunState, Worker, WorkerState } from '../types'
+import type { AgentSpec, ContextKind, Entry, Facts, LaneFacts, PaneView, ResultFacts, Run, RunState, Worker, WorkerState } from '../types'
 import { deliver, discard, LEADING_CD, stopAll, stopOne } from './actions'
-import { NOT_STARTED } from './board'
+import { currentContext, NOT_STARTED } from './board'
 import { STEER_PRESETS } from './contract'
 import { agentColor, BAR_HEIGHT, BAR_WIDTH, LANE_HEIGHT, LANE_WIDTH, laneAlt, laneGlyphs, laneSvg, STATUS, taskBarSvg } from './drawing'
 import type { TaskCounts } from './drawing'
@@ -28,6 +28,10 @@ const STATE_TONE: Record<RunState, string> = {
   stopped: 'error',
 }
 const WORKER_TONE: Record<WorkerState, string> = { starting: 'warning', working: 'success', idle: 'inactive', stopped: 'error' }
+const KIND_SHAPE: Record<ContextKind, string> = { fact: '■', fail: '✕', interface: '◇' }
+const KIND_TONE: Record<ContextKind, string | undefined> = { fact: undefined, fail: 'error', interface: 'suggestion' }
+const CONTEXT_ROWS = 5
+const CONTEXT_WORDS = 12
 const SLOW_MS = 120_000
 const STUCK_MS = 300_000
 const ACTIVITY_CHARS = 22
@@ -73,6 +77,7 @@ export function paneTree(input: PaneInput) {
       {refusedSection(input, run)}
       {agentsSection(input, run, facts)}
       {tasksSection(input, run)}
+      {contextSection(input, run)}
       {checksSection(input, run)}
       {run.final && resultSection(input, run, facts?.result)}
       {LIVE.has(run.state) && steerSection(input, run)}
@@ -237,6 +242,28 @@ function tasksSection(input: PaneInput, run: Run) {
           </Text>
         ))}
       </Box>
+    </Box>
+  )
+}
+
+/** One line for each of the newest current entries. The cut is in words, so that five lines keep the block under 100 words. */
+function contextSection(input: PaneInput, run: Run) {
+  const { Box, Text } = input.table
+  const entries = currentContext(run, CONTEXT_ROWS)
+  if (!entries.length) return undefined
+  return (
+    <Box key="sec-context" flexDirection="column" gap="xs">
+      <Text bold>Shared context</Text>
+      {entries.map(entry => (
+        <Box key={`context-${entry.id}`} flexDirection="row" gap="sm">
+          <Text color={KIND_TONE[entry.kind]}>{KIND_SHAPE[entry.kind]}</Text>
+          <Text color={agentColor(run.workers.findIndex(worker => worker.id === entry.by)).light}>{entry.by}</Text>
+          <Text dimColor wrap="truncate-end">
+            {cutWords(entry.text, CONTEXT_WORDS)}
+          </Text>
+          <Text dimColor>{entry.seenBy.length} read</Text>
+        </Box>
+      ))}
     </Box>
   )
 }

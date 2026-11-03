@@ -8,12 +8,16 @@ import {
   bindWorker,
   boardFor,
   claimTask,
+  CONTEXT_TEXT_LIMIT,
   countNudge,
+  currentContext,
   declareFinal,
   finishTask,
   isFailure,
   markBriefed,
+  passContext,
   releaseTask,
+  shareEntry,
   startRun,
   steer,
   stopRun,
@@ -49,6 +53,12 @@ function workingThree(): Run {
 
 function withTask(): Run {
   return runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Theme tokens', detail: 'CSS variables' }] }, NOW))
+}
+
+function withFacts(count: number): Run {
+  let run = working()
+  for (let index = 1; index <= count; index++) run = runOf(shareEntry(run, 'w1', { kind: 'fact', text: `Fact ${index}` }, NOW))
+  return run
 }
 
 test('a new run waits for its workers', () => {
@@ -233,4 +243,111 @@ test('claims and finished tasks do not change the task list version', () => {
   const claimed = runOf(claimTask(withTask(), 'w1', 1, 1, NOW))
   const done = runOf(finishTask(claimed, 'w1', 1, 2, 'def5678', 'Tokens added', NOW))
   expect(done.taskList).toBe(1)
+})
+
+test('a new run has no shared context', () => {
+  expect(fresh().context).toEqual([])
+  expect(boardFor(working(), 'w1').view.context).toEqual([])
+})
+
+test('a shared entry keeps its kind, author, text, commit and files, and starts with no readers', () => {
+  const shared = shareEntry(working(), 'w2', { kind: 'interface', text: 'toggleTheme(): void in theme.ts', commit: 'def5678', files: ['src/theme.ts'] }, NOW)
+  expect(shared).toMatchObject({ value: { id: 1, kind: 'interface', by: 'w2', text: 'toggleTheme(): void in theme.ts', commit: 'def5678', files: ['src/theme.ts'], seenBy: [] } })
+})
+
+test('every worker sees the shared entries in its board read, newest first', () => {
+  const first = runOf(shareEntry(working(), 'w1', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW))
+  const second = runOf(shareEntry(first, 'w2', { kind: 'fail', text: 'A CSS filter inverts the images' }, NOW))
+  expect(boardFor(second, 'w1').view.context.map(entry => [entry.id, entry.by, entry.text])).toEqual([
+    [2, 'w2', 'A CSS filter inverts the images'],
+    [1, 'w1', 'The theme lives in theme.css'],
+  ])
+})
+
+test('a board read shows an entry with its id, kind, author, text, commit, files and readers', () => {
+  const shared = runOf(shareEntry(working(), 'w1', { kind: 'fact', text: 'The theme lives in theme.css', commit: 'def5678', files: ['src/theme.css'] }, NOW))
+  const [entry] = JSON.parse(JSON.stringify(boardFor(shared, 'w2').view.context)) as object[]
+  expect(Object.keys(entry ?? {}).sort()).toEqual(['by', 'commit', 'files', 'id', 'kind', 'seenBy', 'text'])
+})
+
+test('a share is news for the other workers', () => {
+  const shared = runOf(shareEntry(working(), 'w1', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW))
+  expect(boardFor(shared, 'w2').view.news.map(entry => [entry.kind, entry.text])).toEqual([['share', 'shared fact 1']])
+  expect(boardFor(shared, 'w1').view.news).toHaveLength(0)
+})
+
+test('an entry that a newer entry replaces is not current', () => {
+  const first = runOf(shareEntry(working(), 'w1', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW))
+  const fixed = runOf(shareEntry(first, 'w2', { kind: 'fact', text: 'The theme lives in tokens.css', replaces: 1 }, NOW))
+  expect(currentContext(fixed).map(entry => entry.id)).toEqual([2])
+  expect(boardFor(fixed, 'w1').view.context.map(entry => entry.replaces)).toEqual([1])
+})
+
+test('a share that replaces an entry that does not exist is refused', () => {
+  expect(shareEntry(working(), 'w1', { kind: 'fact', text: 'The theme lives in tokens.css', replaces: 4 }, NOW)).toMatchObject({ error: 'NOT_FOUND' })
+})
+
+test('the context holds the 20 newest current entries', () => {
+  const context = currentContext(withFacts(25))
+  expect(context).toHaveLength(20)
+  expect(context[0]?.text).toBe('Fact 25')
+  expect(context.at(-1)?.text).toBe('Fact 6')
+})
+
+test('a share with a kind other than fact, fail or interface is refused', () => {
+  expect(shareEntry(working(), 'w1', { kind: 'idea', text: 'Use a CSS filter' }, NOW)).toMatchObject({ error: 'INVALID' })
+})
+
+test('a share with an empty text is refused', () => {
+  expect(shareEntry(working(), 'w1', { kind: 'fact', text: '  ' }, NOW)).toMatchObject({ error: 'INVALID' })
+})
+
+test('a share holds at most 500 characters of text', () => {
+  expect(CONTEXT_TEXT_LIMIT).toBe(500)
+  expect(shareEntry(working(), 'w1', { kind: 'fact', text: 'a'.repeat(500) }, NOW)).toMatchObject({ value: { id: 1 } })
+  expect(shareEntry(working(), 'w1', { kind: 'fact', text: 'a'.repeat(501) }, NOW)).toMatchObject({ error: 'INVALID' })
+})
+
+test('a stopped run refuses a share', () => {
+  expect(shareEntry(stopRun(working(), NOW), 'w1', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW)).toMatchObject({ error: 'RUN_ENDED' })
+})
+
+test('a board read adds its reader to seenBy of each entry one time, and does not add the author', () => {
+  const shared = runOf(shareEntry(workingThree(), 'w1', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW))
+  const byAuthor = boardFor(shared, 'w1').run
+  const twice = boardFor(boardFor(byAuthor, 'w2').run, 'w2')
+  expect(twice.view.context[0]?.seenBy).toEqual(['w2'])
+  expect(boardFor(twice.run, 'w3').run.context[0]?.seenBy).toEqual(['w2', 'w3'])
+})
+
+test('the context of any board reply counts its reader in seenBy', () => {
+  const shared = runOf(shareEntry(working(), 'w1', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW))
+  const passed = passContext(shared, 'w2')
+  expect(passed.context[0]?.seenBy).toEqual(['w2'])
+  expect(passed.run.context[0]?.seenBy).toEqual(['w2'])
+})
+
+test('a read counts no reader for an entry that it does not show', () => {
+  const read = passContext(withFacts(21), 'w2').run
+  expect(read.context[0]?.seenBy).toEqual([])
+  expect(read.context[1]?.seenBy).toEqual(['w2'])
+})
+
+test('a finished task shares its interfaces and what it left unfinished, with its commit', () => {
+  const claimed = runOf(claimTask(withTask(), 'w1', 1, 1, NOW))
+  const done = runOf(finishTask(claimed, 'w1', 1, 2, 'def5678', 'Tokens added', NOW, { interfaces: '--bg and --fg in theme.css', unfinished: 'The print styles' }))
+  expect(currentContext(done).map(entry => [entry.kind, entry.by, entry.text, entry.commit])).toEqual([
+    ['fact', 'w1', '#1 unfinished: The print styles', 'def5678'],
+    ['interface', 'w1', '#1: --bg and --fg in theme.css', 'def5678'],
+  ])
+})
+
+test('a finished task with no interfaces and nothing unfinished shares nothing', () => {
+  const claimed = runOf(claimTask(withTask(), 'w1', 1, 1, NOW))
+  expect(runOf(finishTask(claimed, 'w1', 1, 2, 'def5678', 'Tokens added', NOW, { interfaces: ' ', unfinished: '' })).context).toEqual([])
+})
+
+test('a finish with an interfaces text of more than 500 characters is refused', () => {
+  const claimed = runOf(claimTask(withTask(), 'w1', 1, 1, NOW))
+  expect(finishTask(claimed, 'w1', 1, 2, 'def5678', 'Tokens added', NOW, { interfaces: 'a'.repeat(501) })).toMatchObject({ error: 'INVALID' })
 })
