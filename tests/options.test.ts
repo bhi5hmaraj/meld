@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { formatStart, parseStart, WORKER_TYPE } from '../hooks/options'
+import { agentsOf, formatStart, parseStart, WORKER_TYPE } from '../hooks/options'
 
 test('a task alone starts two meld workers and lets meld choose the version control', () => {
   expect(parseStart('Add a dark theme')).toEqual({
@@ -36,6 +36,26 @@ test('the model option fills the list items that name no model', () => {
   expect(parseStart('--agents Explore,general-purpose@haiku --model opus Add a dark theme')).toMatchObject({
     agents: [{ type: 'Explore', model: 'opus' }, { type: 'general-purpose', model: 'haiku' }],
   })
+})
+
+test('the model inherit gives workers that name no model', () => {
+  expect(parseStart('--agents 3 --model inherit Add a dark theme')).toStrictEqual({
+    request: 'Add a dark theme',
+    agents: [{ type: WORKER_TYPE }, { type: WORKER_TYPE }, { type: WORKER_TYPE }],
+    vcs: 'auto',
+  })
+})
+
+test('the model inherit keeps the models that a list names', () => {
+  expect(parseStart('--agents opus,Explore,general-purpose@haiku --model inherit Add a dark theme')).toStrictEqual({
+    request: 'Add a dark theme',
+    agents: [{ type: WORKER_TYPE, model: 'opus' }, { type: 'Explore' }, { type: 'general-purpose', model: 'haiku' }],
+    vcs: 'auto',
+  })
+})
+
+test('a start on the model inherit names no model in the options of /meld', () => {
+  expect(formatStart({ request: 'Add a dark theme', agents: agentsOf(2, 'inherit'), vcs: 'auto' })).toBe('--agents meld:worker,meld:worker --vcs auto Add a dark theme')
 })
 
 test('the version control can be chosen', () => {

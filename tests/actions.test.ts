@@ -104,6 +104,32 @@ test('a worker whose spawn is refused is stopped, and the run says why', async (
   expect(result.text).toContain('No worker started: the host limit')
 })
 
+test('a run of three works when the third spawn is refused, and says why one did not start', async () => {
+  const io = ioWith(null)
+  io.spawnDenies['meld w3'] = 'the host limit'
+  const result = await startRun(io, '/repo', { request: 'Add a dark theme', agents: [WORKER, WORKER, WORKER], vcs: 'git' })
+  expect(io.current?.state).toBe('working')
+  expect(io.current?.workers.map(worker => [worker.id, worker.state, worker.agentId])).toEqual([
+    ['w1', 'working', 'spawned-1'],
+    ['w2', 'working', 'spawned-2'],
+    ['w3', 'stopped', undefined],
+  ])
+  expect(io.current?.workers[2]?.activity).toBe('not started: the host limit')
+  expect(io.current?.log.map(entry => entry.text)).toContain('w3 did not start: the host limit')
+  expect(result.text).toBe(`Run ${ID}: 3 workers on git, from commit ${HEAD.slice(0, 7)}. 1 did not start: the host limit.`)
+})
+
+test('a worker whose spawn was refused does not start again, and a worker that started leads', async () => {
+  const io = ioWith(null)
+  io.spawnDenies['meld w1'] = 'the host limit'
+  await startRun(io, '/repo', { request: 'Add a dark theme', agents: [WORKER, WORKER, WORKER], vcs: 'git' })
+  await markWorker(io, 'spawned-2', 'idle')
+  await markWorker(io, 'spawned-3', 'idle')
+  await restartIdleWorkers(io)
+  expect(io.current?.workers.map(worker => worker.agentId)).toEqual([undefined, 'spawned-4', 'spawned-3'])
+  expect(io.spawned[3]?.prompt).toContain('There are no tasks yet')
+})
+
 test('a run starts in another repository when the request begins with its path', async () => {
   const io = ioWith(null)
   await startRun(io, '/repo', { request: '/elsewhere Add a dark theme', agents: TWO, vcs: 'git' })
@@ -411,6 +437,38 @@ test('the main session steers the run with the steer tool', async () => {
   expect(parsed(replied.result)).toEqual({ text: 'All 3 workers get revision 2.' })
 })
 
+test('a restart skips a stopped worker and offers the task that it had claimed', async () => {
+  const planned = runOf(addTasks(working(3), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }, { title: 'Docs' }] }, NOW))
+  const io = ioWith(runOf(claimTask(planned, 'w2', 1, 1, NOW)))
+  await stopOne(io, 'w2')
+  await markWorker(io, 'agent-1', 'idle')
+  await markWorker(io, 'agent-2', 'idle')
+  await markWorker(io, 'agent-3', 'idle')
+  await restartIdleWorkers(io)
+  expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w1', 'meld w3'])
+  expect(io.spawned[0]?.prompt).toContain('These tasks are open: #1 Tokens; #2 Docs')
+})
+
+test('when the integrator is stopped, a live worker starts again to lead', async () => {
+  const io = ioWith(runOf(takeIntegration(working(3), 'w1', NOW)))
+  await stopOne(io, 'w1')
+  await markWorker(io, 'agent-2', 'idle')
+  await markWorker(io, 'agent-3', 'idle')
+  await restartIdleWorkers(io)
+  expect(io.current?.integrator).toBeUndefined()
+  expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w2'])
+})
+
+test('a stopped worker stays stopped when its turn ends, and no restart comes while a live worker works', async () => {
+  const io = ioWith(working(3))
+  await stopOne(io, 'w2')
+  await markWorker(io, 'agent-1', 'idle')
+  await markWorker(io, 'agent-2', 'idle')
+  await restartIdleWorkers(io)
+  expect(io.current?.workers.map(worker => worker.state)).toEqual(['idle', 'stopped', 'working'])
+  expect(io.spawned).toHaveLength(0)
+})
+
 test('the tokens of each turn add up on the worker', async () => {
   const io = ioWith(working())
   await markWorker(io, 'agent-2', 'idle', 1500)
@@ -468,6 +526,13 @@ test('the start tool starts a run of the workers it names, in the folder of the 
   const replied = await serveTool(io, call({ tool: 'mcp__meld__start', request: 'Add a dark theme', agents: 'opus,Explore,haiku', vcs: 'git' }), '/repo')
   expect(parsed(replied.result)).toEqual({ text: `Run ${ID}: 3 workers on git, from commit ${HEAD.slice(0, 7)}.` })
   expect(io.spawned.map(spawn => [spawn.subagentType, spawn.model])).toEqual([['meld:worker', 'opus'], ['Explore', undefined], ['meld:worker', 'haiku']])
+})
+
+test('the start tool with the model inherit spawns each worker with no model', async () => {
+  const io = ioWith(null)
+  await serveTool(io, call({ tool: 'mcp__meld__start', request: 'Add a dark theme', agents: '2', model: 'inherit', vcs: 'git' }), '/repo')
+  expect(io.spawned.map(spawn => [spawn.subagentType, spawn.model])).toEqual([['meld:worker', undefined], ['meld:worker', undefined]])
+  expect(io.current?.workers.map(worker => worker.agent)).toStrictEqual([{ type: 'meld:worker' }, { type: 'meld:worker' }])
 })
 
 test('the start tool refuses options that /meld refuses', async () => {

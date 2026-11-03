@@ -13,6 +13,7 @@ export class FakeIo implements Io {
   missing: string[] = []
   dirty = false
   spawnDeny: string | undefined = undefined
+  spawnDenies: Record<string, string> = {}
   commands: string[] = []
   cwds: Record<string, string> = {}
   files: Record<string, string> = {}
@@ -85,7 +86,8 @@ export class FakeIo implements Io {
 
   async spawn(args: SpawnArgs): Promise<Spawned> {
     this.spawned.push(args)
-    return this.spawnDeny ? { deny: this.spawnDeny } : { agentId: `spawned-${this.spawned.length}` }
+    const deny = this.spawnDenies[args.description] ?? this.spawnDeny
+    return deny ? { deny } : { agentId: `spawned-${this.spawned.length}` }
   }
 
   async command(name: string, args: string): Promise<{ text?: string }> {
