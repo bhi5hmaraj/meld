@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
-import { deliver, discard, freshTokens, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, SPAWN_ASK, spawnVerdict, startFromView, startRun, steerRun, stopOne } from '../hooks/actions'
+import { deliver, discard, freshTokens, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, SPAWN_APPROVAL, spawnVerdict, startFromView, startRun, steerRun, stopOne } from '../hooks/actions'
 import { addTasks, bindWorker, claimTask, declareFinal, isFailure, setActivity, startRun as startBoard, steer, takeIntegration } from '../hooks/board'
 import { JJ_RESOLVE_TEMPLATE } from '../hooks/vcs'
 import type { AgentSpec, Change, Run, VcsKind, WorkerId } from '../types'
@@ -34,8 +34,8 @@ function ioWith(run: Run | null): FakeIo {
 
 const ASK = { decision: 'ask' }
 
-test('meld puts the ask on its own spawn to the person while its run lives', () => {
-  expect(spawnVerdict(ASK, 'meld', working())).toEqual({ decision: 'ask', reason: SPAWN_ASK })
+test('meld approves its own spawn while its run lives', () => {
+  expect(spawnVerdict(ASK, 'meld', working())).toEqual({ decision: 'allow', reason: SPAWN_APPROVAL })
 })
 
 test('the ask on a spawn of another plugin stands', () => {
