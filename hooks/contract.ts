@@ -12,6 +12,7 @@ export const TOOL = {
   check: 'mcp__meld__check',
   integrate: 'mcp__meld__integrate',
   finish: 'mcp__meld__finish',
+  start: 'mcp__meld__start',
 } as const
 
 /** The instructions behind the steer buttons of the pane: each a fixed text, so a press needs no typing. */
@@ -32,6 +33,21 @@ const TASK_VERSION = {
 const COMMIT = { type: 'string', description: 'A revision that names one commit in your folder: HEAD or a hash for git, @- or a commit id for jj.' }
 
 export const TOOL_SPECS: ToolSpec[] = [
+  {
+    name: 'start',
+    description:
+      'Start a meld run when the person asks for one: several agents work on the request at the same time, each in its own workspace, and the person watches and steers them in the meld pane. Only the main session starts a run.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        request: { type: 'string', description: 'The task, in the words of the person. Begin it with the path of another repository to work there.' },
+        agents: { type: 'string', description: 'A count from 1 to 8, or a list split by commas: a model (opus), an agent type (Explore), or type@model. Default 2.' },
+        model: { type: 'string', description: 'The model of the agents that name none.' },
+        vcs: { type: 'string', enum: ['auto', 'jj', 'git'], description: 'auto (the default) uses jj when it is installed, else git.' },
+      },
+      required: ['request'],
+    },
+  },
   {
     name: 'board',
     description:

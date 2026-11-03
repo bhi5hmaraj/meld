@@ -5,6 +5,7 @@ import * as board from './board'
 import { TOOL, wakeText, workerPrompt, workerRules } from './contract'
 import { headCommit, isDirty, repoRoot } from './git'
 import type { Io, Spawned } from './io'
+import { parseStart } from './options'
 import type { StartOptions } from './options'
 import { detectVcs, vcsFor } from './vcs'
 import type { Prepared } from './vcs'
@@ -132,9 +133,13 @@ async function workerWithWait(io: Io, agentId: string | undefined): Promise<Work
   return undefined
 }
 
-export async function serveTool(io: Io, e: ToolCallInput): Promise<ToolCallResult> {
+export async function serveTool(io: Io, e: ToolCallInput, cwd = ''): Promise<ToolCallResult> {
   const tool = String(e.tool)
   const worker = await workerWithWait(io, e.agentId)
+  if (tool === TOOL.start) {
+    if (e.agentId !== undefined) return reply({ error: 'NOT_ALLOWED', message: 'Only the main session starts a meld run.' })
+    return reply(await startFromTool(io, e as unknown as Args, cwd))
+  }
   if (!worker) return reply(tool === TOOL.board ? await overview(io) : { error: 'NOT_WORKER', message: 'The meld tools are for the meld workers.' })
   const now = await io.now()
   if (tool === TOOL.board) return reply(await readBoard(io, worker.id, now))
@@ -154,6 +159,13 @@ export async function serveTool(io: Io, e: ToolCallInput): Promise<ToolCallResul
   })
   await afterChange(io, worker.id, tool)
   return reply(answer)
+}
+
+/** The start tool reads its fields as /meld reads its options, so both refuse the same input. */
+async function startFromTool(io: Io, args: Args, cwd: string): Promise<unknown> {
+  const flags = (['agents', 'model', 'vcs'] as const).filter(name => text(args[name])).map(name => `--${name} ${text(args[name])}`)
+  const options = parseStart([...flags, text(args.request)].join(' '))
+  return 'error' in options ? options : startRun(io, cwd, options)
 }
 
 /** A plugin tool answers the model with text: the JSON of the value. */

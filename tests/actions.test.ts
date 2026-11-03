@@ -287,3 +287,23 @@ test('facts show the commits of each worker, and the change of a ready run', asy
   expect(io.facts?.lanes.map(lane => lane.commits.length)).toEqual([0, 1])
   expect(io.facts?.result).toMatchObject({ commit: FULL, fileCount: 1, added: 2 })
 })
+
+test('the main session starts a run with the start tool', async () => {
+  const io = ioWith(null)
+  const replied = await serveTool(io, call({ tool: 'mcp__meld__start', request: 'Add a dark theme', agents: '3', vcs: 'git' }), '/repo')
+  expect(parsed(replied.result)).toEqual({ text: `Run ${ID}: 3 workers on git, from commit ${HEAD.slice(0, 7)}.` })
+  expect(io.current?.workers).toHaveLength(3)
+})
+
+test('the start tool refuses options that /meld refuses', async () => {
+  const io = ioWith(null)
+  const replied = await serveTool(io, call({ tool: 'mcp__meld__start', request: 'Add a dark theme', agents: '12' }), '/repo')
+  expect(parsed(replied.result)).toEqual({ error: 'meld runs 1 to 8 workers.' })
+  expect(io.current).toBeNull()
+})
+
+test('a worker cannot start a run', async () => {
+  const io = ioWith(working())
+  const replied = await serveTool(io, call({ tool: 'mcp__meld__start', request: 'More', agentId: 'agent-1' }), '/repo')
+  expect(parsed(replied.result)).toMatchObject({ error: 'NOT_ALLOWED' })
+})

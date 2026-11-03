@@ -113,7 +113,7 @@ export const register: Register = on => {
       toast: text => $.ui.toast(text),
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
     }
-    if (String(e.tool).startsWith(MELD_TOOL)) return serveTool(io, e)
+    if (String(e.tool).startsWith(MELD_TOOL)) return serveTool(io, e, sessionCwd)
     const deny = await guardCall(io, e)
     return deny ? { deny } : next(e)
   }).catch(($, e, next) =>
