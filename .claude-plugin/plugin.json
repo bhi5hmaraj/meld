@@ -1,0 +1,8 @@
+{
+  "name": "meld",
+  "version": "0.1.0",
+  "description": "Two Claude Code agents work on one task in their own git worktrees, share a task board, and meld their work into one commit. You watch and steer them in a pane.",
+  "author": { "name": "Bhishmaraj" },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

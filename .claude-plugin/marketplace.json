@@ -1,0 +1,14 @@
+{
+  "name": "meld",
+  "owner": {
+    "name": "Bhishmaraj"
+  },
+  "description": "meld: two Claude Code agents on one task, each in its own git worktree, with a pane to watch and steer them.",
+  "plugins": [
+    {
+      "name": "meld",
+      "source": "./",
+      "description": "Two Claude Code agents work on one task in their own git worktrees and meld their work into one commit, with a pane to watch and steer them."
+    }
+  ]
+}
