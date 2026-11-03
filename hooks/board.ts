@@ -16,6 +16,7 @@ import type {
   WorkerId,
   WorkerState,
 } from '../types'
+import type { AgentState } from './io'
 
 const LOG_LIMIT = 500
 const ACTIVE = new Set(['starting', 'working'])
@@ -247,6 +248,19 @@ export function boardFor(run: Run, by: WorkerId): { run: Run; view: BoardView } 
   }
   const seen: Worker = { ...you, seenRevision: run.revision, seenEntry: run.log.at(-1)?.id ?? 0 }
   return { run: replaceWorker(run, seen), view }
+}
+
+/**
+ * Working workers whose agents ended are idle: meld saw no end of their turn. An agent that the engine no longer lists
+ * counts as ended only when its worker did nothing since `before`, as a new agent may not be listed yet.
+ */
+export function settleEnded(run: Run, agents: ReadonlyMap<string, AgentState>, before: number, now: number): Run {
+  const ended = run.workers.filter(worker => worker.state === 'working' && worker.agentId && hasEnded(agents.get(worker.agentId), worker.activityAt < before))
+  return ended.reduce((current, worker) => setWorkerState(current, worker.id, 'idle', now), run)
+}
+
+function hasEnded(state: AgentState | undefined, isQuiet: boolean): boolean {
+  return state === 'ended' || (state === undefined && isQuiet)
 }
 
 export function countNudge(run: Run): Run {

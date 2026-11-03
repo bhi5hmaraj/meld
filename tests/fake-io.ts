@@ -1,4 +1,4 @@
-import type { Io, ProcessResult, SpawnArgs, Spawned } from '../hooks/io'
+import type { AgentState, Io, ProcessResult, SpawnArgs, Spawned } from '../hooks/io'
 import type { Facts, Run } from '../types'
 
 export const HEAD = 'abc1234def5678abc1234def5678abc1234def56'
@@ -21,6 +21,7 @@ export class FakeIo implements Io {
   sent: string[] = []
   toasts: string[] = []
   usd: number | undefined = undefined
+  agentStates: Map<string, AgentState> | undefined = undefined
 
   async run(argv: string[], cwd: string): Promise<ProcessResult> {
     const command = argv.join(' ')
@@ -54,6 +55,10 @@ export class FakeIo implements Io {
 
   async cost(): Promise<number | undefined> {
     return this.usd
+  }
+
+  async agents(): Promise<Map<string, AgentState> | undefined> {
+    return this.agentStates
   }
 
   async read(): Promise<Run | null> {

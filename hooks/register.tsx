@@ -1,9 +1,9 @@
 import { atom, read, update } from 'claude-code'
-import type { Register } from 'claude-code'
+import type { AgentStatus, Register } from 'claude-code'
 
-import { freshTokens, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, startRun, steerRun, stopAll } from './actions'
-import { TOOL_SPECS, WORKER_SYSTEM } from './contract'
-import type { Io } from './io'
+import { freshTokens, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, startFromView, startRun, steerRun, stopAll } from './actions'
+import { STEER_PRESETS, TOOL_SPECS, WORKER_SYSTEM } from './contract'
+import type { AgentState, Io } from './io'
 import { parseStart, WORKER_TYPE } from './options'
 import { DEFAULT_VIEW, paneTree } from './pane'
 
@@ -13,18 +13,40 @@ const runRef = atom({ plugin: 'meld', key: 'run' } as const, null, { shape: 'run
 const factsRef = atom({ plugin: 'meld', key: 'facts' } as const, null, { shape: 'facts-1' })
 const viewRef = atom({ plugin: 'meld', key: 'view' } as const, null, { shape: 'view-1' })
 const PROCESS_TIMEOUT_MS = 120_000
-const BEAT_MS = 3000
+const FACTS_MS = 3000
+const BOARD_TOOLS = [
+  'mcp__meld__board',
+  'mcp__meld__add_tasks',
+  'mcp__meld__claim',
+  'mcp__meld__release',
+  'mcp__meld__finish_task',
+  'mcp__meld__note',
+  'mcp__meld__check',
+  'mcp__meld__integrate',
+  'mcp__meld__finish',
+] as const
+const ENDED_AGENT = new Set<AgentStatus>(['completed', 'failed', 'killed'])
+const START_KEY = 'start'
+const PRESS_KEYS = [START_KEY, ...STEER_PRESETS.map(preset => `preset-${preset.key}`)]
 
 let sessionCwd = ''
-let beating = false
+let refreshing = false
+
+function stateOf(status: AgentStatus): AgentState {
+  return ENDED_AGENT.has(status) ? 'ended' : 'live'
+}
 
 /**
  * Each hook builds its own Io below: a hooks module spells `$` only at its call sites, never passes it on.
  *
  * An agent that a hook spawns runs under that hook and skips it. So a hook that spawns workers never serves them: the
  * start, steer and stop tools of the main session have a hook of their own, the board another, and the guard of every
- * other tool a third. The Start button of the pane runs /meld, which the command hook serves. Only the clock of
- * session.start starts workers again: the end of a turn marks the worker idle, and a steer only messages the running ones.
+ * other tool a third. An agent that a clock or a button closure starts skips every meld hook, so the clock only reads
+ * facts, and a ui.press and a ui.input hook serve the buttons and fields that start agents.
+ *
+ * Restarts start in the main loop alone, from hooks that no worker needs: the end of a turn of the main session (the
+ * engine tells the main session when a worker ends), the steer and the pane. An agent that the turn hook starts skips
+ * it, so meld finds the end of that agent in the agent list of the engine.
  */
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
@@ -33,6 +55,7 @@ export const register: Register = on => {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
       cost: async () => (await $.session.usage()).cost?.usd,
+      agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
       read: () => read($, runRef),
       write: change => update($, runRef, change),
@@ -56,14 +79,13 @@ export const register: Register = on => {
     await $.command.register({ name: 'meld-steer', description: 'Give every meld worker a new instruction', argumentHint: '<instruction>', immediate: true })
     await $.command.register({ name: 'meld-status', description: 'Open the meld pane', immediate: true })
     await $.command.register({ name: 'meld-stop', description: 'Stop the meld workers; their workspaces stay', immediate: true })
-    $.clock.every(BEAT_MS, () => {
-      if (beating) return
-      beating = true
-      void restartIdleWorkers(io)
-        .then(() => refreshFacts(io))
+    $.clock.every(FACTS_MS, () => {
+      if (refreshing) return
+      refreshing = true
+      void refreshFacts(io)
         .catch(() => undefined)
         .finally(() => {
-          beating = false
+          refreshing = false
         })
     })
     return next(e)
@@ -76,6 +98,7 @@ export const register: Register = on => {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
       cost: async () => (await $.session.usage()).cost?.usd,
+      agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
       read: () => read($, runRef),
       write: change => update($, runRef, change),
@@ -107,6 +130,7 @@ export const register: Register = on => {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
       cost: async () => (await $.session.usage()).cost?.usd,
+      agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
       read: () => read($, runRef),
       write: change => update($, runRef, change),
@@ -128,23 +152,14 @@ export const register: Register = on => {
   on(
     'tool.call',
     {
-      tool: [
-        'mcp__meld__board',
-        'mcp__meld__add_tasks',
-        'mcp__meld__claim',
-        'mcp__meld__release',
-        'mcp__meld__finish_task',
-        'mcp__meld__note',
-        'mcp__meld__check',
-        'mcp__meld__integrate',
-        'mcp__meld__finish',
-      ],
+      tool: BOARD_TOOLS,
     },
     async ($, e) => {
       const io: Io = {
         run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
         now: () => $.clock.now(),
         cost: async () => (await $.session.usage()).cost?.usd,
+        agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
         sleep: ms => $.clock.sleep(ms),
         read: () => read($, runRef),
         write: change => update($, runRef, change),
@@ -170,6 +185,7 @@ export const register: Register = on => {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
       cost: async () => (await $.session.usage()).cost?.usd,
+      agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
       read: () => read($, runRef),
       write: change => update($, runRef, change),
@@ -189,11 +205,13 @@ export const register: Register = on => {
     return deny ? { deny } : next(e)
   }).catch(($, e, next) => next(e))
 
+
   on('turn.complete', async ($, e, next) => {
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
       cost: async () => (await $.session.usage()).cost?.usd,
+      agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
       read: () => read($, runRef),
       write: change => update($, runRef, change),
@@ -211,14 +229,17 @@ export const register: Register = on => {
     }
     const completed = await next(e)
     await markWorker(io, e.agentId, 'idle', freshTokens(e.usage))
+    if (e.agentId === undefined) await restartIdleWorkers(io)
     return completed
   })
+
 
   on('ui.render', { component: 'Pane', requestId: 'meld' }, async ($, e) => {
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
       cost: async () => (await $.session.usage()).cost?.usd,
+      agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
       read: () => read($, runRef),
       write: change => update($, runRef, change),
@@ -244,7 +265,62 @@ export const register: Register = on => {
       sessionCost: (await $.session.usage().catch(() => undefined))?.cost?.usd,
       io,
       setView: change => update($, viewRef, view => change(view ?? DEFAULT_VIEW)),
-      start: args => io.command('meld', args),
     })
+  })
+
+  on('ui.press', { plugin: 'meld', element: PRESS_KEYS }, async ($, e) => {
+    const io: Io = {
+      run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
+      now: () => $.clock.now(),
+      cost: async () => (await $.session.usage()).cost?.usd,
+      agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
+      sleep: ms => $.clock.sleep(ms),
+      read: () => read($, runRef),
+      write: change => update($, runRef, change),
+      readFacts: () => read($, factsRef),
+      writeFacts: facts => update($, factsRef, () => facts),
+      writeFile: (path, text) => $.fs.write(path, text),
+      spawn: async args => {
+        const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
+        return { agentId: spawned.agentId, deny: spawned.deny }
+      },
+      command: (name, args) => $.command.run({ command: name, args }),
+      send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+      toast: text => $.ui.toast(text),
+      openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
+    }
+    const preset = STEER_PRESETS.find(one => `preset-${one.key}` === e.element)
+    const view = (await read($, viewRef)) ?? DEFAULT_VIEW
+    io.toast(`meld: ${preset ? await steerRun(io, preset.text) : await startFromView(io, sessionCwd, view)}`)
+    if (!preset && view.task.trim()) await update($, viewRef, current => ({ ...(current ?? DEFAULT_VIEW), task: '' }))
+    return { element: e.element }
+  })
+
+  on('ui.input', { plugin: 'meld', element: ['task', 'steer'] }, async ($, e, next) => {
+    if (e.kind !== 'submit') return next(e)
+    const io: Io = {
+      run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
+      now: () => $.clock.now(),
+      cost: async () => (await $.session.usage()).cost?.usd,
+      agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
+      sleep: ms => $.clock.sleep(ms),
+      read: () => read($, runRef),
+      write: change => update($, runRef, change),
+      readFacts: () => read($, factsRef),
+      writeFacts: facts => update($, factsRef, () => facts),
+      writeFile: (path, text) => $.fs.write(path, text),
+      spawn: async args => {
+        const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
+        return { agentId: spawned.agentId, deny: spawned.deny }
+      },
+      command: (name, args) => $.command.run({ command: name, args }),
+      send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+      toast: text => $.ui.toast(text),
+      openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
+    }
+    const view = (await read($, viewRef)) ?? DEFAULT_VIEW
+    io.toast(`meld: ${e.element === 'steer' ? await steerRun(io, e.value.trim()) : await startFromView(io, sessionCwd, { ...view, task: e.value })}`)
+    if (e.element === 'task' && e.value.trim()) await update($, viewRef, current => ({ ...(current ?? DEFAULT_VIEW), task: '' }))
+    return { element: e.element, value: e.value }
   })
 }

@@ -1,7 +1,7 @@
 import type { ElementTable, RenderSurface } from 'claude-code'
 
 import type { AgentSpec, Entry, Facts, LaneFacts, PaneView, ResultFacts, Run, RunState, Worker, WorkerState } from '../types'
-import { deliver, discard, LEADING_CD, steerRun, stopAll, stopOne } from './actions'
+import { deliver, discard, LEADING_CD, stopAll, stopOne } from './actions'
 import { STEER_PRESETS } from './contract'
 import { agentColor, BAR_HEIGHT, BAR_WIDTH, LANE_HEIGHT, LANE_WIDTH, laneAlt, laneGlyphs, laneSvg, STATUS, taskBarSvg } from './drawing'
 import type { TaskCounts } from './drawing'
@@ -55,8 +55,10 @@ export type PaneInput = {
   /** The dollars the session has spent, where the host keeps a cost ledger. */
   sessionCost?: number
   setView: (change: (view: PaneView) => PaneView) => Promise<unknown>
-  start: (args: string) => Promise<{ text?: string }>
 }
+
+/** The ui.press and ui.input hooks of register.tsx take these presses: an agent that a closure starts would skip every meld hook. */
+const SERVED_BY_HOOK = () => undefined
 
 /** The meld pane: facts the person can check (commits, checks, the diff), and one press for each decision. No block holds more than 100 words. */
 export function paneTree(input: PaneInput) {
@@ -286,12 +288,12 @@ function steerSection(input: PaneInput, run: Run) {
           label={run.state === 'ready' ? 'Ask for changes' : 'Steer all agents'}
           placeholder="One instruction for every agent"
           submitLabel="Send"
-          onSubmit={value => void act(io, () => steerRun(io, value.trim()))}
+          onSubmit={SERVED_BY_HOOK}
         />
       )}
       <Box flexDirection="row" gap="sm" flexWrap="wrap">
         {STEER_PRESETS.map(preset => (
-          <Button key={`preset-${preset.key}`} onPress={() => void act(io, () => steerRun(io, preset.text))}>
+          <Button key={`preset-${preset.key}`} onPress={SERVED_BY_HOOK}>
             {preset.label}
           </Button>
         ))}
@@ -319,14 +321,14 @@ function startSection(input: PaneInput) {
             value={view.task}
             submitLabel="Start"
             onInput={value => void setView(current => ({ ...current, task: value }))}
-            onSubmit={value => void startFromForm(input, value)}
+            onSubmit={SERVED_BY_HOOK}
           />
           <Box flexDirection="row" gap={1} flexWrap="wrap">
             <Select key="agents" label="Agents" value={String(view.agents)} options={AGENT_OPTIONS} onSelect={value => void setView(current => ({ ...current, agents: Number(value) }))} />
             <Select key="model" label="Model" value={view.model} options={MODEL_OPTIONS} onSelect={value => void setView(current => ({ ...current, model: value }))} />
             <Select key="vcs" label="Version control" value={view.vcs} options={VCS_OPTIONS} onSelect={value => void setView(current => ({ ...current, vcs: value as PaneView['vcs'] }))} />
           </Box>
-          <Button key="start" variant="primary" onPress={() => void startFromForm(input, view.task)}>
+          <Button key="start" variant="primary" onPress={SERVED_BY_HOOK}>
             ▶ Start
           </Button>
         </Box>
@@ -335,17 +337,6 @@ function startSection(input: PaneInput) {
       )}
     </Box>
   )
-}
-
-async function startFromForm(input: PaneInput, task: string): Promise<void> {
-  const request = task.trim()
-  if (!request) {
-    input.io.toast('meld: write the task first.')
-    return
-  }
-  const result = await input.start(formatStart({ request, agents: agentsOf(input.view.agents, input.view.model), vcs: input.view.vcs }))
-  input.io.toast(`meld: ${result.text ?? ''}`)
-  await input.setView(current => ({ ...current, task: '' }))
 }
 
 async function act(io: Io, action: () => Promise<string>): Promise<void> {

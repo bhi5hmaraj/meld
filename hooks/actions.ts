@@ -1,11 +1,11 @@
 import type { CommandRunResult, ToolCallInput, ToolCallResult, TurnUsage } from 'claude-code'
 
-import type { BoardView, Change, Facts, NewTask, Run, Task, VcsKind, Worker, WorkerId, WorkerState } from '../types'
+import type { BoardView, Change, Facts, NewTask, PaneView, Run, Task, VcsKind, Worker, WorkerId, WorkerState } from '../types'
 import * as board from './board'
 import { TOOL, wakeText, workerPrompt, workerRules } from './contract'
 import { headCommit, isDirty, repoRoot } from './git'
 import type { Io, Spawned } from './io'
-import { parseStart } from './options'
+import { agentsOf, parseStart } from './options'
 import type { StartOptions } from './options'
 import { detectVcs, vcsFor } from './vcs'
 import type { Prepared } from './vcs'
@@ -18,6 +18,7 @@ const BIND_POLL_MS = 200
 const BIND_POLLS = 100
 const NUDGE_LIMIT = 3
 const STUCK_TOAST = 'meld: three restarts in a row finished no task. Steer the workers or stop the run.'
+const LIVENESS_GRACE_MS = 15_000
 const JJ_MISSING = 'jj 0.40 or newer is not installed. Use --vcs git or --vcs auto.'
 export const LEADING_CD = /^(?:\s*cd\s+\S+\s*(?:&&|;)\s*)+/
 
@@ -25,6 +26,7 @@ type Args = Record<string, unknown>
 type Refused = { error: string; message: string }
 
 let pendingSpawns = 0
+let restarting = false
 
 export async function readRun(io: Io): Promise<Run | null> {
   return (await io.read()) ?? null
@@ -73,6 +75,14 @@ export async function startRun(io: Io, cwd: string, options: StartOptions): Prom
   const notStarted = refused.length ? ` ${refused.length} did not start: ${refused[0]}.` : ''
   const dirty = (await isDirty(io, repo)) ? ' Your uncommitted changes are not in their workspaces.' : ''
   return { text: `Run ${id}: ${workers.length} workers on ${kind}, from commit ${base.slice(0, 7)}.${fallback}${notStarted}${dirty}` }
+}
+
+/** The start form of the pane: its task, number of agents, model and version control. */
+export async function startFromView(io: Io, cwd: string, view: PaneView): Promise<string> {
+  const request = view.task.trim()
+  if (!request) return 'Write the task first.'
+  const started = await startRun(io, cwd, { request, agents: agentsOf(view.agents, view.model), vcs: view.vcs })
+  return started.text ?? ''
 }
 
 /** `/meld /path/to/repo task` works in that repository; a first word that names no repository is part of the task. */
@@ -292,9 +302,9 @@ function tell(io: Io, worker: Worker, message: string): void {
  * The run of an idle worker has ended (the engine drops a spawned agent at its hand-back), so meld starts a new agent
  * for that worker, in its folder, with the step in its prompt.
  */
-async function restart(io: Io, worker: Worker, step: string): Promise<void> {
+async function restart(io: Io, worker: Worker, step: string): Promise<boolean> {
   const run = await readRun(io)
-  if (!run) return
+  if (!run) return false
   pendingSpawns += 1
   try {
     const spawned = await spawnOne(io, run, worker, step)
@@ -302,9 +312,10 @@ async function restart(io: Io, worker: Worker, step: string): Promise<void> {
     const agentId = spawned.agentId
     if (!agentId) {
       io.toast(`meld: ${worker.id} could not start again: ${spawned.deny ?? 'the engine started no agent'}.`)
-      return
+      return false
     }
     await writeRun(io, current => board.restartWorker(current, worker.id, agentId, now))
+    return true
   } finally {
     pendingSpawns = Math.max(0, pendingSpawns - 1)
   }
@@ -371,22 +382,40 @@ type Restart = { worker: Worker; step: string }
  * meld starts a new agent for it when there is work for it: news on the board that it has not read, with an open task
  * or a task of its own; or, with every worker idle, the owners of unfinished tasks, then idle workers for open tasks,
  * else the lead to plan, steer or integrate. Each beat that starts a worker counts; a finished task or a steer resets
- * the count, so after three beats that finish nothing meld stops and tells the person once.
+ * the count, so after three beats that finish nothing meld stops and tells the person once. One beat runs at a time.
  *
- * The clock calls it, not the end of a turn: an agent skips the hook that started it, so an agent started from the
- * turn hook would end with no hook to see it. The clock started in session.start, which no worker needs.
+ * Only hooks that no worker needs call it: an agent skips the hook that started it, and an agent that a clock or a
+ * button closure starts skips every meld hook, the board and the edit guard included.
  */
-export async function restartIdleWorkers(io: Io): Promise<void> {
-  const run = await readRun(io)
-  if (!run || run.state !== 'working' || run.nudges > NUDGE_LIMIT) return
-  const restarts = restartsFor(run)
-  if (!restarts.length) return
-  await writeRun(io, board.countNudge)
-  if (run.nudges === NUDGE_LIMIT) {
-    io.toast(STUCK_TOAST)
-    return
+export async function restartIdleWorkers(io: Io): Promise<WorkerId[]> {
+  if (restarting) return []
+  restarting = true
+  try {
+    await settleEnded(io)
+    const run = await readRun(io)
+    if (!run || run.state !== 'working' || run.nudges > NUDGE_LIMIT) return []
+    const restarts = restartsFor(run)
+    if (!restarts.length) return []
+    await writeRun(io, board.countNudge)
+    if (run.nudges === NUDGE_LIMIT) {
+      io.toast(STUCK_TOAST)
+      return []
+    }
+    const started: WorkerId[] = []
+    for (const { worker, step } of restarts) if (await restart(io, worker, wakeText(step))) started.push(worker.id)
+    return started
+  } finally {
+    restarting = false
   }
-  for (const { worker, step } of restarts) await restart(io, worker, wakeText(step))
+}
+
+async function settleEnded(io: Io): Promise<void> {
+  const run = await readRun(io)
+  if (!run || run.state !== 'working') return
+  const agents = await io.agents()
+  if (!agents) return
+  const now = await io.now()
+  await writeRun(io, current => board.settleEnded(current, agents, now - LIVENESS_GRACE_MS, now))
 }
 
 function restartsFor(run: Run): Restart[] {
@@ -442,8 +471,10 @@ export async function steerRun(io: Io, instruction: string): Promise<string> {
     revision = change.value
     return change.run
   })
+  if (!revision) return outcome
+  await settleEnded(io)
   const run = await readRun(io)
-  if (!revision || !run) return outcome
+  if (!run) return outcome
   const step = wakeText(`The person changed the request (revision ${revision}): ${instruction}`)
   const live = run.workers.filter(worker => worker.state !== 'stopped')
   const running = live.filter(worker => worker.state === 'working')
@@ -451,7 +482,9 @@ export async function steerRun(io: Io, instruction: string): Promise<string> {
   if (running.length === live.length) return `All ${live.length} workers get revision ${revision}.`
   if (running.length) return `Revision ${revision}: ${running.length} running workers get it; the others see it when meld starts them again.`
   if (!live.length) return `Revision ${revision}: no worker is left to take it.`
-  return `Revision ${revision}: every worker has ended, so meld starts them again with it.`
+  const started = await restartIdleWorkers(io)
+  if (!started.length) return `Revision ${revision}: every worker has ended, and meld could not start one again.`
+  return `Revision ${revision}: meld starts ${started.join(', ')} again with it.`
 }
 
 export async function stopAll(io: Io): Promise<string> {

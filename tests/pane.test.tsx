@@ -163,6 +163,39 @@ test('a preset button steers every live agent', async ($, on) => {
   await ui.unmount()
 })
 
+test('Enter in the steer field steers every live agent', async ($, on) => {
+  const state = new FakeState().load(workingRun(3), null)
+  const sent: string[] = []
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  on('state.set', ($, e) => ({ value: state.set(e) }))
+  on('session.send', ($, e) => {
+    sent.push(String(e.text))
+    return { isDelivered: true as const }
+  })
+  on('ui.toast', () => ({ value: undefined }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.input({ key: 'steer', text: 'Use the brand colours' })
+  expect(sent).toHaveLength(3)
+  expect(sent[0]).toContain('Use the brand colours')
+  await ui.unmount()
+})
+
+test('Start with no task asks for the task', async ($, on) => {
+  const state = new FakeState().load(null, null)
+  const toasts: string[] = []
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  on('ui.toast', ($, e) => {
+    toasts.push(String(e.text))
+    return { value: undefined }
+  })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'start' })
+  expect(toasts).toEqual(['meld: Write the task first.'])
+  await ui.unmount()
+})
+
 test('with no run the desktop pane shows the start form', async ($, on) => {
   const state = new FakeState().load(null, null)
   on('clock.now', () => ({ value: NOW }))

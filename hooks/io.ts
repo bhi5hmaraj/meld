@@ -6,6 +6,8 @@ export type SpawnArgs = { prompt: string; description: string; subagentType: str
 
 export type Spawned = { agentId?: string; deny?: string }
 
+export type AgentState = 'live' | 'ended'
+
 /**
  * What the logic of meld needs from the engine. A hooks module spells `$` only at its call sites, so each hook
  * builds an Io of closures over its own `$`, and the logic takes the Io. A test gives a fake one.
@@ -15,6 +17,8 @@ export type Io = {
   now(): Promise<number>
   /** The dollars the session has spent, where the host keeps a cost ledger. */
   cost(): Promise<number | undefined>
+  /** The agents that the engine lists, by id; undefined when it cannot list them. */
+  agents(): Promise<Map<string, AgentState> | undefined>
   sleep(ms: number): Promise<void>
   read(): Promise<Run | null>
   write(change: (run: Run | null) => Run | null): Promise<unknown>

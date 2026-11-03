@@ -1,8 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
-import { deliver, discard, freshTokens, guardCall, markWorker, restartIdleWorkers, refreshFacts, serveTool, startRun, steerRun, stopOne } from '../hooks/actions'
-import { addTasks, bindWorker, claimTask, declareFinal, isFailure, startRun as startBoard, steer, takeIntegration } from '../hooks/board'
+import { deliver, discard, freshTokens, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, startFromView, startRun, steerRun, stopOne } from '../hooks/actions'
+import { addTasks, bindWorker, claimTask, declareFinal, isFailure, setActivity, startRun as startBoard, steer, takeIntegration } from '../hooks/board'
 import { JJ_RESOLVE_TEMPLATE } from '../hooks/vcs'
 import type { AgentSpec, Change, Run, VcsKind, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
@@ -280,6 +280,56 @@ test('with no tasks and every worker ended, the lead splits the request', async 
   expect(io.spawned[0]?.prompt).toContain('There are no tasks yet')
 })
 
+test('two beats at the same time start one agent for a worker', async () => {
+  const io = ioWith(runOf(takeIntegration(working(), 'w2', NOW)))
+  await markWorker(io, 'agent-1', 'idle')
+  await markWorker(io, 'agent-2', 'idle')
+  await Promise.all([restartIdleWorkers(io), restartIdleWorkers(io)])
+  expect(io.spawned).toHaveLength(1)
+})
+
+test('a beat counts a working worker whose agent the engine lists as ended as idle', async () => {
+  const io = ioWith(runOf(takeIntegration(working(), 'w2', NOW)))
+  io.agentStates = new Map([['agent-1', 'ended'], ['agent-2', 'ended']])
+  await restartIdleWorkers(io)
+  expect(io.current?.workers[0]?.state).toBe('idle')
+  expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w2'])
+})
+
+test('a beat counts a working worker whose agent the engine no longer lists as idle, after a grace', async () => {
+  const stale = setActivity(setActivity(runOf(takeIntegration(working(), 'w2', NOW)), 'w1', 'Bash: pnpm test', NOW - 60_000), 'w2', 'Bash: jj new', NOW - 60_000)
+  const io = ioWith(stale)
+  io.agentStates = new Map()
+  await restartIdleWorkers(io)
+  expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w2'])
+})
+
+test('a beat leaves a working worker alone while the engine runs its agent', async () => {
+  const io = ioWith(setActivity(runOf(takeIntegration(working(), 'w2', NOW)), 'w1', 'Bash: pnpm test', NOW - 60_000))
+  io.agentStates = new Map([['agent-1', 'live'], ['agent-2', 'live']])
+  await restartIdleWorkers(io)
+  expect(io.current?.workers.map(worker => worker.state)).toEqual(['working', 'working'])
+  expect(io.spawned).toHaveLength(0)
+})
+
+test('a beat does not count a worker that just started as ended before the engine lists its agent', async () => {
+  const io = ioWith(runOf(takeIntegration(working(), 'w2', NOW)))
+  io.agentStates = new Map()
+  await restartIdleWorkers(io)
+  expect(io.current?.workers.map(worker => worker.state)).toEqual(['working', 'working'])
+})
+
+test('the pane form starts a run with its task, number of agents, model and version control', async () => {
+  const io = ioWith(null)
+  const text = await startFromView(io, '/repo', { showDiff: false, task: 'Add a dark theme', agents: 3, model: 'haiku', vcs: 'git' })
+  expect(io.spawned.map(spawn => [spawn.description, spawn.model])).toEqual([['meld w1', 'haiku'], ['meld w2', 'haiku'], ['meld w3', 'haiku']])
+  expect(text).toBe(`Run ${ID}: 3 workers on git, from commit ${HEAD.slice(0, 7)}.`)
+})
+
+test('the pane form asks for the task first', async () => {
+  expect(await startFromView(ioWith(null), '/repo', { showDiff: false, task: '  ', agents: 2, model: 'inherit', vcs: 'auto' })).toBe('Write the task first.')
+})
+
 test('a beat with one worker still working starts no agent', async () => {
   const io = ioWith(working())
   await markWorker(io, 'agent-1', 'idle')
@@ -321,18 +371,15 @@ test('after three restarts that finish nothing the person is told once to steer,
   await restartIdleWorkers(io)
   expect(io.spawned).toHaveLength(3)
   expect(io.toasts).toEqual(['meld: three restarts in a row finished no task. Steer the workers or stop the run.'])
-  expect(await steerRun(io, 'Add the docs')).toBe('Revision 2: every worker has ended, so meld starts them again with it.')
-  await restartIdleWorkers(io)
+  expect(await steerRun(io, 'Add the docs')).toBe('Revision 2: meld starts w1 again with it.')
   expect(io.spawned[3]?.prompt).toContain('Add the docs')
 })
 
-test('a steer of a ready run starts no agent; the next beat starts the integrator with the steer', async () => {
+test('a steer of a ready run starts the integrator again with the steer', async () => {
   const io = ioWith(runOf(declareFinal(runOf(takeIntegration(working(), 'w2', NOW)), 'w2', FULL, 'Done', NOW)))
   await markWorker(io, 'agent-1', 'idle')
   await markWorker(io, 'agent-2', 'idle')
-  expect(await steerRun(io, 'Rename the toggle')).toBe('Revision 2: every worker has ended, so meld starts them again with it.')
-  expect(io.spawned).toHaveLength(0)
-  await restartIdleWorkers(io)
+  expect(await steerRun(io, 'Rename the toggle')).toBe('Revision 2: meld starts w2 again with it.')
   expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w2'])
   expect(io.spawned[0]?.prompt).toContain('The person changed the request (revision 2): Rename the toggle')
   expect(io.spawned[0]?.prompt).not.toContain('All tasks are done')
