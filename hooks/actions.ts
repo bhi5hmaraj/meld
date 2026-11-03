@@ -18,7 +18,7 @@ const BIND_POLL_MS = 200
 const BIND_POLLS = 100
 const NUDGE_LIMIT = 3
 const JJ_MISSING = 'jj 0.40 or newer is not installed. Use --vcs git or --vcs auto.'
-const LEADING_CD = /^(?:\s*cd\s+\S+\s*(?:&&|;)\s*)+/
+export const LEADING_CD = /^(?:\s*cd\s+\S+\s*(?:&&|;)\s*)+/
 
 type Args = Record<string, unknown>
 type Refused = { error: string; message: string }

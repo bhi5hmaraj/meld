@@ -219,3 +219,14 @@ test('the header says what the agents work on, in one line', async ($, on) => {
     await ui.unmount()
   }
 })
+
+test('a lane shows a shell command as its name and its target, past flags and ranges', async ($, on) => {
+  const run = workingRun(2)
+  const busy = { ...run, workers: run.workers.map(worker => ({ ...worker, activity: 'Bash: cd /tmp/meld/r1/w2 && sed -n 80,189p hooks/contract.ts' })) }
+  const state = new FakeState().load(busy, null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: 'sed contract.ts' })).toBeDefined()
+  await ui.unmount()
+})

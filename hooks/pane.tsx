@@ -1,7 +1,7 @@
 import type { ElementTable, RenderSurface } from 'claude-code'
 
 import type { AgentSpec, Entry, Facts, LaneFacts, PaneView, ResultFacts, Run, RunState, Worker, WorkerState } from '../types'
-import { deliver, discard, steerRun, stopAll, stopOne } from './actions'
+import { deliver, discard, LEADING_CD, steerRun, stopAll, stopOne } from './actions'
 import { STEER_PRESETS } from './contract'
 import { agentColor, BAR_HEIGHT, BAR_WIDTH, LANE_HEIGHT, LANE_WIDTH, laneAlt, laneGlyphs, laneSvg, STATUS, taskBarSvg } from './drawing'
 import type { TaskCounts } from './drawing'
@@ -29,12 +29,12 @@ const STATE_TONE: Record<RunState, string> = {
 const WORKER_TONE: Record<WorkerState, string> = { starting: 'warning', working: 'success', idle: 'inactive', stopped: 'error' }
 const SLOW_MS = 120_000
 const STUCK_MS = 300_000
-const ACTIVITY_CHARS = 26
+const ACTIVITY_CHARS = 22
 const CHECK_CHIPS = 6
 const CLAIMED_ROWS = 4
 const SUMMARY_WORDS = 24
 const REQUEST_CHARS = 72
-const COMMAND_WORDS = 2
+const SKIPPED_ARGUMENT = /^(?:-|\d|\.$|[|&;<>]+$)/
 const AGENT_OPTIONS = Array.from({ length: MAX_AGENTS }, (_, index) => ({ value: String(index + 1), label: `${index + 1}` }))
 const MODEL_OPTIONS = [{ value: 'inherit', label: 'Same as this session' }, ...MODELS.map(model => ({ value: model, label: model }))]
 const VCS_OPTIONS = [
@@ -349,12 +349,13 @@ function activityOf(run: Run, worker: Worker): string {
   return claim ? `#${claim.id} ${doing}` : doing
 }
 
-/** A shell command as its first words, past any leading cd; another tool as its name and target. */
+/** A shell command as its name and its target (past a leading cd, flags, numbers and redirections), a path as its last part; another tool as its name and target. */
 function shortActivity(activity: string): string {
   const command = /^Bash: (.*)$/.exec(activity)?.[1]
   if (command === undefined) return cut(activity, ACTIVITY_CHARS)
-  const words = command.replace(/^(?:\s*cd\s+\S+\s*(?:&&|;)\s*)+/, '').split(/\s+/).filter(Boolean)
-  return cut(words.slice(0, COMMAND_WORDS).join(' ') || 'Bash', ACTIVITY_CHARS)
+  const [name = 'Bash', ...rest] = command.replace(LEADING_CD, '').split(/\s+/).filter(Boolean)
+  const target = rest.find(word => !SKIPPED_ARGUMENT.test(word))
+  return cut(target ? `${name} ${target.split('/').filter(Boolean).pop() ?? target}` : name, ACTIVITY_CHARS)
 }
 
 /** What an agent has cost so far: its tokens once a turn has ended, else its tool calls, which count while it works. */
