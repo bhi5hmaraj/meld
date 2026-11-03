@@ -39,6 +39,12 @@ export function parseStart(text: string): StartOptions | Refusal {
   return { request: rest, agents, vcs }
 }
 
+/** The options of a start as /meld reads them, so a start from the pane or the tool goes through the meld command. */
+export function formatStart(options: StartOptions): string {
+  const agents = options.agents.map(agent => (agent.model ? `${agent.type}${MODEL_SEPARATOR}${agent.model}` : agent.type))
+  return `--agents ${agents.join(',')} --vcs ${options.vcs} ${options.request}`
+}
+
 /** `count` meld workers, each on `model` when one is given. */
 export function agentsOf(count: number, model?: string): AgentSpec[] {
   return Array.from({ length: count }, () => withModel({ type: WORKER_TYPE }, model))

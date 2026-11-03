@@ -13,6 +13,7 @@ export const TOOL = {
   integrate: 'mcp__meld__integrate',
   finish: 'mcp__meld__finish',
   start: 'mcp__meld__start',
+  stop: 'mcp__meld__stop',
 } as const
 
 /** The instructions behind the steer buttons of the pane: each a fixed text, so a press needs no typing. */
@@ -33,6 +34,11 @@ const TASK_VERSION = {
 const COMMIT = { type: 'string', description: 'A revision that names one commit in your folder: HEAD or a hash for git, @- or a commit id for jj.' }
 
 export const TOOL_SPECS: ToolSpec[] = [
+  {
+    name: 'stop',
+    description: 'Stop the meld run when the person asks: every worker ends its turn, and the workspaces stay for review. Only the main session stops a run.',
+    inputSchema: { type: 'object', properties: {} },
+  },
   {
     name: 'start',
     description:

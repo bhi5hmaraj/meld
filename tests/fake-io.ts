@@ -17,6 +17,7 @@ export class FakeIo implements Io {
   cwds: Record<string, string> = {}
   files: Record<string, string> = {}
   spawned: SpawnArgs[] = []
+  ranCommands: string[] = []
   sent: string[] = []
   toasts: string[] = []
 
@@ -75,6 +76,11 @@ export class FakeIo implements Io {
   async spawn(args: SpawnArgs): Promise<Spawned> {
     this.spawned.push(args)
     return this.spawnDeny ? { deny: this.spawnDeny } : { agentId: `agent-${this.spawned.length}` }
+  }
+
+  async command(name: string, args: string): Promise<{ text?: string }> {
+    this.ranCommands.push(`/${name} ${args}`)
+    return { text: 'started' }
   }
 
   async send(agentId: string, text: string): Promise<unknown> {

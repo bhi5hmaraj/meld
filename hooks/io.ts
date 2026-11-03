@@ -20,6 +20,7 @@ export type Io = {
   writeFacts(facts: Facts | null): Promise<unknown>
   writeFile(path: string, text: string): Promise<void>
   spawn(args: SpawnArgs): Promise<Spawned>
+  command(name: string, args: string): Promise<{ text?: string }>
   send(agentId: string, text: string): Promise<unknown>
   toast(text: string): unknown
   openPane(focus: boolean): Promise<unknown>

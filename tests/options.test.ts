@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { parseStart, WORKER_TYPE } from '../hooks/options'
+import { formatStart, parseStart, WORKER_TYPE } from '../hooks/options'
 
 test('a task alone starts two meld workers and lets meld choose the version control', () => {
   expect(parseStart('Add a dark theme')).toEqual({
@@ -65,4 +65,13 @@ test('an unknown version control is refused', () => {
 
 test('options with no task are refused', () => {
   expect(parseStart('--agents 3')).toEqual({ error: 'Write the task after /meld.' })
+})
+
+test('the options of a start read back as the same start', () => {
+  const starts = [
+    { request: 'Add a dark theme', agents: [{ type: WORKER_TYPE }, { type: WORKER_TYPE }], vcs: 'auto' as const },
+    { request: '/elsewhere Add docs', agents: [{ type: WORKER_TYPE, model: 'opus' }, { type: 'general-purpose', model: 'haiku' }, { type: 'Explore' }], vcs: 'git' as const },
+    { request: 'Fix the tests', agents: [{ type: WORKER_TYPE, model: 'claude-sonnet-5-5' }], vcs: 'jj' as const },
+  ]
+  for (const start of starts) expect(parseStart(formatStart(start))).toEqual(start)
 })

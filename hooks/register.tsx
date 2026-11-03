@@ -23,7 +23,13 @@ function tokensOf(usage: TurnUsage | undefined): number {
   return usage.input_tokens + usage.output_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens
 }
 
-// Each hook builds its own Io below: a hooks module spells `$` only at its call sites, never passes it on.
+/**
+ * Each hook builds its own Io below: a hooks module spells `$` only at its call sites, never passes it on.
+ *
+ * An agent that a hook spawns runs under that hook and skips it. So workers are spawned only in the command hook, and
+ * the tool calls of the workers have hooks of their own: one serves the start and stop tools of the main session, one
+ * serves the board, one guards every other tool.
+ */
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     sessionCwd = e.cwd
@@ -40,6 +46,7 @@ export const register: Register = on => {
         const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
         return { agentId: spawned.agentId, deny: spawned.deny }
       },
+      command: (name, args) => $.command.run({ command: name, args }),
       send: (agentId, text) => $.session.send({ to: { agentId }, text }),
       toast: text => $.ui.toast(text),
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
@@ -80,6 +87,7 @@ export const register: Register = on => {
         const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
         return { agentId: spawned.agentId, deny: spawned.deny }
       },
+      command: (name, args) => $.command.run({ command: name, args }),
       send: (agentId, text) => $.session.send({ to: { agentId }, text }),
       toast: text => $.ui.toast(text),
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
@@ -95,7 +103,7 @@ export const register: Register = on => {
     return { text: 'The pane is open.' }
   })
 
-  on('tool.call', async ($, e, next) => {
+  on('tool.call', { tool: ['mcp__meld__start', 'mcp__meld__stop'] }, async ($, e) => {
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
@@ -109,16 +117,75 @@ export const register: Register = on => {
         const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
         return { agentId: spawned.agentId, deny: spawned.deny }
       },
+      command: (name, args) => $.command.run({ command: name, args }),
       send: (agentId, text) => $.session.send({ to: { agentId }, text }),
       toast: text => $.ui.toast(text),
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
     }
-    if (String(e.tool).startsWith(MELD_TOOL)) return serveTool(io, e, sessionCwd)
+    return serveTool(io, e)
+  }).catch(($, e, next) => (next.called ? next(e) : { deny: 'meld: the run could not start or stop. Try the call again.' }))
+
+  on(
+    'tool.call',
+    {
+      tool: [
+        'mcp__meld__board',
+        'mcp__meld__add_tasks',
+        'mcp__meld__claim',
+        'mcp__meld__release',
+        'mcp__meld__finish_task',
+        'mcp__meld__note',
+        'mcp__meld__check',
+        'mcp__meld__integrate',
+        'mcp__meld__finish',
+      ],
+    },
+    async ($, e) => {
+      const io: Io = {
+        run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
+        now: () => $.clock.now(),
+        sleep: ms => $.clock.sleep(ms),
+        read: () => read($, runRef),
+        write: change => update($, runRef, change),
+        readFacts: () => read($, factsRef),
+        writeFacts: facts => update($, factsRef, () => facts),
+        writeFile: (path, text) => $.fs.write(path, text),
+        spawn: async args => {
+          const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
+          return { agentId: spawned.agentId, deny: spawned.deny }
+        },
+        command: (name, args) => $.command.run({ command: name, args }),
+        send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+        toast: text => $.ui.toast(text),
+        openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
+      }
+      return serveTool(io, e)
+    },
+  ).catch(($, e, next) => (next.called ? next(e) : { deny: 'meld: the board failed. Try the call again.' }))
+
+  on('tool.call', async ($, e, next) => {
+    if (String(e.tool).startsWith(MELD_TOOL)) return next(e)
+    const io: Io = {
+      run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
+      now: () => $.clock.now(),
+      sleep: ms => $.clock.sleep(ms),
+      read: () => read($, runRef),
+      write: change => update($, runRef, change),
+      readFacts: () => read($, factsRef),
+      writeFacts: facts => update($, factsRef, () => facts),
+      writeFile: (path, text) => $.fs.write(path, text),
+      spawn: async args => {
+        const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
+        return { agentId: spawned.agentId, deny: spawned.deny }
+      },
+      command: (name, args) => $.command.run({ command: name, args }),
+      send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+      toast: text => $.ui.toast(text),
+      openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
+    }
     const deny = await guardCall(io, e)
     return deny ? { deny } : next(e)
-  }).catch(($, e, next) =>
-    next.called || !String(e.tool).startsWith(MELD_TOOL) ? next(e) : { deny: 'meld: the board failed. Try the call again.' },
-  )
+  }).catch(($, e, next) => next(e))
 
   on('turn.complete', async ($, e, next) => {
     const io: Io = {
@@ -134,6 +201,7 @@ export const register: Register = on => {
         const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
         return { agentId: spawned.agentId, deny: spawned.deny }
       },
+      command: (name, args) => $.command.run({ command: name, args }),
       send: (agentId, text) => $.session.send({ to: { agentId }, text }),
       toast: text => $.ui.toast(text),
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
@@ -157,6 +225,7 @@ export const register: Register = on => {
         const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
         return { agentId: spawned.agentId, deny: spawned.deny }
       },
+      command: (name, args) => $.command.run({ command: name, args }),
       send: (agentId, text) => $.session.send({ to: { agentId }, text }),
       toast: text => $.ui.toast(text),
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
@@ -170,7 +239,7 @@ export const register: Register = on => {
       now: await $.clock.now(),
       io,
       setView: change => update($, viewRef, view => change(view ?? DEFAULT_VIEW)),
-      start: options => startRun(io, sessionCwd, options),
+      start: args => io.command('meld', args),
     })
   })
 }

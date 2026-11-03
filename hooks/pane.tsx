@@ -1,4 +1,4 @@
-import type { CommandRunResult, ElementTable, RenderSurface } from 'claude-code'
+import type { ElementTable, RenderSurface } from 'claude-code'
 
 import type { AgentSpec, Entry, Facts, LaneFacts, PaneView, ResultFacts, Run, RunState, Worker, WorkerState } from '../types'
 import { deliver, discard, steerRun, stopAll, stopOne } from './actions'
@@ -6,8 +6,7 @@ import { STEER_PRESETS } from './contract'
 import { agentColor, BAR_HEIGHT, BAR_WIDTH, LANE_HEIGHT, LANE_WIDTH, laneAlt, laneGlyphs, laneSvg, STATUS, taskBarSvg } from './drawing'
 import type { TaskCounts } from './drawing'
 import type { Io } from './io'
-import { agentsOf, MAX_AGENTS, MODELS, WORKER_TYPE } from './options'
-import type { StartOptions } from './options'
+import { agentsOf, formatStart, MAX_AGENTS, MODELS, WORKER_TYPE } from './options'
 
 export const PANE = 'meld'
 export const DEFAULT_VIEW: PaneView = { showDiff: false, task: '', agents: 2, model: 'inherit', vcs: 'auto' }
@@ -51,7 +50,7 @@ export type PaneInput = {
   now: number
   io: Io
   setView: (change: (view: PaneView) => PaneView) => Promise<unknown>
-  start: (options: StartOptions) => Promise<CommandRunResult>
+  start: (args: string) => Promise<{ text?: string }>
 }
 
 /** The meld pane: facts the person can check (commits, checks, the diff), and one press for each decision. No block holds more than 100 words. */
@@ -321,7 +320,7 @@ async function startFromForm(input: PaneInput, task: string): Promise<void> {
     input.io.toast('meld: write the task first.')
     return
   }
-  const result = await input.start({ request, agents: agentsOf(input.view.agents, input.view.model), vcs: input.view.vcs })
+  const result = await input.start(formatStart({ request, agents: agentsOf(input.view.agents, input.view.model), vcs: input.view.vcs }))
   input.io.toast(`meld: ${result.text ?? ''}`)
   await input.setView(current => ({ ...current, task: '' }))
 }
