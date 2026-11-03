@@ -284,7 +284,17 @@ test('with no run the mobile pane tells how to start', async ($, on) => {
   on('clock.now', () => ({ value: NOW }))
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   const ui = await $.ui.mount({ ...PANE, surface: 'mobile' })
-  expect((await ui.find({ type: 'Text', text: /^Send \/meld/ }))?.text).toBe('Send /meld and the task. Add --agents 3 for three agents.')
+  expect((await ui.find({ type: 'Text', text: /^Send \/meld/ }))?.text).toBe('Send /meld and the request. Add --agents 3 for three agents.')
+  await ui.unmount()
+})
+
+test('the start form calls what you type the request, as the README does', async ($, on) => {
+  const state = new FakeState().load(null, null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ key: 'task' }))?.props.label).toBe('Request')
+  expect(await ui.find({ type: 'Text', text: 'Several agents, one request, one commit you can check.' })).toBeDefined()
   await ui.unmount()
 })
 

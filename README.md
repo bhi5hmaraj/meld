@@ -1,137 +1,170 @@
 # meld
 
-Several Claude Code agents work on one task at the same time. Each agent works in its own jj workspace or git worktree. The agents share a small task board, and one of them melds their work into one commit. You watch and steer them in a pane.
+Give one request to several Claude Code agents. Watch their real commits in a pane. Get one commit that passed your checks.
 
-meld is a Claude Code plugin: one hooks module in TypeScript, with no native binary. It needs git, and it uses jj 0.40 or newer when jj is installed. It was tested with Claude Code 2.1.317, jj 0.46 and git 2.43 on Linux.
+Each agent works in its own jj workspace or git worktree. The agents plan the request as tasks on a shared board, share what they learn, and one agent merges the work into a final commit. You steer with one press, and nothing touches your branch until you deliver.
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/working-dark.png">
+  <img alt="The meld pane during a run: three agent lanes with their commits, the progress of each task, the shared context, the checks and the steer controls" src="docs/images/working-light.png" width="568">
+</picture>
+</p>
+
+meld is a Claude Code plugin: one hooks module in TypeScript, with no native binary.
 
 ## Install
 
-At the prompt of a terminal session of Claude Code:
+At the prompt of Claude Code in a terminal:
 
 ```
 /plugin install meld --marketplace bhi5hmaraj/meld
 ```
 
-Answer `y` to add the marketplace, and choose a scope.
+From a shell: `claude plugin install meld --marketplace bhi5hmaraj/meld`.
 
-From a shell:
+In the desktop app, click **+** next to the prompt box, and click **Plugins**. Click **Add marketplace**, type `bhi5hmaraj/meld`, and click **Add plugin**.
+
+meld needs git, and it uses jj 0.40 or newer when jj is installed. It was tested with Claude Code 2.1.317, jj 0.46 and git 2.43 on Linux.
+
+## Start a run
+
+Type the request after `/meld`:
 
 ```
-claude plugin install meld --marketplace bhi5hmaraj/meld
+/meld --agents 3 Add a dark theme with a toggle in the header
 ```
 
-The desktop app does not run `/plugin`. In the desktop app, click + next to the prompt box and click Plugins. Click Add marketplace, type `bhi5hmaraj/meld`, and click Add plugin.
+Or fill in the start form of the pane, which `/meld-status` opens. Or ask Claude in the chat, for example "start a meld run with 3 agents to add a dark theme".
 
-## Use
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/start-dark.png">
+  <img alt="The start form of the meld pane: the request, the number of agents, the model, the version control and a Start button" src="docs/images/start-light.png" width="568">
+</picture>
 
 | Command | What it does |
 | --- | --- |
-| `/meld <task>` | Starts two workers on the task, from the last commit of the repository you work in. |
-| `/meld --agents 3 <task>` | Starts three workers. A run has 1 to 8 workers. |
-| `/meld --agents opus,general-purpose@haiku,sonnet <task>` | Starts one worker for each item of the list. |
-| `/meld --model sonnet <task>` | Starts the workers on the model `sonnet`. |
-| `/meld --vcs git <task>` | Makes git worktrees for the workers. `--vcs jj` makes jj workspaces. `--vcs auto` is the default: it uses jj when jj is installed, and git when it is not. |
-| `/meld /path/to/repo <task>` | Starts the run in another repository. |
-| `/meld-steer <instruction>` | Gives every worker a new instruction. The pane has a field and preset buttons for the same purpose. If every worker has ended, meld restarts them with it. |
-| `/meld-status` | Opens the meld pane. |
-| `/meld-stop` | Stops every worker. Their workspaces stay for review. |
+| `/meld <request>` | Starts 2 agents on the request, from the last commit of your repository. |
+| `/meld --agents 3 <request>` | Starts 3 agents. A run has 1 to 8 agents. |
+| `/meld --agents opus,general-purpose@haiku <request>` | Starts one agent for each item: a model, an agent type, or a type and a model with `@` between them. |
+| `/meld --model sonnet <request>` | Starts each agent that names no model on `sonnet`. |
+| `/meld --vcs git <request>` | Makes git worktrees. `--vcs jj` makes jj workspaces. `--vcs auto`, the default, uses jj when jj is installed. |
+| `/meld /path/to/repo <request>` | Starts the run in another repository. |
+| `/meld-steer <instruction>` | Sends a new instruction to every agent. |
+| `/meld-status` | Opens the pane. |
+| `/meld-stop` | Stops every agent. The workspaces stay for review. |
 
-The options come before the task, in any order: `/meld --agents 3 --model sonnet --vcs git /path/to/repo Add a dark theme`.
+The options come before the request, in any order. Each agent starts as the hidden agent type `meld:worker`, in its own folder. With no `--model`, an agent uses the model of its agent type, and `meld:worker` uses the model of your session.
 
-An item of the `--agents` list is one of these:
+## Watch and steer
 
-- A model: `opus`, `sonnet`, `haiku`, `fable`, or a model id that starts with `claude-`. meld starts a `meld:worker` on that model.
-- An agent type: `general-purpose`, or an agent of a plugin. meld starts a worker of that type.
-- A type and a model, with `@` between them: `general-purpose@haiku`.
+The picture at the top of this page shows a run at work. meld reads the commits and the diff from version control every 3 seconds.
 
-`--model` gives its model to each worker that names no model. `--model inherit` is the default: meld names no model, and each worker uses the model of its agent type. A type with no model, such as `meld:worker`, uses the model of your session. The list item `general-purpose@inherit` runs that type on the model of your session.
+- **Header** shows the state, the version control, the agents and the time since the start. It shows the dollars that your session spent since the run started. **Stop all** stops the run.
+- **Lanes** show the real commits of each agent since the base, oldest first. ◆ is a merge, ★ the final commit, ✕ a conflict, and a dashed ring the edits that the agent did not commit. A green check or a red cross above a commit shows a check that passed or failed on it.
+- **Activity** under each lane shows the claimed task, the last action, the time since that action, and the tool calls. The time turns yellow after 2 minutes with no tool call, and red after 5 minutes. **Stop** stops one agent and opens its tasks for the other agents.
+- **Progress** shows the percent of the request, and one row for each task. A row shows the percent of the task, a bar of its done, claimed and open parts, and a dot for each agent on it. `waits for #N` shows while a task that it needs is not done. A press on a row with parts opens the parts.
+- **Shared context** shows the five newest entries that the agents shared: ■ a fact, ✕ a fail, ◇ an interface. Each entry shows the number of agents that read it.
+- **Checks** show the last result of each check command, with its commit.
+- **Steer** takes an instruction in your words, and four presets: **+ Tests**, **Smaller**, **Fix checks** and **Integrate now**.
 
-meld starts each worker itself, as the hidden agent type `meld:worker`, in the folder of that worker. The type is not in the list of agent types that Claude sees. A run starts from `/meld`, from the Start button of the pane, or from the `start` tool of the main session.
+What you type in the chat goes to Claude, not to the agents. To steer the agents, use the pane or `/meld-steer`, or ask Claude to steer them. The mobile app has no text field, so send `/meld-steer` and the instruction. The terminal draws the lanes and the bars in characters.
 
-You can ask for a run in the chat: Claude calls the `start` tool, with the same options as `/meld`. When you ask Claude to change the request, it calls the `steer` tool, and when you ask Claude to stop the run, it calls the `stop` tool. These three tools refuse a call from a worker or from another subagent.
+## Deliver the result
 
-If Claude Code refuses to start a worker, meld stops that worker and shows the reason in its lane. The other workers continue. When no worker starts, the run stops.
+When one agent has merged the work of all agents and run the checks, it declares the final commit, and the run is ready.
 
-**The pane** shows the run in these parts. meld reads the commits and the diff from the version control every 3 seconds.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/ready-dark.png">
+  <img alt="A run that is ready to deliver: all tasks at 100 percent, three checks passed on the final commit, and the Deliver button" src="docs/images/ready-light.png" width="568">
+</picture>
 
-- **The header** shows the state of the run, the version control and the number of agents. Next to them are the time since the start and the dollars that your session spent since the run started. Where Claude Code keeps no cost record, the header shows the tool calls of all agents. **Stop all** stops the run.
-- **The agent lanes** show one lane for each agent, drawn from its real commits since the base, from the oldest to the newest. A diamond is a merge, a star is the final commit, and a red cross is a conflict. A hollow dot shows edits that the agent did not commit. A green check above a commit shows a check that passed on it, and a red cross a check that failed. The terminal draws each lane in characters.
-- **Next to each lane**, meld shows the task that the agent claimed, its last action, the time since that action, and the number of its tool calls. If a working agent makes no tool call for 2 minutes, that time turns yellow, and after 5 minutes it turns red. This is the stall warning. **Stop** stops one agent, and its claimed tasks open for the other agents.
-- **Progress** shows a bar and a percent for the whole request. Under it, each top-level task has one row: its title, its percent, a small bar of its done, claimed and open parts, a dot in the colour of each agent that works on it, and the chip `waits for #N` when a task that it needs is not done. A press on the row of a parent shows its children, and a second press hides them. The terminal draws the bars in text. Each percent is cut to the whole number below it, so 100% means that all the work is done.
-- **The shared context** shows the five newest current entries, one line each: a shape for the kind (■ fact, ✕ fail, ◇ interface), the worker that shared the entry, its text, and the number of workers that read it.
-- **The check chips** show the last result of each check command, with its commit. The pane shows six chips at most.
-- **The result** shows the final commit, the number of changed files, the lines added and removed, and the checks that ran on that commit. A warning shows when no check ran on it. **Show diff** (key `v`) opens the diff of the first eight files. **Deliver** (key `d`) merges the result into your branch.
-- **The preset steers** give every agent a fixed instruction: **+ Tests**, **Smaller**, **Fix checks** and **Integrate now**. Above them, a field takes an instruction in your words. On a ready run, the field asks for changes. The mobile app has no field: send `/meld-steer` and the instruction.
-- **The start form** shows in a pane with no run: the task, the number of agents, the model and the version control. **Start** starts the run with these options. On mobile, the pane tells you to send `/meld` and the task.
+The result card shows the final commit, the changed files, the lines added and removed, and the checks that ran on that commit. A warning shows when no check ran on it.
 
-**Deliver** merges the final commit into your current branch with a merge commit, and removes the workspaces. Your checkout must have no uncommitted changes. If the merge stops, meld aborts it, and nothing changes. **Discard** removes the workspaces with no merge. **Clear** removes a delivered run from the pane.
-
-What you type in the chat goes to Claude, not to the workers. To steer the workers, use the pane or `/meld-steer`, or ask Claude to steer them.
+- **Deliver** (`d`) merges the final commit into your branch with a merge commit, and removes the workspaces. Your checkout must have no uncommitted changes. If the merge stops, meld aborts it, and nothing changes.
+- **Show diff** (`v`) opens the diff of the first eight files.
+- **Ask for changes** gives the agents your instruction, and they change the result.
+- **Discard** removes the workspaces with no merge. **Clear** removes a delivered run from the pane.
 
 ## How it works
 
-1. `/meld` makes one workspace for each worker from `HEAD`, under `/tmp/meld/<run>/`. With jj, each workspace is a jj workspace with the name of its worker. With git, each workspace is a worktree on the branch `meld/<run>/<worker>`.
-2. meld starts each worker in its own folder. meld knows each worker by the agent id that Claude Code gives it, not by a name that the model writes.
-3. A worker gets its rules at its first board read. The workers plan the task as small tasks on the board, claim them, commit in their own workspaces, share decisions with notes, and share findings in the shared context. A worker takes the commits of another worker with `jj new`, or with `git merge` or `git cherry-pick`.
-4. One worker takes the integration: it merges the work of every worker, runs the checks, and declares the final commit. The run is ready for you.
-5. If you steer a ready run, the workers change the result, and the run changes to the working state.
+1. **Workspaces.** meld makes one workspace for each agent from `HEAD`, under `/tmp/meld/<run>/`: a jj workspace, or a git worktree on a branch such as `meld/<run>/w1`.
+2. **Plan.** The agents plan the request as small tasks on the board. When two agents plan at the same time, the first plan wins, and the other agent claims tasks from it. A task can name a parent, a size (S, M or L) and the tasks that it needs.
+3. **Work.** Each agent claims a task, commits in its own workspace, and takes the commits of other agents with `jj new`, `git merge` or `git cherry-pick`. An agent splits a large task with `split`: it keeps the first part, and the other parts open for the other agents.
+4. **Share.** The agents share facts, fails and interfaces. Each board reply carries the newest entries, and the rules tell an agent not to try an approach that failed.
+5. **Integrate.** One agent merges the work of every agent, runs the checks, and declares the final commit.
 
-The workers use eleven board tools: `board`, `add_tasks`, `claim`, `split`, `release`, `finish_task`, `note`, `share`, `check`, `integrate` and `finish`. The main session uses three more: `start`, `steer` and `stop`. Each reply of a board tool carries the shared context, the board read of the main session included.
+The agents use eleven board tools: `board`, `add_tasks`, `claim`, `split`, `release`, `finish_task`, `note`, `share`, `check`, `integrate` and `finish`. The main session has three more: `start`, `steer` and `stop`. These three refuse a call from an agent or another subagent.
 
-The tools `finish_task`, `check` and `finish` keep the full id of the commit that the revision names in the folder of the worker. `share` does the same when it names a commit. `HEAD` or `@-` names the commit of the worker that calls the tool. meld refuses a final commit with a conflict.
+<details>
+<summary><b>The board</b>: versions, the task tree, the percent, the shared context</summary>
 
-**The shared context.** As in DeLM, the workers keep a shared context of typed entries. A worker adds an entry with `share`: a `kind`, a `text` of 500 characters at most, and an optional `commit`, `files` and `replaces`. A fact is a finding with its evidence. A fail is an approach that did not work, with the reason, so that no worker tries it again. An interface is a contract between tasks: a name and its shape. `replaces` gives the id of an older entry that the new entry corrects. An entry that a newer entry replaces is not current. `finish_task` takes optional `interfaces` and `unfinished` text, and meld adds them to the context as an interface and a fact. Each board reply carries `context`: the current entries, newest first, 20 at most. Each entry has its id, kind, worker, text, commit, files and `seenBy`: the other workers that got the entry in a board reply. The rules tell a worker to share a fact when a peer can use it, a fail when an approach did not work, and an interface before a peer depends on it.
+**Versions.** The task list has a version. An agent adds its tasks in one call, with the version of its last board read. If another agent added tasks since that read, the add fails and shows the current tasks. A claim is a compare-and-set on the task version, so two agents cannot claim one task.
 
-After each change of the board, meld writes the board to `/tmp/meld/<run>/board.json`, with the tasks, the log and the shared context. That file stays when your session ends. Deliver and Discard remove it with the folder of the run.
+**Task tree.** The parents make the tasks a tree, and the needs make a DAG. A task with no size is M. While a need of a task, or a need of one of its parents, is not done, a claim of the task fails with `WAITING`, and the error names the need. `add_tasks` and `split` refuse a need that makes a loop. A parent has no commit of its own. It is done when all its parts are done, and `claim` and `finish_task` refuse it. The first part of a split cannot wait, because the agent keeps it.
 
-The task list has a version. A worker adds its tasks in one call, with the version of its last board read. If another worker added tasks since that read, the add fails and shows the current tasks. The worker claims the tasks that cover its work, and adds the tasks that are missing. A claim is a compare-and-set on the task version, so two workers cannot claim one task.
+**Times.** Each task keeps the time when it was added, when it became ready, when it was claimed and when it was done. It counts the times that it returned to open: a release, or a stop of its agent.
 
-**The task tree.** A new task can name a `parent`, a `size` and `needs`. The parents make the tasks a tree. The size is S, M or L, with the weights 1, 3 and 8. A task with no size is M. The needs name the tasks whose results the task needs, so the tasks and their needs make a DAG. While a need of a task, or a need of one of its parents, is not done, a claim of that task fails with `WAITING`, and the error names that need. `add_tasks` refuses a need that makes a loop, for example a need on a parent of the new task. The rules tell a worker to give each task a title in plain words, 8 words at most, with no file paths, and to give needs when a task needs the result of another task.
+**Percent.** meld computes the percent from the task states, and no agent reports a percent. A task is at 0 until an agent finishes it, and at 100 after that. A parent is the mean of its parts, with the sizes S 1, M 3 and L 8 as weights. Each percent is cut to the whole number below it, so 100% means that all the work is done.
 
-As in DeLM, a worker splits a task with `split`: the task id, its version and the new tasks. The split is one change, so no other worker can take a part between two calls. The task becomes a parent, and the new tasks become its children. The worker keeps the first child as its claim, and the other children are open. The rules tell a worker to split a task that has more than one deliverable. A parent has no commit of its own. It is done when all its children are done. `claim` and `finish_task` refuse a parent with the names of its children that are not done. The first child of a split cannot wait: the worker keeps it.
+**Nudge.** After 40 tool calls on one task with no finish and no split, meld tells the agent one time: "Split #N into smaller tasks, or finish it."
 
-Each task keeps the time when it was added, the time when it became ready, the time of its claim and the time when it was done. A task is ready when its last need is done, or when it is added with no need that is not done. Each task counts the times that it went back to open: a release, or a stop of its owner.
+**Shared context.** As in DeLM, the agents keep a shared context of typed entries. `share` takes a `kind`, a `text` of 500 characters at most, and an optional `commit`, `files` and `replaces`. A fact is a finding with its evidence. A fail is an approach that did not work, with the reason. An interface is a contract between tasks: a name and its shape. An entry with `replaces` corrects an older entry. `finish_task` takes optional `interfaces` and `unfinished` text, which meld adds as an interface and a fact. Each board reply carries the 20 newest current entries, each with `seenBy`: the agents that got it.
 
-**Percent.** meld computes the percent from the states of the tasks, and no agent reports a percent. A leaf is 0 until a worker finishes it. A finished leaf is 100. A parent is the mean of its children, with their sizes as weights. The request is the same mean of the top-level tasks.
+**Commits.** `finish_task`, `check`, `finish` and `share` keep the full id of the commit that the revision names in the folder of the agent. `HEAD` or `@-` names the commit of the agent that calls the tool. meld refuses a final commit with a conflict.
 
-**The nudge.** When a worker makes 40 tool calls on one leaf with no finish and no split, meld tells it one time: "Split #N into smaller tasks, or finish it."
+**Board file.** After each change, meld writes the board to `/tmp/meld/<run>/board.json`: the tasks, the log and the shared context. The file stays when your session ends. Deliver and Discard remove it.
 
-meld refuses an edit that a worker makes outside its own workspace.
+**Edit guard.** meld refuses an edit that an agent makes outside its own workspace.
 
-**Restarts.** Claude Code ends the run of an agent that meld starts when the agent hands back its work. That agent takes no more messages, and its worker is idle. When a worker ends, Claude Code tells your session. At the end of each turn of your session, meld restarts an idle worker with a new agent in the same folder when there is work for it:
+</details>
 
-- The board has news that the worker did not read, and there is an open task or a task of that worker. A note, a share, a claim, a finished task or a check of another worker is news.
-- Every live worker is idle. In that case, meld restarts the owners of unfinished tasks, and idle workers for the open tasks. With no open task, meld restarts the lead: the integrator, or the first live worker when no worker integrates. The lead plans when there are no tasks, takes your new instruction, or integrates when all tasks are done.
+<details>
+<summary><b>Restarts, auto mode, jj and git</b></summary>
 
-A restarted agent reads its rules at its first board read. Each restart check reads the agent list of Claude Code, so meld finds a worker whose agent ended, though meld did not see the end of its turn. meld does not restart a stopped worker. After three restarts in a row that finish no task, meld stops the restarts and tells you. A finished task or a steer starts the count from zero. A steer goes as a message to each running worker, and the steer restarts the ended workers with it.
+**Restarts.** Claude Code ends an agent when the agent returns its result. At the end of each turn of your session, meld restarts an idle agent in the same folder when there is work for it:
 
-**Auto mode.** In auto mode, a classifier decides each Agent call, and it allows a call that it can link to your request. It cannot link a spawn that a plugin makes, so it gives no verdict, and the spawn fails. A mod may approve an action, so meld approves each start and restart of a worker while a run that you started is live. Each action of a worker goes through the mode of your session. A deny from your rules or your organization stands.
+- The board has news that the agent did not read, and a task is open or claimed by that agent. A note, a share, a claim, a finished task or a check of another agent is news.
+- Every live agent is idle. meld restarts the owners of unfinished tasks, and idle agents for the open tasks. With no open task, meld restarts the lead, the integrator or the first live agent, to plan, to take your new instruction, or to integrate.
 
-**jj.** meld uses jj when jj 0.40 or newer answers in the repository. jj works over a private git store of the run: a bare git repository under `/tmp/meld/<run>/`. The store reads the objects of your repository through git alternates, and it has one ref for the base. The store copies no objects, and the refs of jj do not go into your repository. The jj repository of the run has the git identity of your repository, a base that no worker can rewrite, and no editor. A jj command without `-m` fails and does not wait for an editor. Deliver sets a bookmark on the final commit in the store, fetches that commit into your repository, and merges it. Deliver and Discard remove the folder of the run, and the config that jj keeps for the run in its own config folder.
+A restarted agent reads its rules at its first board read. meld reads the agent list of Claude Code, so it finds an agent that ended when meld did not see the end. meld does not restart a stopped agent. After three restarts in a row that finish no task, meld stops the restarts and tells you. A finished task or a steer starts the count from zero. A steer goes as a message to each running agent, and it restarts the agents that ended.
 
-**git.** meld uses git when jj is not installed, when jj is older than 0.40, or when you give `--vcs git`. With `--vcs auto`, meld uses git when jj cannot make the workspaces, and the start message tells you why. Each worker gets a worktree and a branch. Deliver merges the final commit, and removes the worktrees and the branches.
+**Refused starts.** If Claude Code refuses to start an agent, meld stops that agent and shows the reason in its lane. The other agents continue. When no agent starts, the run stops.
+
+**Auto mode.** In auto mode, a classifier decides each Agent call, and it allows a call that it can link to your request. It cannot link a start that a plugin makes, so that start fails. A plugin may approve an action, so meld approves each start and restart of an agent while a run that you started is live. Each action of an agent goes through the mode of your session, and a deny from your rules or your organization stands.
+
+**jj.** meld uses jj when jj 0.40 or newer answers in the repository. jj works over a private git store of the run: a bare git repository under `/tmp/meld/<run>/`. The store reads the objects of your repository through git alternates and has one ref for the base. It copies no objects, and the refs of jj do not go into your repository. The jj repository of the run has the git identity of your repository, a base that no agent can rewrite, and no editor: a jj command without `-m` fails and does not wait. Deliver sets a bookmark on the final commit in the store, fetches that commit into your repository, and merges it. Deliver and Discard remove the folder of the run and the jj config of the run.
+
+**git.** meld uses git when jj is not installed, when jj is older than 0.40, or when you give `--vcs git`. With `--vcs auto`, meld uses git when jj cannot make the workspaces, and the start message tells you why. Each agent gets a worktree and a branch. Deliver merges the final commit and removes the worktrees and the branches.
+
+</details>
 
 ## What meld changes from DeLM
 
-meld takes its idea from [DeLM](https://github.com/Decentralized-LM/delm-agent-plugin) (Decentralized Language Models, by Yuzhen Mao and Azalia Mirhoseini, MIT license). It is a new tool, not a port, with these changes:
+meld takes its idea from [DeLM](https://github.com/Decentralized-LM/delm-agent-plugin) (Decentralized Language Models, by Yuzhen Mao and Azalia Mirhoseini, MIT license). It is a new tool, not a port.
 
-- **TypeScript, with jj or git.** jj workspaces or git worktrees replace the copy-on-write copies, and a git merge replaces the guarded file delivery. meld runs on each system that has git and Claude Code, Linux included.
-- **You steer through the pane or `/meld-steer`.** A plain chat message does not become a new task revision ([DeLM issue 18](https://github.com/Decentralized-LM/delm-agent-plugin/issues/18)).
-- **A new instruction does not fail a run or block a command.** A worker sees it at its next board call. A stale board call fails alone, and its error tells the worker to read the board ([DeLM issue 17](https://github.com/Decentralized-LM/delm-agent-plugin/issues/17)).
-- **The task list has a version.** A stale add fails and shows the current tasks. DeLM's `task_create` has no such check, so two workers that plan at the same moment add the same work twice.
-- **A run has five states:** starting, working, ready, delivered and stopped. No recovery state can hold a run.
+<details>
+<summary><b>Six changes</b></summary>
+
+- **jj or git, in TypeScript.** Workspaces replace the copy-on-write copies, and a git merge replaces the guarded file delivery. meld runs on each system that has git and Claude Code, Linux included.
+- **Steer in the pane.** A plain chat message does not become a new task revision ([DeLM issue 18](https://github.com/Decentralized-LM/delm-agent-plugin/issues/18)).
+- **A new instruction blocks nothing.** An agent sees it at its next board call. A stale board call fails alone, and its error tells the agent to read the board ([DeLM issue 17](https://github.com/Decentralized-LM/delm-agent-plugin/issues/17)).
+- **A task list with a version.** A stale add fails and shows the current tasks. DeLM's `task_create` has no such check, so two agents that plan at the same moment add the same work twice.
+- **Five run states:** starting, working, ready, delivered and stopped. No recovery state can hold a run.
 - **A check is a record:** the command, the commit and the result. meld has no check receipts and no preview ownership.
+
+</details>
 
 ## Limits
 
-- A run has 1 to 8 workers, and meld runs one run at a time.
-- The workers start from your last commit. If the workers need your changes, commit them before the run.
-- The workspaces have no installed dependencies. The workers install them when their checks need them.
-- A worker of another agent type has the tools of that type. Give a type that has the meld tools and can edit files and run commands, for example `general-purpose`.
+- A run has 1 to 8 agents, and meld runs one run at a time.
+- The agents start from your last commit. Commit your changes before the run if the agents need them.
+- The workspaces have no installed dependencies. The agents install them when their checks need them.
+- An agent of another type has the tools of that type. Give a type that has the meld tools and can edit files and run commands, for example `general-purpose`.
 - If the `meld:worker` type does not register, meld shows a notice. Give another agent type with `--agents`.
-- More workers cost more. The pane shows the dollars that your session spent since the run started, and the tool calls of each agent.
-- The edit guard covers Edit, Write, MultiEdit and NotebookEdit. A Bash command can write in other folders, so the guard is a guard rail and not a sandbox.
-- The plugin API of Claude Code is an early access API and can change between releases.
+- More agents cost more. The header shows the dollars since the run started, and each lane shows the tool calls of its agent.
+- The edit guard covers Edit, Write, MultiEdit and NotebookEdit. A Bash command can write in other folders, so the guard is a guard rail, not a sandbox.
+- The plugin API of Claude Code is an early access API, and it can change between releases.
 
 ## Development
 
@@ -139,15 +172,28 @@ meld takes its idea from [DeLM](https://github.com/Decentralized-LM/delm-agent-p
 claude plugin validate .
 claude plugin test .
 node scripts/adapters.mjs
+node scripts/shots.mjs
 ```
 
-`hooks/board.ts` holds the board rules as pure functions. `hooks/tasks.ts` holds the helpers of the task tree. `hooks/progress.ts` gives the percent and the parts of each task. `hooks/actions.ts` holds the steps of a run and takes an `Io` port. `hooks/vcs.ts` holds the version control port and its two adapters, jj and git. `hooks/options.ts` reads the options of `/meld`. `hooks/pane.tsx` and `hooks/drawing.ts` draw the pane.
+- `hooks/board.ts` holds the board rules as pure functions, `hooks/tasks.ts` the task tree, and `hooks/progress.ts` the percent.
+- `hooks/actions.ts` holds the steps of a run, and takes an `Io` port.
+- `hooks/vcs.ts` holds the version control port and its two adapters, jj and git.
+- `hooks/options.ts` reads the options of `/meld`.
+- `hooks/pane.tsx` and `hooks/drawing.ts` draw the pane.
+- `hooks/register.tsx` is the one file that calls the engine.
 
-`hooks/register.tsx` is the one file that calls the engine, because a hooks module spells `$` at its call sites and does not give it to other functions. Each hook builds its own `Io`. An agent that a hook spawns runs under that hook and skips it. For this reason, meld has three tool hooks: the start, steer and stop tools, the board tools, and the guard of every other tool. An agent that a timer or a button closure starts skips every hook of meld, the board and the guard included. For this reason, a `ui.press` and a `ui.input` hook serve the buttons and fields that start agents, and the restarts come from hooks of the main session. The guard lets each `SubagentHandback` through, because that call ends the run of a worker.
+<details>
+<summary><b>The hooks, the tests and the two scripts</b></summary>
 
-The tests use a fake `Io` and mount the pane on each surface. A test holds each block of the pane to 100 words at most, with eight agents, with a ready result, or with a long task tree.
+A hooks module spells `$` at its call sites and does not give it to other functions, so each hook builds its own `Io`. An agent that a hook starts runs under that hook and skips it. For this reason, meld has three tool hooks: the start, steer and stop tools, the board tools, and the guard of every other tool. An agent that a timer or a button closure starts skips every hook of meld. For this reason, a `ui.press` and a `ui.input` hook serve the buttons and fields that start agents, and the restarts come from hooks of the main session. The guard lets each `SubagentHandback` through, because that call ends the run of an agent.
 
-`scripts/adapters.mjs` checks the two adapters with real processes. It compiles `hooks/` with `tsc` into CommonJS in a temporary folder. For each adapter, it makes a temporary git repository and goes through a run: three workspaces, a commit in each, the integration, resolve, lanes, result, deliver and remove. HOME is a temporary folder, so the check does not read or change your git or jj config. It prints PASS or FAIL for each step, and it exits with code 1 when a step fails. It needs `tsc` 5.6 or newer, git, and jj 0.40 or newer.
+The tests use a fake `Io` and mount the pane on each surface. A test holds each block of the pane to 100 words at most.
+
+`scripts/adapters.mjs` checks the jj and git adapters with real processes. It compiles `hooks/` with `tsc` into a temporary folder. For each adapter, a temporary git repository goes through a run: three workspaces, a commit in each, the integration, the result, deliver and remove. HOME is a temporary folder, so the check does not read or change your git or jj config. The script prints PASS or FAIL for each step, and it exits with code 1 when a step fails. It needs `tsc` 5.6 or newer, git, and jj 0.40 or newer.
+
+`scripts/shots.mjs` draws the pictures of this README. `scripts/scenes.tsx` builds sample runs with the board functions and prints the tree that the pane draws for each run. The script makes an HTML page of each tree, and takes a picture in a light and a dark theme with Playwright. The lanes, the bars and the texts are the ones that meld draws. The fonts and the spacing stand in for the app.
+
+</details>
 
 ## License
 

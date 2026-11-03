@@ -459,12 +459,12 @@ function startSection(input: PaneInput) {
   return (
     <Box key="sec-start" flexDirection="column" gap="md">
       <Text bold>meld</Text>
-      <Text dimColor>Several agents, one task, one commit you can check.</Text>
+      <Text dimColor>Several agents, one request, one commit you can check.</Text>
       {Input && Select ? (
         <Box flexDirection="column" gap={1}>
           <Input
             key="task"
-            label="Task"
+            label="Request"
             placeholder="What the agents make"
             value={view.task}
             submitLabel="Start"
@@ -481,7 +481,7 @@ function startSection(input: PaneInput) {
           </Button>
         </Box>
       ) : (
-        <Text dimColor>Send /meld and the task. Add --agents 3 for three agents.</Text>
+        <Text dimColor>Send /meld and the request. Add --agents 3 for three agents.</Text>
       )}
     </Box>
   )
