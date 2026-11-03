@@ -14,6 +14,7 @@ export const TOOL = {
   finish: 'mcp__meld__finish',
   start: 'mcp__meld__start',
   stop: 'mcp__meld__stop',
+  steer: 'mcp__meld__steer',
 } as const
 
 /** The instructions behind the steer buttons of the pane: each a fixed text, so a press needs no typing. */
@@ -34,6 +35,11 @@ const TASK_VERSION = {
 const COMMIT = { type: 'string', description: 'A revision that names one commit in your folder: HEAD or a hash for git, @- or a commit id for jj.' }
 
 export const TOOL_SPECS: ToolSpec[] = [
+  {
+    name: 'steer',
+    description: 'Give every meld worker a new instruction when the person asks. A running worker gets it as a message; when every worker has ended, meld starts them again with it within a few seconds. Only the main session steers a run.',
+    inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'The instruction, in the words of the person.' } }, required: ['text'] },
+  },
   {
     name: 'stop',
     description: 'Stop the meld run when the person asks: every worker ends its turn, and the workspaces stay for review. Only the main session stops a run.',
@@ -152,7 +158,7 @@ The rules for a meld worker:
 5. Record each test or build you run with ${TOOL.check}, with the commit it ran on.
 6. When every task is done, one worker integrates: it calls ${TOOL.integrate}, merges the work of every worker into its own, runs the checks, then calls ${TOOL.finish} with the final commit and a summary. While another worker integrates, review its commits, add tests, or fix what the checks show.
 7. A board reply can carry a notice: the person changed the request. Follow the newest instruction.
-8. Do not wait with sleep or loops. When nothing is left for you, end your turn with a one-line summary. meld wakes you when there is new work.
+8. Do not wait with sleep or loops. When nothing is left for you, end your run with a short report. When there is new work, meld starts a new agent for you in your folder, and it reads the board to go on.
 9. A board error (STALE_VERSION, TAKEN, NOT_OWNER, CONFLICT) fails only that call. Read the board again and go on.
 
 ${run.vcs === 'jj' ? jjGuide(you, peers) : gitGuide(you, peers)}`

@@ -1,6 +1,6 @@
-import type { CommandRunResult, ToolCallInput, ToolCallResult } from 'claude-code'
+import type { CommandRunResult, ToolCallInput, ToolCallResult, TurnUsage } from 'claude-code'
 
-import type { BoardView, Change, Facts, NewTask, Run, VcsKind, Worker, WorkerId, WorkerState } from '../types'
+import type { BoardView, Change, Facts, NewTask, Run, Task, VcsKind, Worker, WorkerId, WorkerState } from '../types'
 import * as board from './board'
 import { TOOL, wakeText, workerPrompt, workerRules } from './contract'
 import { headCommit, isDirty, repoRoot } from './git'
@@ -17,6 +17,7 @@ const LIVE_STATES = new Set(['starting', 'working', 'ready'])
 const BIND_POLL_MS = 200
 const BIND_POLLS = 100
 const NUDGE_LIMIT = 3
+const STUCK_TOAST = 'meld: three restarts in a row finished no task. Steer the workers or stop the run.'
 const JJ_MISSING = 'jj 0.40 or newer is not installed. Use --vcs git or --vcs auto.'
 export const LEADING_CD = /^(?:\s*cd\s+\S+\s*(?:&&|;)\s*)+/
 
@@ -63,7 +64,7 @@ export async function startRun(io: Io, cwd: string, options: StartOptions): Prom
   if ('error' in prepared) return { text: `meld could not make the workspaces: ${prepared.error}` }
   const workspaces = prepared.workspaces
   const workers = ids.map((wid, index) => ({ id: wid, agent: options.agents[index] ?? { type: 'meld:worker' }, path: workspaces[index]?.path ?? '', ref: workspaces[index]?.ref ?? '' }))
-  const run = board.startRun({ id, request, repo, base, vcs: kind, now, workers })
+  const run = board.startRun({ id, request, repo, base, vcs: kind, now, costAtStart: await io.cost(), workers })
   await io.write(() => run)
   await io.writeFacts(null)
   void io.openPane(false)
@@ -104,10 +105,10 @@ async function spawnWorkers(io: Io, run: Run): Promise<string[]> {
   return refused
 }
 
-async function spawnOne(io: Io, run: Run, worker: Worker): Promise<Spawned> {
+async function spawnOne(io: Io, run: Run, worker: Worker, step?: string): Promise<Spawned> {
   try {
     return await io.spawn({
-      prompt: workerPrompt(run, worker.id),
+      prompt: step ? `${workerPrompt(run, worker.id)}\n\nWhat meld asks of you now: ${step}` : workerPrompt(run, worker.id),
       description: `meld ${worker.id}`,
       subagentType: worker.agent.type,
       model: worker.agent.model,
@@ -137,9 +138,10 @@ async function workerWithWait(io: Io, agentId: string | undefined): Promise<Work
 export async function serveTool(io: Io, e: ToolCallInput, cwd = ''): Promise<ToolCallResult> {
   const tool = String(e.tool)
   const worker = await workerWithWait(io, e.agentId)
-  if (tool === TOOL.start || tool === TOOL.stop) {
-    if (e.agentId !== undefined) return reply({ error: 'NOT_ALLOWED', message: 'Only the main session starts or stops a meld run.' })
-    return reply(tool === TOOL.start ? await startFromTool(io, e as unknown as Args, cwd) : { text: await stopAll(io) })
+  if (tool === TOOL.start || tool === TOOL.stop || tool === TOOL.steer) {
+    if (e.agentId !== undefined) return reply({ error: 'NOT_ALLOWED', message: 'Only the main session starts, steers or stops a meld run.' })
+    if (tool === TOOL.start) return reply(await startFromTool(io, e as unknown as Args, cwd))
+    return reply({ text: tool === TOOL.stop ? await stopAll(io) : await steerRun(io, text((e as unknown as Args).text).trim()) })
   }
   if (!worker) return reply(tool === TOOL.board ? await overview(io) : { error: 'NOT_WORKER', message: 'The meld tools are for the meld workers.' })
   const now = await io.now()
@@ -258,6 +260,7 @@ async function overview(io: Io): Promise<unknown> {
       activity: worker.activity,
       ref: worker.ref,
       path: worker.path,
+      calls: worker.calls ?? 0,
       tokens: worker.tokens,
     })),
     tasks: run.tasks,
@@ -273,16 +276,38 @@ async function afterChange(io: Io, by: WorkerId, tool: string): Promise<void> {
   if (!run) return
   const peers = run.workers.filter(worker => worker.id !== by)
   if (OPEN_WORK_TOOLS.has(tool)) {
-    for (const peer of peers) if (peer.state === 'idle') tell(io, peer, wakeText('There is open work on the board.'))
+    for (const peer of peers) if (peer.state === 'working') tell(io, peer, wakeText('There is open work on the board.'))
   }
   if (tool === TOOL.finish && run.state === 'ready') {
-    for (const peer of peers) if (peer.state !== 'stopped') tell(io, peer, 'The final commit is declared. End your turn now.')
+    for (const peer of peers) if (peer.state === 'working') tell(io, peer, 'The final commit is declared. End your turn now.')
     io.toast('meld: the result is ready. Deliver it from the meld pane.')
   }
 }
 
 function tell(io: Io, worker: Worker, message: string): void {
   if (worker.agentId) void io.send(worker.agentId, message).catch(() => undefined)
+}
+
+/**
+ * The run of an idle worker has ended (the engine drops a spawned agent at its hand-back), so meld starts a new agent
+ * for that worker, in its folder, with the step in its prompt.
+ */
+async function restart(io: Io, worker: Worker, step: string): Promise<void> {
+  const run = await readRun(io)
+  if (!run) return
+  pendingSpawns += 1
+  try {
+    const spawned = await spawnOne(io, run, worker, step)
+    const now = await io.now()
+    const agentId = spawned.agentId
+    if (!agentId) {
+      io.toast(`meld: ${worker.id} could not start again: ${spawned.deny ?? 'the engine started no agent'}.`)
+      return
+    }
+    await writeRun(io, current => board.restartWorker(current, worker.id, agentId, now))
+  } finally {
+    pendingSpawns = Math.max(0, pendingSpawns - 1)
+  }
 }
 
 /** A deny reason for a tool call of a worker, or undefined; records the call as the worker's activity. */
@@ -323,7 +348,13 @@ function describeCall(e: ToolCallInput): string {
   return path ? `${tool} ${path.split('/').pop()}` : tool
 }
 
-/** A worker's turn ended: it is idle, its tokens add up, and meld wakes the run when every worker is idle. */
+/** The tokens a turn added: its input, the context it wrote to the cache and its output, not the cached context it read again. */
+export function freshTokens(usage: TurnUsage | undefined): number {
+  if (!usage) return 0
+  return usage.input_tokens + usage.cache_creation_input_tokens + usage.output_tokens
+}
+
+/** A worker's turn ended: it is idle and its tokens add up. The clock of meld starts workers again (see restartIdleWorkers). */
 export async function markWorker(io: Io, agentId: string | undefined, state: WorkerState, tokens = 0): Promise<void> {
   if (agentId === undefined) return
   const run = await readRun(io)
@@ -331,29 +362,69 @@ export async function markWorker(io: Io, agentId: string | undefined, state: Wor
   if (!run || !worker) return
   const now = await io.now()
   await writeRun(io, current => board.addTokens(board.setWorkerState(current, worker.id, state, now), worker.id, tokens))
-  if (state === 'idle') await nudgeIfStuck(io)
 }
 
-/** Every live worker idle with no final commit: wake them with the open tasks, or the integrator when all are done, a few times at most. */
-async function nudgeIfStuck(io: Io): Promise<void> {
+type Restart = { worker: Worker; step: string }
+
+/**
+ * One beat of the clock. The run of an idle worker has ended (the engine drops a spawned agent at its hand-back), so
+ * meld starts a new agent for it when there is work for it: news on the board that it has not read, with an open task
+ * or a task of its own; or, with every worker idle, the owners of unfinished tasks, then idle workers for open tasks,
+ * else the lead to plan, steer or integrate. Each beat that starts a worker counts; a finished task or a steer resets
+ * the count, so after three beats that finish nothing meld stops and tells the person once.
+ *
+ * The clock calls it, not the end of a turn: an agent skips the hook that started it, so an agent started from the
+ * turn hook would end with no hook to see it. The clock started in session.start, which no worker needs.
+ */
+export async function restartIdleWorkers(io: Io): Promise<void> {
   const run = await readRun(io)
-  if (!run || run.state !== 'working') return
-  const live = run.workers.filter(worker => worker.state !== 'stopped')
-  if (!live.length || live.some(worker => worker.state !== 'idle')) return
-  if (run.nudges >= NUDGE_LIMIT) {
-    io.toast('meld: all workers are idle. Steer them or stop the run.')
-    return
-  }
+  if (!run || run.state !== 'working' || run.nudges > NUDGE_LIMIT) return
+  const restarts = restartsFor(run)
+  if (!restarts.length) return
   await writeRun(io, board.countNudge)
-  const unfinished = run.tasks.filter(task => task.state !== 'done').map(task => `#${task.id} ${task.title}`)
-  if (unfinished.length) {
-    const step = `All workers are idle, and these tasks are not done: ${unfinished.join('; ')}. Claim one and do it, or release the ones you cannot do with a note.`
-    for (const worker of live) tell(io, worker, wakeText(step))
+  if (run.nudges === NUDGE_LIMIT) {
+    io.toast(STUCK_TOAST)
     return
   }
-  const integrator = live.find(worker => worker.id === run.integrator) ?? live[0]
-  const step = `All tasks are done. Integrate: call ${TOOL.integrate}, merge the work of every worker into yours, run the checks, then call ${TOOL.finish}.`
-  if (integrator) tell(io, integrator, wakeText(step))
+  for (const { worker, step } of restarts) await restart(io, worker, wakeText(step))
+}
+
+function restartsFor(run: Run): Restart[] {
+  const live = run.workers.filter(worker => worker.state !== 'stopped')
+  const idle = live.filter(worker => worker.state === 'idle')
+  const everyoneIdle = idle.length === live.length
+  const ready = everyoneIdle ? idle : idle.filter(worker => hasNews(run, worker))
+  const open = run.tasks.filter(task => task.state === 'open')
+  const owners = ready.filter(worker => claimsOf(run, worker).length)
+  const takers = ready.filter(worker => !claimsOf(run, worker).length).slice(0, open.length)
+  const restarts = [
+    ...owners.map(worker => ({ worker, step: `Your task is not done: ${titles(claimsOf(run, worker))}. Go on with it, or release it with a note.` })),
+    ...takers.map(worker => ({ worker, step: `These tasks are open: ${titles(open)}. Claim one and do it.` })),
+  ]
+  if (restarts.length || !everyoneIdle) return restarts
+  const lead = live.find(worker => worker.id === run.integrator) ?? live[0]
+  return lead ? [{ worker: lead, step: leadStep(run, lead) }] : []
+}
+
+/** Board entries the worker has not read: a steer, or an entry of another worker (meld's own restarts are not news). */
+function hasNews(run: Run, worker: Worker): boolean {
+  return worker.seenRevision < run.revision || run.log.some(entry => entry.id > worker.seenEntry && entry.by !== worker.id && entry.by !== 'you')
+}
+
+function claimsOf(run: Run, worker: Worker): Task[] {
+  return run.tasks.filter(task => task.state === 'claimed' && task.owner === worker.id)
+}
+
+function titles(tasks: Task[]): string {
+  return tasks.map(task => `#${task.id} ${task.title}`).join('; ')
+}
+
+/** With nothing open or claimed: the last steer when the lead has not read it, a plan when there is none, else the integration. */
+function leadStep(run: Run, lead: Worker): string {
+  const steer = lead.seenRevision < run.revision ? board.steersOf(run).at(-1) : undefined
+  if (steer !== undefined) return `The person changed the request (revision ${run.revision}): ${steer}`
+  if (!run.tasks.length && !run.integrator) return `There are no tasks yet. Split the request into tasks with ${TOOL.addTasks}, then claim one.`
+  return `All tasks are done. Integrate: call ${TOOL.integrate}, merge the work of every worker into yours, run the checks, then call ${TOOL.finish}.`
 }
 
 export async function steerRun(io: Io, instruction: string): Promise<string> {
@@ -373,9 +444,14 @@ export async function steerRun(io: Io, instruction: string): Promise<string> {
   })
   const run = await readRun(io)
   if (!revision || !run) return outcome
+  const step = wakeText(`The person changed the request (revision ${revision}): ${instruction}`)
   const live = run.workers.filter(worker => worker.state !== 'stopped')
-  for (const worker of live) tell(io, worker, wakeText(`The person changed the request (revision ${revision}): ${instruction}`))
-  return `All ${live.length} workers get revision ${revision}.`
+  const running = live.filter(worker => worker.state === 'working')
+  for (const worker of running) tell(io, worker, step)
+  if (running.length === live.length) return `All ${live.length} workers get revision ${revision}.`
+  if (running.length) return `Revision ${revision}: ${running.length} running workers get it; the others see it when meld starts them again.`
+  if (!live.length) return `Revision ${revision}: no worker is left to take it.`
+  return `Revision ${revision}: every worker has ended, so meld starts them again with it.`
 }
 
 export async function stopAll(io: Io): Promise<string> {

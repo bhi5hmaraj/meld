@@ -8,6 +8,7 @@ import {
   bindWorker,
   boardFor,
   claimTask,
+  countNudge,
   declareFinal,
   finishTask,
   isFailure,
@@ -110,6 +111,11 @@ test('only the owner finishes a task, with its commit', () => {
   const run = runOf(claimTask(withTask(), 'w1', 1, 1, NOW))
   expect(finishTask(run, 'w2', 1, 2, 'def5678', 'Tokens added', NOW)).toMatchObject({ error: 'NOT_OWNER' })
   expect(runOf(finishTask(run, 'w1', 1, 2, 'def5678', 'Tokens added', NOW)).tasks[0]).toMatchObject({ state: 'done', commit: 'def5678' })
+})
+
+test('a finished task gives the run its restarts again', () => {
+  const stuck = countNudge(countNudge(runOf(claimTask(withTask(), 'w1', 1, 1, NOW))))
+  expect(runOf(finishTask(stuck, 'w1', 1, 2, 'def5678', 'Tokens added', NOW)).nudges).toBe(0)
 })
 
 test('a released task is open again', () => {

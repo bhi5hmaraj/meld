@@ -1,8 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
-import { deliver, discard, guardCall, markWorker, refreshFacts, serveTool, startRun, steerRun, stopOne } from '../hooks/actions'
-import { addTasks, bindWorker, declareFinal, isFailure, startRun as startBoard, steer, takeIntegration } from '../hooks/board'
+import { deliver, discard, freshTokens, guardCall, markWorker, restartIdleWorkers, refreshFacts, serveTool, startRun, steerRun, stopOne } from '../hooks/actions'
+import { addTasks, bindWorker, claimTask, declareFinal, isFailure, startRun as startBoard, steer, takeIntegration } from '../hooks/board'
 import { JJ_RESOLVE_TEMPLATE } from '../hooks/vcs'
 import type { AgentSpec, Change, Run, VcsKind, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
@@ -52,9 +52,21 @@ test('a run makes one workspace per worker and spawns each worker in its folder'
     ['meld w3', 'meld:worker', undefined, `/tmp/meld/${ID}/w3`],
   ])
   expect(io.spawned[0]?.prompt).toContain('Add a dark theme')
-  expect(io.current?.workers.map(worker => worker.agentId)).toEqual(['agent-1', 'agent-2', 'agent-3'])
+  expect(io.current?.workers.map(worker => worker.agentId)).toEqual(['spawned-1', 'spawned-2', 'spawned-3'])
   expect(io.current?.state).toBe('working')
   expect(result.text).toBe(`Run ${ID}: 3 workers on git, from commit ${HEAD.slice(0, 7)}.`)
+})
+
+test('a run notes what the session has cost at its start', async () => {
+  const io = ioWith(null)
+  io.usd = 1.25
+  await startRun(io, '/repo', { request: 'Add a dark theme', agents: TWO, vcs: 'auto' })
+  expect(io.current?.costAtStart).toBe(1.25)
+})
+
+test('a turn counts the tokens it added, not the cached context it read again', () => {
+  const usage = { model: 'sonnet', input_tokens: 10, output_tokens: 200, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 1500 }
+  expect(freshTokens(usage)).toBe(1710)
 })
 
 test('a run uses jj when jj is installed', async () => {
@@ -205,35 +217,139 @@ test('a steer reaches every live worker', async () => {
   expect(io.sent).toHaveLength(3)
 })
 
-test('when all workers are idle and every task is done, the integrator is told to integrate', async () => {
+test('the end of the last turn starts no agent; the next beat of the clock does', async () => {
   const io = ioWith(runOf(takeIntegration(working(), 'w2', NOW)))
   await markWorker(io, 'agent-1', 'idle')
   await markWorker(io, 'agent-2', 'idle')
-  expect(io.sent).toHaveLength(1)
-  expect(io.sent[0]).toContain('agent-2: meld: All tasks are done. Integrate')
+  expect(io.spawned).toHaveLength(0)
+  await restartIdleWorkers(io)
+  expect(io.spawned).toHaveLength(1)
 })
 
-test('when all workers are idle with open tasks, each live worker is woken with them', async () => {
-  const io = ioWith(runOf(addTasks(working(3), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }, { title: 'Docs' }] }, NOW)))
+test('when every worker has ended and every task is done, meld starts the integrator again in its folder', async () => {
+  const io = ioWith(runOf(takeIntegration(working(), 'w2', NOW)))
+  await markWorker(io, 'agent-1', 'idle')
+  await markWorker(io, 'agent-2', 'idle')
+  await restartIdleWorkers(io)
+  expect(io.sent).toHaveLength(0)
+  expect(io.spawned.map(spawn => [spawn.description, spawn.cwd])).toEqual([['meld w2', '/tmp/meld/r1/w2']])
+  expect(io.spawned[0]?.prompt).toContain('All tasks are done. Integrate')
+  expect(io.current?.workers[1]).toMatchObject({ agentId: 'spawned-1', state: 'working', briefed: false })
+})
+
+test('when every worker has ended with open tasks, meld starts one worker for each open task, owners first', async () => {
+  const planned = runOf(addTasks(working(3), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }, { title: 'Docs' }] }, NOW))
+  const io = ioWith(runOf(claimTask(planned, 'w3', 2, 1, NOW)))
   await markWorker(io, 'agent-1', 'idle')
   await markWorker(io, 'agent-2', 'idle')
   await markWorker(io, 'agent-3', 'idle')
-  expect(io.sent).toHaveLength(3)
-  expect(io.sent[2]).toContain('#1 Tokens; #2 Docs')
+  await restartIdleWorkers(io)
+  expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w3', 'meld w1'])
+  expect(io.spawned[0]?.prompt).toContain('Your task is not done: #2 Docs')
+  expect(io.spawned[1]?.prompt).toContain('These tasks are open: #1 Tokens')
 })
 
-test('after three nudges the person is told to steer, and a steer allows new nudges', async () => {
+test('a worker that ended starts again when a working peer adds tasks', async () => {
+  const io = ioWith(working(3))
+  await markWorker(io, 'agent-2', 'idle')
+  await markWorker(io, 'agent-3', 'idle')
+  await serveTool(io, call({ tool: 'mcp__meld__add_tasks', seen: 0, tasks: [{ title: 'Tokens' }, { title: 'Docs' }], agentId: 'agent-1' }))
+  await restartIdleWorkers(io)
+  expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w2', 'meld w3'])
+  expect(io.spawned[0]?.prompt).toContain('These tasks are open: #1 Tokens; #2 Docs')
+})
+
+test('a worker that ended after it read the board stays idle until there is news', async () => {
+  const io = ioWith(working(3))
+  await serveTool(io, call({ tool: 'mcp__meld__add_tasks', seen: 0, tasks: [{ title: 'Tokens' }, { title: 'Docs' }], agentId: 'agent-1' }))
+  await serveTool(io, call({ tool: 'mcp__meld__board', agentId: 'agent-2' }))
+  await markWorker(io, 'agent-2', 'idle')
+  await restartIdleWorkers(io)
+  expect(io.spawned).toHaveLength(0)
+  await serveTool(io, call({ tool: 'mcp__meld__note', text: 'The tokens are in theme.css', agentId: 'agent-1' }))
+  await restartIdleWorkers(io)
+  expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w2'])
+})
+
+test('with no tasks and every worker ended, the lead splits the request', async () => {
   const io = ioWith(working())
   await markWorker(io, 'agent-1', 'idle')
   await markWorker(io, 'agent-2', 'idle')
+  await restartIdleWorkers(io)
+  expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w1'])
+  expect(io.spawned[0]?.prompt).toContain('There are no tasks yet')
+})
+
+test('a beat with one worker still working starts no agent', async () => {
+  const io = ioWith(working())
+  await markWorker(io, 'agent-1', 'idle')
+  await restartIdleWorkers(io)
+  expect(io.spawned).toHaveLength(0)
+})
+
+test('a worker that meld starts again gets its rules again on its first board read', async () => {
+  const io = ioWith(runOf(takeIntegration(working(), 'w2', NOW)))
   await markWorker(io, 'agent-1', 'idle')
   await markWorker(io, 'agent-2', 'idle')
+  await restartIdleWorkers(io)
+  const first = parsed((await serveTool(io, call({ tool: 'mcp__meld__board', agentId: 'spawned-1' }))).result) as { rules?: string }
+  expect(first.rules).toContain('You are w2')
+})
+
+test('the end of an agent that meld replaced changes nothing', async () => {
+  const io = ioWith(runOf(takeIntegration(working(), 'w2', NOW)))
   await markWorker(io, 'agent-1', 'idle')
-  expect(io.sent).toHaveLength(3)
-  expect(io.toasts).toContain('meld: all workers are idle. Steer them or stop the run.')
-  await steerRun(io, 'Add the docs')
   await markWorker(io, 'agent-2', 'idle')
-  expect(io.sent).toHaveLength(6)
+  await restartIdleWorkers(io)
+  await markWorker(io, 'agent-2', 'idle')
+  await restartIdleWorkers(io)
+  expect(io.spawned).toHaveLength(1)
+  expect(io.current?.workers[1]?.state).toBe('working')
+})
+
+test('after three restarts that finish nothing the person is told once to steer, and a steer allows new restarts', async () => {
+  const io = ioWith(working())
+  await markWorker(io, 'agent-1', 'idle')
+  await markWorker(io, 'agent-2', 'idle')
+  await restartIdleWorkers(io)
+  await markWorker(io, 'spawned-1', 'idle')
+  await restartIdleWorkers(io)
+  await markWorker(io, 'spawned-2', 'idle')
+  await restartIdleWorkers(io)
+  await markWorker(io, 'spawned-3', 'idle')
+  await restartIdleWorkers(io)
+  await restartIdleWorkers(io)
+  expect(io.spawned).toHaveLength(3)
+  expect(io.toasts).toEqual(['meld: three restarts in a row finished no task. Steer the workers or stop the run.'])
+  expect(await steerRun(io, 'Add the docs')).toBe('Revision 2: every worker has ended, so meld starts them again with it.')
+  await restartIdleWorkers(io)
+  expect(io.spawned[3]?.prompt).toContain('Add the docs')
+})
+
+test('a steer of a ready run starts no agent; the next beat starts the integrator with the steer', async () => {
+  const io = ioWith(runOf(declareFinal(runOf(takeIntegration(working(), 'w2', NOW)), 'w2', FULL, 'Done', NOW)))
+  await markWorker(io, 'agent-1', 'idle')
+  await markWorker(io, 'agent-2', 'idle')
+  expect(await steerRun(io, 'Rename the toggle')).toBe('Revision 2: every worker has ended, so meld starts them again with it.')
+  expect(io.spawned).toHaveLength(0)
+  await restartIdleWorkers(io)
+  expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w2'])
+  expect(io.spawned[0]?.prompt).toContain('The person changed the request (revision 2): Rename the toggle')
+  expect(io.spawned[0]?.prompt).not.toContain('All tasks are done')
+})
+
+test('a steer goes as a message to the running workers, and waits for the ended ones', async () => {
+  const io = ioWith(working(3))
+  await markWorker(io, 'agent-2', 'idle')
+  expect(await steerRun(io, 'Use the brand colours')).toBe('Revision 2: 2 running workers get it; the others see it when meld starts them again.')
+  expect(io.sent.map(message => message.split(':')[0])).toEqual(['agent-1', 'agent-3'])
+  expect(io.spawned).toHaveLength(0)
+})
+
+test('the main session steers the run with the steer tool', async () => {
+  const io = ioWith(working(3))
+  const replied = await serveTool(io, call({ tool: 'mcp__meld__steer', text: 'Integrate now' }))
+  expect(parsed(replied.result)).toEqual({ text: 'All 3 workers get revision 2.' })
 })
 
 test('the tokens of each turn add up on the worker', async () => {

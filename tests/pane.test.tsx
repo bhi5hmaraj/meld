@@ -197,15 +197,25 @@ test('no block of the pane holds more than 100 words, with eight agents or a rea
   }
 })
 
-test('a lane counts the tool calls of a working agent, and shows its tokens once a turn ends', async ($, on) => {
+test('an agent card counts its tool calls, not its tokens', async ($, on) => {
   const run = workingRun(2)
   const counted = { ...run, workers: run.workers.map((worker, index) => ({ ...worker, calls: 27, tokens: index === 1 ? 182_000 : 0 })) }
   const state = new FakeState().load(counted, factsOf(counted))
   on('clock.now', () => ({ value: NOW }))
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: '27 calls' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: '182k tok' })).toBeDefined()
+  expect(await ui.findAll({ type: 'Text', text: '27 calls' })).toHaveLength(2)
+  expect(await ui.find({ type: 'Text', text: / tok$/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the header shows the dollars the session spent since the run started', async ($, on) => {
+  const state = new FakeState().load({ ...workingRun(2), costAtStart: 1.25 }, null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  on('session.usage', () => ({ value: { startedAt: NOW, context: { window: 200_000 }, rateLimits: [], cost: { usd: 3.75 } } }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: / · \$2\.50$/ })).toBeDefined()
   await ui.unmount()
 })
 

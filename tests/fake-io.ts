@@ -20,6 +20,7 @@ export class FakeIo implements Io {
   ranCommands: string[] = []
   sent: string[] = []
   toasts: string[] = []
+  usd: number | undefined = undefined
 
   async run(argv: string[], cwd: string): Promise<ProcessResult> {
     const command = argv.join(' ')
@@ -51,6 +52,10 @@ export class FakeIo implements Io {
 
   async sleep(): Promise<void> {}
 
+  async cost(): Promise<number | undefined> {
+    return this.usd
+  }
+
   async read(): Promise<Run | null> {
     return this.current
   }
@@ -75,7 +80,7 @@ export class FakeIo implements Io {
 
   async spawn(args: SpawnArgs): Promise<Spawned> {
     this.spawned.push(args)
-    return this.spawnDeny ? { deny: this.spawnDeny } : { agentId: `agent-${this.spawned.length}` }
+    return this.spawnDeny ? { deny: this.spawnDeny } : { agentId: `spawned-${this.spawned.length}` }
   }
 
   async command(name: string, args: string): Promise<{ text?: string }> {

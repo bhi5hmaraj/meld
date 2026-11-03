@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
-import type { Register, TurnUsage } from 'claude-code'
+import type { Register } from 'claude-code'
 
-import { guardCall, markWorker, refreshFacts, serveTool, startRun, steerRun, stopAll } from './actions'
+import { freshTokens, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, startRun, steerRun, stopAll } from './actions'
 import { TOOL_SPECS, WORKER_SYSTEM } from './contract'
 import type { Io } from './io'
 import { parseStart, WORKER_TYPE } from './options'
@@ -13,22 +13,18 @@ const runRef = atom({ plugin: 'meld', key: 'run' } as const, null, { shape: 'run
 const factsRef = atom({ plugin: 'meld', key: 'facts' } as const, null, { shape: 'facts-1' })
 const viewRef = atom({ plugin: 'meld', key: 'view' } as const, null, { shape: 'view-1' })
 const PROCESS_TIMEOUT_MS = 120_000
-const FACTS_MS = 3000
+const BEAT_MS = 3000
 
 let sessionCwd = ''
-let refreshing = false
-
-function tokensOf(usage: TurnUsage | undefined): number {
-  if (!usage) return 0
-  return usage.input_tokens + usage.output_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens
-}
+let beating = false
 
 /**
  * Each hook builds its own Io below: a hooks module spells `$` only at its call sites, never passes it on.
  *
  * An agent that a hook spawns runs under that hook and skips it. So a hook that spawns workers never serves them: the
- * start and stop tools of the main session have a hook of their own, the board another, and the guard of every other
- * tool a third. The Start button of the pane runs /meld, which the command hook serves.
+ * start, steer and stop tools of the main session have a hook of their own, the board another, and the guard of every
+ * other tool a third. The Start button of the pane runs /meld, which the command hook serves. Only the clock of
+ * session.start starts workers again: the end of a turn marks the worker idle, and a steer only messages the running ones.
  */
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
@@ -36,6 +32,7 @@ export const register: Register = on => {
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
+      cost: async () => (await $.session.usage()).cost?.usd,
       sleep: ms => $.clock.sleep(ms),
       read: () => read($, runRef),
       write: change => update($, runRef, change),
@@ -59,13 +56,14 @@ export const register: Register = on => {
     await $.command.register({ name: 'meld-steer', description: 'Give every meld worker a new instruction', argumentHint: '<instruction>', immediate: true })
     await $.command.register({ name: 'meld-status', description: 'Open the meld pane', immediate: true })
     await $.command.register({ name: 'meld-stop', description: 'Stop the meld workers; their workspaces stay', immediate: true })
-    $.clock.every(FACTS_MS, () => {
-      if (refreshing) return
-      refreshing = true
-      void refreshFacts(io)
+    $.clock.every(BEAT_MS, () => {
+      if (beating) return
+      beating = true
+      void restartIdleWorkers(io)
+        .then(() => refreshFacts(io))
         .catch(() => undefined)
         .finally(() => {
-          refreshing = false
+          beating = false
         })
     })
     return next(e)
@@ -77,6 +75,7 @@ export const register: Register = on => {
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
+      cost: async () => (await $.session.usage()).cost?.usd,
       sleep: ms => $.clock.sleep(ms),
       read: () => read($, runRef),
       write: change => update($, runRef, change),
@@ -103,10 +102,11 @@ export const register: Register = on => {
     return { text: 'The pane is open.' }
   })
 
-  on('tool.call', { tool: ['mcp__meld__start', 'mcp__meld__stop'] }, async ($, e) => {
+  on('tool.call', { tool: ['mcp__meld__start', 'mcp__meld__steer', 'mcp__meld__stop'] }, async ($, e) => {
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
+      cost: async () => (await $.session.usage()).cost?.usd,
       sleep: ms => $.clock.sleep(ms),
       read: () => read($, runRef),
       write: change => update($, runRef, change),
@@ -123,7 +123,7 @@ export const register: Register = on => {
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
     }
     return serveTool(io, e, sessionCwd)
-  }).catch(($, e, next) => (next.called ? next(e) : { deny: 'meld: the run could not start or stop. Try the call again.' }))
+  }).catch(($, e, next) => (next.called ? next(e) : { deny: 'meld: the run could not start, steer or stop. Try the call again.' }))
 
   on(
     'tool.call',
@@ -144,6 +144,7 @@ export const register: Register = on => {
       const io: Io = {
         run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
         now: () => $.clock.now(),
+        cost: async () => (await $.session.usage()).cost?.usd,
         sleep: ms => $.clock.sleep(ms),
         read: () => read($, runRef),
         write: change => update($, runRef, change),
@@ -168,6 +169,7 @@ export const register: Register = on => {
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
+      cost: async () => (await $.session.usage()).cost?.usd,
       sleep: ms => $.clock.sleep(ms),
       read: () => read($, runRef),
       write: change => update($, runRef, change),
@@ -191,6 +193,7 @@ export const register: Register = on => {
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
+      cost: async () => (await $.session.usage()).cost?.usd,
       sleep: ms => $.clock.sleep(ms),
       read: () => read($, runRef),
       write: change => update($, runRef, change),
@@ -207,7 +210,7 @@ export const register: Register = on => {
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
     }
     const completed = await next(e)
-    await markWorker(io, e.agentId, 'idle', tokensOf(e.usage))
+    await markWorker(io, e.agentId, 'idle', freshTokens(e.usage))
     return completed
   })
 
@@ -215,6 +218,7 @@ export const register: Register = on => {
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
+      cost: async () => (await $.session.usage()).cost?.usd,
       sleep: ms => $.clock.sleep(ms),
       read: () => read($, runRef),
       write: change => update($, runRef, change),
@@ -237,6 +241,7 @@ export const register: Register = on => {
       facts: await read($, factsRef),
       view: (await read($, viewRef)) ?? DEFAULT_VIEW,
       now: await $.clock.now(),
+      sessionCost: (await $.session.usage().catch(() => undefined))?.cost?.usd,
       io,
       setView: change => update($, viewRef, view => change(view ?? DEFAULT_VIEW)),
       start: args => io.command('meld', args),

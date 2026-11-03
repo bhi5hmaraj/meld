@@ -28,6 +28,7 @@ export type StartInput = {
   base: string
   vcs: VcsKind
   now: number
+  costAtStart?: number
   workers: { id: WorkerId; path: string; ref: string; agent: AgentSpec }[]
 }
 
@@ -43,6 +44,7 @@ export function startRun(input: StartInput): Run {
     repo: input.repo,
     base: input.base,
     startedAt: input.now,
+    costAtStart: input.costAtStart,
     workers: input.workers.map(worker => ({
       id: worker.id,
       agent: worker.agent,
@@ -109,6 +111,13 @@ export function addTokens(run: Run, id: WorkerId, tokens: number): Run {
   return replaceWorker(run, { ...worker, tokens: worker.tokens + tokens })
 }
 
+/** A new agent takes the place of a worker whose run ended: it works in the same folder and reads its rules again. */
+export function restartWorker(run: Run, id: WorkerId, agentId: string, now: number): Run {
+  const worker = findWorker(run, id)
+  const restarted = replaceWorker(run, { ...worker, agentId, state: 'working', briefed: false, activity: 'started again', activityAt: now })
+  return withEntry(restarted, { at: now, by: 'you', kind: 'event', text: `${id} starts again` })
+}
+
 /** Adds a batch of tasks only when the worker has seen the current task list: a stale add fails alone and shows the tasks it missed. */
 export function addTasks(
   run: Run,
@@ -159,7 +168,7 @@ export function finishTask(
   const checked = checkOwnedTask(run, by, id, version)
   if (isTaskFailure(checked)) return checked
   const done: Task = { ...checked, state: 'done', commit, summary, version: checked.version + 1 }
-  return updateTask(run, done, by, now, `finished #${id}: ${summary}`, commit)
+  return updateTask({ ...run, nudges: 0 }, done, by, now, `finished #${id}: ${summary}`, commit)
 }
 
 export function addNote(run: Run, by: WorkerId, text: string, commit: string | undefined, now: number): Change<Entry> {

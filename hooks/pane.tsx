@@ -52,6 +52,8 @@ export type PaneInput = {
   view: PaneView
   now: number
   io: Io
+  /** The dollars the session has spent, where the host keeps a cost ledger. */
+  sessionCost?: number
   setView: (change: (view: PaneView) => PaneView) => Promise<unknown>
   start: (args: string) => Promise<{ text?: string }>
 }
@@ -77,8 +79,8 @@ export function paneTree(input: PaneInput) {
 function headerSection(input: PaneInput, run: Run) {
   const { Box, Text, Button } = input.table
   const { io } = input
-  const tokens = run.workers.reduce((sum, worker) => sum + worker.tokens, 0)
   const calls = run.workers.reduce((sum, worker) => sum + (worker.calls ?? 0), 0)
+  const spent = spentOf(input.sessionCost, run.costAtStart)
   const shared = sharedSpec(run)
   return (
     <Box key="sec-top" flexDirection="column" gap="xs">
@@ -88,7 +90,7 @@ function headerSection(input: PaneInput, run: Run) {
             ● {STATE_WORD[run.state]}
           </Text>
           <Text dimColor>
-            {run.vcs} · {run.workers.length} agents{shared ? ` · ${shared}` : ''} · {ago(input.now - run.startedAt)} · {costOf(calls, tokens)}
+            {run.vcs} · {run.workers.length} agents{shared ? ` · ${shared}` : ''} · {ago(input.now - run.startedAt)} · {spent ?? callsOf(calls)}
           </Text>
         </Box>
         <Box flexDirection="row" gap="sm">
@@ -160,7 +162,7 @@ function laneRow(input: PaneInput, run: Run, worker: Worker, index: number, lane
         <Text color={tone} dimColor={!tone}>
           {ago(age)}
         </Text>
-        <Text dimColor>{costOf(worker.calls ?? 0, worker.tokens)}</Text>
+        <Text dimColor>{callsOf(worker.calls ?? 0)}</Text>
         {spec && <Text dimColor>{spec}</Text>}
       </Box>
     </Box>
@@ -371,9 +373,14 @@ function shortActivity(activity: string): string {
   return cut(target ? `${name} ${target.split('/').filter(Boolean).pop() ?? target}` : name, ACTIVITY_CHARS)
 }
 
-/** What an agent has cost so far: its tokens once a turn has ended, else its tool calls, which count while it works. */
-function costOf(calls: number, tokens: number): string {
-  return tokens > 0 ? `${formatTokens(tokens)} tok` : `${calls} calls`
+function callsOf(calls: number): string {
+  return `${calls} ${calls === 1 ? 'call' : 'calls'}`
+}
+
+/** The dollars the session spent since the run started, when the host keeps a cost ledger and the run noted its start. */
+function spentOf(sessionCost: number | undefined, costAtStart: number | undefined): string | undefined {
+  if (sessionCost === undefined || costAtStart === undefined) return undefined
+  return `$${Math.max(0, sessionCost - costAtStart).toFixed(2)}`
 }
 
 /** The agent of every worker when all share one, for the header; undefined when the workers differ. */
@@ -418,12 +425,6 @@ function ago(ms: number): string {
   if (seconds < 60) return `${seconds}s`
   if (seconds < 3600) return `${Math.round(seconds / 60)}m`
   return `${Math.round(seconds / 3600)}h`
-}
-
-function formatTokens(tokens: number): string {
-  if (tokens < 1000) return String(tokens)
-  if (tokens < 1_000_000) return `${Math.round(tokens / 1000)}k`
-  return `${(tokens / 1_000_000).toFixed(1)}M`
 }
 
 function cut(text: string, chars: number): string {

@@ -13,6 +13,8 @@ export type Spawned = { agentId?: string; deny?: string }
 export type Io = {
   run(argv: string[], cwd: string): Promise<ProcessResult>
   now(): Promise<number>
+  /** The dollars the session has spent, where the host keeps a cost ledger. */
+  cost(): Promise<number | undefined>
   sleep(ms: number): Promise<void>
   read(): Promise<Run | null>
   write(change: (run: Run | null) => Run | null): Promise<unknown>

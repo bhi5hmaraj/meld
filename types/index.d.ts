@@ -72,6 +72,8 @@ export type Run = {
   base: string
   startedAt: number
   endedAt?: number
+  /** The dollars the session had spent when the run started; the pane shows what it spent since. */
+  costAtStart?: number
   workers: Worker[]
   tasks: Task[]
   log: Entry[]
