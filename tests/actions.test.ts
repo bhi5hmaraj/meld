@@ -266,7 +266,7 @@ test('each board tool reply of a worker carries the context, and the entries it 
   await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'interface', text: 'tokens(): Record<string, string> in src/theme.ts', agentId: 'agent-1' }))
   const replied = await serveTool(io, call({ tool: 'mcp__meld__claim', task: 1, version: 1, agentId: 'agent-2' }))
   expect(parsed(replied.result)).toMatchObject({ ok: true, context: [{ kind: 'interface', by: 'w1', seenBy: ['w2'] }] })
-  expect(io.current?.context[0]?.seenBy).toEqual(['w2'])
+  expect(io.current?.context?.[0]?.seenBy).toEqual(['w2'])
 })
 
 test('a refused board call of a worker carries the context', async () => {
@@ -288,14 +288,14 @@ test('the board read of the main session carries the context, and adds no reader
   await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'The tokens are in src/theme.css.', agentId: 'agent-1' }))
   const view = parsed((await serveTool(io, call({ tool: 'mcp__meld__board' }))).result)
   expect(view).toMatchObject({ context: [{ kind: 'fact', by: 'w1', seenBy: [] }] })
-  expect(io.current?.context[0]?.seenBy).toEqual([])
+  expect(io.current?.context?.[0]?.seenBy).toEqual([])
 })
 
 test('the commit of a share is kept as the full id that its revision names in the folder of the worker', async () => {
   const io = ioWith(working())
   io.answers['git rev-parse --verify --quiet HEAD^{commit}'] = FULL
   await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'add() is in src/math.js.', commit: 'HEAD', agentId: 'agent-1' }))
-  expect(io.current?.context[0]?.commit).toBe(FULL)
+  expect(io.current?.context?.[0]?.commit).toBe(FULL)
   expect(io.cwds['git rev-parse --verify --quiet HEAD^{commit}']).toBe('/tmp/meld/r1/w1')
 })
 
@@ -703,14 +703,14 @@ test('a new run mirrors its board to board.json in the folder of the run', async
 test('a share mirrors the board with its context', async () => {
   const io = ioWith(working())
   await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'The tokens are in src/theme.css.', agentId: 'agent-1' }))
-  expect(mirrorOf(io)?.context.map(entry => [entry.kind, entry.by, entry.text])).toEqual([['fact', 'w1', 'The tokens are in src/theme.css.']])
+  expect(mirrorOf(io)?.context?.map(entry => [entry.kind, entry.by, entry.text])).toEqual([['fact', 'w1', 'The tokens are in src/theme.css.']])
 })
 
 test('the mirror holds the board of the newest write', async () => {
   const io = ioWith(working())
   await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'The tokens are in src/theme.css.', agentId: 'agent-1' }))
   await serveTool(io, call({ tool: 'mcp__meld__board', agentId: 'agent-2' }))
-  expect(mirrorOf(io)?.context[0]?.seenBy).toEqual(['w2'])
+  expect(mirrorOf(io)?.context?.[0]?.seenBy).toEqual(['w2'])
   expect(mirrorOf(io)).toEqual(io.current ?? undefined)
 })
 

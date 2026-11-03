@@ -100,7 +100,8 @@ export type Run = {
   workers: Worker[]
   tasks: Task[]
   log: Entry[]
-  context: ContextEntry[]
+  /** The shared context; absent in a run that meld 0.5.3 or older stored. */
+  context?: ContextEntry[]
   integrator?: WorkerId
   final?: Final
   nudges: number

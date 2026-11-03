@@ -214,7 +214,7 @@ export function shareEntry(run: Run, by: WorkerId, input: ShareInput, now: numbe
   if (!text) return failure('INVALID', 'The text is empty.')
   const tooLong = lengthFailure('text', text)
   if (tooLong) return tooLong
-  if (input.replaces !== undefined && !run.context.some(entry => entry.id === input.replaces)) {
+  if (input.replaces !== undefined && !contextOf(run).some(entry => entry.id === input.replaces)) {
     return failure('NOT_FOUND', `There is no entry ${input.replaces} to replace.`)
   }
   const shared = withContext(run, { at: now, kind, by, text, commit: input.commit, files: input.files ?? [], replaces: input.replaces })
@@ -225,8 +225,9 @@ export function shareEntry(run: Run, by: WorkerId, input: ShareInput, now: numbe
 
 /** The current entries, newest first. An entry that a newer entry replaces is not current. */
 export function currentContext(run: Run, limit = CONTEXT_SHOWN): ContextEntry[] {
-  const replaced = new Set(run.context.map(entry => entry.replaces))
-  return run.context
+  const context = contextOf(run)
+  const replaced = new Set(context.map(entry => entry.replaces))
+  return context
     .filter(entry => !replaced.has(entry.id))
     .reverse()
     .slice(0, limit)
@@ -235,7 +236,7 @@ export function currentContext(run: Run, limit = CONTEXT_SHOWN): ContextEntry[] 
 /** The context that a board reply carries to a worker. Each entry that the reply shows counts the worker as a reader, unless the worker wrote it. */
 export function passContext(run: Run, by: WorkerId): { run: Run; context: ContextView[] } {
   const shown = new Set(currentContext(run).map(entry => entry.id))
-  const context = run.context.map(entry =>
+  const context = contextOf(run).map(entry =>
     shown.has(entry.id) && entry.by !== by && !entry.seenBy.includes(by) ? { ...entry, seenBy: [...entry.seenBy, by] } : entry,
   )
   const passed = { ...run, context }
@@ -391,12 +392,17 @@ function withEntry(run: Run, entry: Omit<Entry, 'id'> & { by: Author }): Run {
 }
 
 function withContext(run: Run, entry: Omit<ContextEntry, 'id' | 'seenBy'>): Run {
-  const id = (run.context.at(-1)?.id ?? 0) + 1
-  return { ...run, context: [...run.context, { ...entry, id, seenBy: [] }].slice(-CONTEXT_KEPT) }
+  const context = contextOf(run)
+  const id = (context.at(-1)?.id ?? 0) + 1
+  return { ...run, context: [...context, { ...entry, id, seenBy: [] }].slice(-CONTEXT_KEPT) }
+}
+
+function contextOf(run: Run): ContextEntry[] {
+  return run.context ?? []
 }
 
 function lastContext(run: Run): ContextEntry {
-  const entry = run.context.at(-1)
+  const entry = contextOf(run).at(-1)
   if (!entry) throw new Error('meld: the context is empty')
   return entry
 }

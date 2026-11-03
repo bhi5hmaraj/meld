@@ -317,20 +317,20 @@ test('a board read adds its reader to seenBy of each entry one time, and does no
   const byAuthor = boardFor(shared, 'w1').run
   const twice = boardFor(boardFor(byAuthor, 'w2').run, 'w2')
   expect(twice.view.context[0]?.seenBy).toEqual(['w2'])
-  expect(boardFor(twice.run, 'w3').run.context[0]?.seenBy).toEqual(['w2', 'w3'])
+  expect(boardFor(twice.run, 'w3').run.context?.[0]?.seenBy).toEqual(['w2', 'w3'])
 })
 
 test('the context of any board reply counts its reader in seenBy', () => {
   const shared = runOf(shareEntry(working(), 'w1', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW))
   const passed = passContext(shared, 'w2')
   expect(passed.context[0]?.seenBy).toEqual(['w2'])
-  expect(passed.run.context[0]?.seenBy).toEqual(['w2'])
+  expect(passed.run.context?.[0]?.seenBy).toEqual(['w2'])
 })
 
 test('a read counts no reader for an entry that it does not show', () => {
   const read = passContext(withFacts(21), 'w2').run
-  expect(read.context[0]?.seenBy).toEqual([])
-  expect(read.context[1]?.seenBy).toEqual(['w2'])
+  expect(read.context?.[0]?.seenBy).toEqual([])
+  expect(read.context?.[1]?.seenBy).toEqual(['w2'])
 })
 
 test('a finished task shares its interfaces and what it left unfinished, with its commit', () => {
@@ -350,4 +350,18 @@ test('a finished task with no interfaces and nothing unfinished shares nothing',
 test('a finish with an interfaces text of more than 500 characters is refused', () => {
   const claimed = runOf(claimTask(withTask(), 'w1', 1, 1, NOW))
   expect(finishTask(claimed, 'w1', 1, 2, 'def5678', 'Tokens added', NOW, { interfaces: 'a'.repeat(501) })).toMatchObject({ error: 'INVALID' })
+})
+
+function storedByOldMeld(run: Run): Run {
+  const { context: _context, ...stored } = run
+  return stored as Run
+}
+
+test('a run that meld 0.5.3 stored, with no context, takes a share and shows it', () => {
+  const shared = runOf(shareEntry(storedByOldMeld(working()), 'w1', { kind: 'fact', text: 'Colours live in theme.css' }, NOW))
+  expect(currentContext(shared).map(entry => entry.text)).toEqual(['Colours live in theme.css'])
+})
+
+test('a board read of a run that meld 0.5.3 stored has an empty context', () => {
+  expect(boardFor(storedByOldMeld(working()), 'w1').view.context).toEqual([])
 })

@@ -9,7 +9,7 @@ import { DEFAULT_VIEW, paneTree } from './pane'
 
 const MELD_TOOL = 'mcp__meld__'
 // Change a shape tag when the fields of its value change: a value stored by an older version then reads as the initial value.
-const runRef = atom({ plugin: 'meld', key: 'run' } as const, null, { shape: 'run-5' })
+const runRef = atom({ plugin: 'meld', key: 'run' } as const, null, { shape: 'run-4' })
 const factsRef = atom({ plugin: 'meld', key: 'facts' } as const, null, { shape: 'facts-1' })
 const viewRef = atom({ plugin: 'meld', key: 'view' } as const, null, { shape: 'view-1' })
 const PROCESS_TIMEOUT_MS = 120_000
