@@ -2,6 +2,7 @@ import type { ElementTable, RenderSurface } from 'claude-code'
 
 import type { AgentSpec, Entry, Facts, LaneFacts, PaneView, ResultFacts, Run, RunState, Worker, WorkerState } from '../types'
 import { deliver, discard, LEADING_CD, stopAll, stopOne } from './actions'
+import { NOT_STARTED } from './board'
 import { STEER_PRESETS } from './contract'
 import { agentColor, BAR_HEIGHT, BAR_WIDTH, LANE_HEIGHT, LANE_WIDTH, laneAlt, laneGlyphs, laneSvg, STATUS, taskBarSvg } from './drawing'
 import type { TaskCounts } from './drawing'
@@ -69,6 +70,7 @@ export function paneTree(input: PaneInput) {
   return (
     <Box flexDirection="column" gap="lg">
       {headerSection(input, run)}
+      {refusedSection(input, run)}
       {agentsSection(input, run, facts)}
       {tasksSection(input, run)}
       {checksSection(input, run)}
@@ -120,6 +122,35 @@ function headerSection(input: PaneInput, run: Run) {
   )
 }
 
+/** Why agents did not start, once per reason and in full: a lane has room for a few words. */
+function refusedSection(input: PaneInput, run: Run) {
+  const { Box, Text } = input.table
+  const idsByReason = new Map<string, string[]>()
+  for (const worker of run.workers.filter(isRefused)) {
+    const reason = firstSentence(worker.activity.slice(NOT_STARTED.length))
+    idsByReason.set(reason, [...(idsByReason.get(reason) ?? []), worker.id])
+  }
+  if (!idsByReason.size) return null
+  return (
+    <Box key="sec-refused" flexDirection="column" gap="xs">
+      {[...idsByReason].map(([reason, ids]) => (
+        <Text key={`refused-${ids[0]}`} color="error" wrap="wrap">
+          {`${ids.join(', ')} did not start. ${reason}`}
+        </Text>
+      ))}
+    </Box>
+  )
+}
+
+function isRefused(worker: Worker): boolean {
+  return worker.state === 'stopped' && worker.activity.startsWith(NOT_STARTED)
+}
+
+/** An engine refusal's first sentence: what went wrong. The sentences after it instruct the model. */
+function firstSentence(text: string): string {
+  return /^.*?\.(?=\s|$)/s.exec(text)?.[0] ?? text
+}
+
 function agentsSection(input: PaneInput, run: Run, facts: Facts | null) {
   const { Box } = input.table
   const checks = run.log.filter(entry => entry.kind === 'check')
@@ -145,7 +176,7 @@ function laneRow(input: PaneInput, run: Run, worker: Worker, index: number, lane
         <Box flexDirection="row" gap="sm" alignItems="center">
           <Text color={WORKER_TONE[worker.state]}>●</Text>
           <Text bold>{worker.id}</Text>
-          {Svg ? (
+          {isRefused(worker) ? null : Svg ? (
             <Svg source={laneSvg(marks)} alt={laneAlt(worker.id, lane)} width={LANE_WIDTH} height={LANE_HEIGHT} isInteractive />
           ) : (
             <Text color={agentColor(index).light}>{laneGlyphs(marks)}</Text>
@@ -179,7 +210,7 @@ function tasksSection(input: PaneInput, run: Run) {
   if (!run.tasks.length) {
     return (
       <Box key="sec-tasks">
-        <Text dimColor>No tasks yet: the agents are planning.</Text>
+        <Text dimColor>{LIVE.has(run.state) ? 'No tasks yet: the agents are planning.' : 'No tasks: the run ended before the agents planned.'}</Text>
       </Box>
     )
   }
@@ -349,6 +380,7 @@ function laneOf(facts: Facts | null, worker: Worker): LaneFacts {
 
 /** What a worker does now, in a few words: its first claimed task, and its last tool with the first word of a command. */
 function activityOf(run: Run, worker: Worker): string {
+  if (isRefused(worker)) return 'not started'
   if (worker.state === 'stopped') return cut(worker.activity, ACTIVITY_CHARS)
   const claim = run.tasks.find(task => task.state === 'claimed' && task.owner === worker.id)
   const doing = worker.state === 'idle' ? 'idle' : shortActivity(worker.activity)
