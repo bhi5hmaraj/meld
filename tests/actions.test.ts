@@ -146,6 +146,18 @@ test('an edit of a worker inside its worktree goes on and shows as its activity'
   expect(io.current?.workers[0]?.activity).toBe('Edit a.ts')
 })
 
+test('a stopped worker may hand back, which ends its turn', async () => {
+  const io = ioWith(working())
+  await stopOne(io, 'w1')
+  expect(await guardCall(io, call({ tool: 'SubagentHandback', message: 'Stopped.', agentId: 'agent-1' }))).toBeUndefined()
+})
+
+test('a worker of a ready run may hand back, and may do no other work', async () => {
+  const io = ioWith(runOf(declareFinal(runOf(takeIntegration(working(), 'w2', NOW)), 'w2', FULL, 'Done', NOW)))
+  expect(await guardCall(io, call({ tool: 'SubagentHandback', message: 'Done.', agentId: 'agent-2' }))).toBeUndefined()
+  expect(await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))).toBe('The meld run has its final commit. End your turn now.')
+})
+
 test('a tool call of the main session is never guarded', async () => {
   const io = ioWith(working())
   expect(await guardCall(io, call({ tool: 'Edit', file_path: '/repo/src/a.ts' }))).toBeUndefined()

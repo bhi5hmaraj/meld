@@ -11,6 +11,8 @@ import { detectVcs, vcsFor } from './vcs'
 import type { Prepared } from './vcs'
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
+/** The tool that ends the run of an agent that meld starts: the guard never refuses it, or the agent cannot end. */
+const HANDBACK_TOOL = 'SubagentHandback'
 const COMMIT_TOOLS = new Set<string>([TOOL.finishTask, TOOL.check, TOOL.finish])
 const OPEN_WORK_TOOLS = new Set<string>([TOOL.addTasks, TOOL.release])
 const LIVE_STATES = new Set(['starting', 'working', 'ready'])
@@ -326,7 +328,7 @@ export async function guardCall(io: Io, e: ToolCallInput): Promise<string | unde
   if (e.agentId === undefined) return undefined
   const run = await readRun(io)
   const worker = run ? board.workerOf(run, e.agentId) : undefined
-  if (!run || !worker) return undefined
+  if (!run || !worker || String(e.tool) === HANDBACK_TOOL) return undefined
   if (worker.state === 'stopped' || run.state === 'stopped') return 'meld stopped you. End your turn now with a one-line summary.'
   if (run.state === 'ready' || run.state === 'delivered') return 'The meld run has its final commit. End your turn now.'
   const path = editedPath(e)
