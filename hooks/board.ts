@@ -55,6 +55,7 @@ export function startRun(input: StartInput): Run {
       activity: 'starting',
       activityAt: input.now,
       tokens: 0,
+      calls: 0,
     })),
     tasks: [],
     log: [],
@@ -95,6 +96,11 @@ function settled(run: Run): Run {
 
 export function markBriefed(run: Run, id: WorkerId): Run {
   return replaceWorker(run, { ...findWorker(run, id), briefed: true })
+}
+
+export function countCall(run: Run, id: WorkerId): Run {
+  const worker = findWorker(run, id)
+  return replaceWorker(run, { ...worker, calls: (worker.calls ?? 0) + 1 })
 }
 
 export function addTokens(run: Run, id: WorkerId, tokens: number): Run {

@@ -18,6 +18,7 @@ const BIND_POLL_MS = 200
 const BIND_POLLS = 100
 const NUDGE_LIMIT = 3
 const JJ_MISSING = 'jj 0.40 or newer is not installed. Use --vcs git or --vcs auto.'
+const LEADING_CD = /^(?:\s*cd\s+\S+\s*(?:&&|;)\s*)+/
 
 type Args = Record<string, unknown>
 type Refused = { error: string; message: string }
@@ -151,11 +152,11 @@ export async function serveTool(io: Io, e: ToolCallInput, cwd = ''): Promise<Too
     const change = mutate(run, worker.id, tool, checked.args, now)
     if (board.isFailure(change)) {
       answer = change
-      return board.setWorkerState(run, worker.id, 'working', now)
+      return board.countCall(board.setWorkerState(run, worker.id, 'working', now), worker.id)
     }
     const taken = board.takeNotice(change.run, worker.id)
     answer = { ok: true, value: change.value, notice: taken.notice }
-    return board.setWorkerState(taken.run, worker.id, 'working', now)
+    return board.countCall(board.setWorkerState(taken.run, worker.id, 'working', now), worker.id)
   })
   await afterChange(io, worker.id, tool)
   return reply(answer)
@@ -235,7 +236,7 @@ async function readBoard(io: Io, id: WorkerId, now: number): Promise<BoardView |
     const seen = board.boardFor(run, id)
     const briefed = seen.run.workers.find(worker => worker.id === id)?.briefed ?? true
     view = briefed ? seen.view : { ...seen.view, rules: workerRules(seen.run, id) }
-    return board.setWorkerState(briefed ? seen.run : board.markBriefed(seen.run, id), id, 'working', now)
+    return board.countCall(board.setWorkerState(briefed ? seen.run : board.markBriefed(seen.run, id), id, 'working', now), id)
   })
   return view ?? { error: 'RUN_ENDED', message: 'There is no meld run.' }
 }
@@ -295,7 +296,7 @@ export async function guardCall(io: Io, e: ToolCallInput): Promise<string | unde
   const path = editedPath(e)
   if (path && !isInside(path, worker.path)) return `meld: you work in ${worker.path}. Edit ${moved(path, run.repo, worker.path)} instead.`
   const now = await io.now()
-  await writeRun(io, current => board.setWorkerState(board.setActivity(current, worker.id, describeCall(e), now), worker.id, 'working', now))
+  await writeRun(io, current => board.countCall(board.setWorkerState(board.setActivity(current, worker.id, describeCall(e), now), worker.id, 'working', now), worker.id))
   return undefined
 }
 
@@ -317,7 +318,7 @@ function moved(path: string, repo: string, root: string): string {
 function describeCall(e: ToolCallInput): string {
   const tool = String(e.tool)
   const args = e as unknown as Args
-  if (tool === 'Bash') return `Bash: ${text(args.command).slice(0, 60)}`
+  if (tool === 'Bash') return `Bash: ${text(args.command).replace(LEADING_CD, '').slice(0, 60)}`
   const path = text(args.file_path ?? args.notebook_path ?? args.path ?? args.pattern)
   return path ? `${tool} ${path.split('/').pop()}` : tool
 }

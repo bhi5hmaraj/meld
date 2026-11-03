@@ -321,3 +321,17 @@ test('a worker cannot stop the run', async () => {
   expect(parsed(replied.result)).toMatchObject({ error: 'NOT_ALLOWED' })
   expect(io.current?.state).toBe('working')
 })
+
+test('a Bash call shows the command after a leading cd as the activity', async () => {
+  const io = ioWith(working())
+  await guardCall(io, call({ tool: 'Bash', command: 'cd /tmp/meld/r1/w1 && cd src && jj log -r @', agentId: 'agent-1' }))
+  expect(io.current?.workers[0]?.activity).toBe('Bash: jj log -r @')
+})
+
+test('each tool call of a worker counts, the board tools too', async () => {
+  const io = ioWith(working())
+  await guardCall(io, call({ tool: 'Read', file_path: '/tmp/meld/r1/w2/README.md', agentId: 'agent-2' }))
+  await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
+  await serveTool(io, call({ tool: 'mcp__meld__board', agentId: 'agent-2' }))
+  expect(io.current?.workers.map(worker => worker.calls)).toEqual([0, 3])
+})

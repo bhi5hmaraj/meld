@@ -33,6 +33,8 @@ const ACTIVITY_CHARS = 26
 const CHECK_CHIPS = 6
 const CLAIMED_ROWS = 4
 const SUMMARY_WORDS = 24
+const REQUEST_CHARS = 72
+const COMMAND_WORDS = 2
 const AGENT_OPTIONS = Array.from({ length: MAX_AGENTS }, (_, index) => ({ value: String(index + 1), label: `${index + 1}` }))
 const MODEL_OPTIONS = [{ value: 'inherit', label: 'Same as this session' }, ...MODELS.map(model => ({ value: model, label: model }))]
 const VCS_OPTIONS = [
@@ -75,30 +77,36 @@ function headerSection(input: PaneInput, run: Run) {
   const { Box, Text, Button } = input.table
   const { io } = input
   const tokens = run.workers.reduce((sum, worker) => sum + worker.tokens, 0)
+  const calls = run.workers.reduce((sum, worker) => sum + (worker.calls ?? 0), 0)
   const shared = sharedSpec(run)
   return (
-    <Box key="sec-top" flexDirection="row" gap={1} flexWrap="wrap" alignItems="center">
-      <Text color={STATE_TONE[run.state]} bold>
-        ● {STATE_WORD[run.state]}
+    <Box key="sec-top" flexDirection="column">
+      <Box flexDirection="row" gap={1} flexWrap="wrap" alignItems="center">
+        <Text color={STATE_TONE[run.state]} bold>
+          ● {STATE_WORD[run.state]}
+        </Text>
+        <Text dimColor>
+          {run.vcs} · {run.workers.length} agents{shared ? ` · ${shared}` : ''} · {ago(input.now - run.startedAt)} · {costOf(calls, tokens)}
+        </Text>
+        {(run.state === 'starting' || run.state === 'working') && (
+          <Button key="stop" onPress={() => void act(io, () => stopAll(io))}>
+            ■ Stop all
+          </Button>
+        )}
+        {!LIVE.has(run.state) && (
+          <Button key="discard" onPress={() => void act(io, () => discard(io))}>
+            {run.state === 'delivered' ? 'Clear' : '✗ Discard'}
+          </Button>
+        )}
+        {run.state === 'ready' && (
+          <Button key="discard" dimColor onPress={() => void act(io, () => discard(io))}>
+            ✗ Discard
+          </Button>
+        )}
+      </Box>
+      <Text dimColor wrap="truncate-end">
+        {cut(run.request.split('\n')[0] ?? '', REQUEST_CHARS)}
       </Text>
-      <Text dimColor>
-        {run.vcs} · {run.workers.length} agents{shared ? ` · ${shared}` : ''} · {ago(input.now - run.startedAt)} · {formatTokens(tokens)} tokens
-      </Text>
-      {(run.state === 'starting' || run.state === 'working') && (
-        <Button key="stop" onPress={() => void act(io, () => stopAll(io))}>
-          ■ Stop all
-        </Button>
-      )}
-      {!LIVE.has(run.state) && (
-        <Button key="discard" onPress={() => void act(io, () => discard(io))}>
-          {run.state === 'delivered' ? 'Clear' : '✗ Discard'}
-        </Button>
-      )}
-      {run.state === 'ready' && (
-        <Button key="discard" dimColor onPress={() => void act(io, () => discard(io))}>
-          ✗ Discard
-        </Button>
-      )}
     </Box>
   )
 }
@@ -137,7 +145,7 @@ function laneRow(input: PaneInput, run: Run, worker: Worker, index: number, lane
       <Text color={tone} dimColor={!tone}>
         {ago(age)}
       </Text>
-      <Text dimColor>{formatTokens(worker.tokens)}</Text>
+      <Text dimColor>{costOf(worker.calls ?? 0, worker.tokens)}</Text>
       {spec && <Text dimColor>{spec}</Text>}
       {LIVE.has(run.state) && worker.state !== 'stopped' && (
         <Button key={`stop-${worker.id}`} dimColor onPress={() => void act(io, () => stopOne(io, worker.id))}>
@@ -341,9 +349,17 @@ function activityOf(run: Run, worker: Worker): string {
   return claim ? `#${claim.id} ${doing}` : doing
 }
 
+/** A shell command as its first words, past any leading cd; another tool as its name and target. */
 function shortActivity(activity: string): string {
-  const command = /^Bash: (\S+)/.exec(activity)
-  return cut(command ? `Bash ${command[1]}` : activity, ACTIVITY_CHARS)
+  const command = /^Bash: (.*)$/.exec(activity)?.[1]
+  if (command === undefined) return cut(activity, ACTIVITY_CHARS)
+  const words = command.replace(/^(?:\s*cd\s+\S+\s*(?:&&|;)\s*)+/, '').split(/\s+/).filter(Boolean)
+  return cut(words.slice(0, COMMAND_WORDS).join(' ') || 'Bash', ACTIVITY_CHARS)
+}
+
+/** What an agent has cost so far: its tokens once a turn has ended, else its tool calls, which count while it works. */
+function costOf(calls: number, tokens: number): string {
+  return tokens > 0 ? `${formatTokens(tokens)} tok` : `${calls} calls`
 }
 
 /** The agent of every worker when all share one, for the header; undefined when the workers differ. */

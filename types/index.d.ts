@@ -33,6 +33,8 @@ export type Worker = {
   activity: string
   activityAt: number
   tokens: number
+  /** Tool calls so far; absent in a run that meld 0.2.0 stored. */
+  calls?: number
 }
 
 export type Task = {
