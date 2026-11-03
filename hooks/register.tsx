@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentStatus, Register } from 'claude-code'
 
-import { freshTokens, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, startFromView, startRun, steerRun, stopAll } from './actions'
+import { freshTokens, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll } from './actions'
 import { STEER_PRESETS, TOOL_SPECS, WORKER_SYSTEM } from './contract'
 import type { AgentState, Io } from './io'
 import { parseStart, WORKER_TYPE } from './options'
@@ -92,6 +92,11 @@ export const register: Register = on => {
   })
 
   on('agent.offer', { agent: WORKER_TYPE }, () => ({ isOffered: false }))
+
+  // A worker spawn is an Agent call that meld raises, and auto mode cannot link it to the person: see spawnVerdict.
+  on('tool.check', { tool: 'Agent' }, async ($, e, next) => spawnVerdict(await next(e), next.origin.plugin, await read($, runRef))).catch(
+    ($, e, next) => next(e),
+  )
 
   on('command.run', { command: ['meld', 'meld-steer', 'meld-status', 'meld-stop'] }, async ($, e) => {
     const io: Io = {

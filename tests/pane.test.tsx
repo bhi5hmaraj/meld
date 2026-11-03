@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { addCheck, addTasks, bindWorker, claimTask, declareFinal, isFailure, setActivity, startRun, takeIntegration } from '../hooks/board'
+import { addCheck, addTasks, bindWorker, claimTask, declareFinal, isFailure, refuseWorker, setActivity, startRun, takeIntegration } from '../hooks/board'
 import type { Change, Facts, Run, WorkerId } from '../types'
 
 const NOW = 1_800_000_000_000
@@ -284,5 +284,42 @@ test('each agent has a card: its lane and Stop on the first line, what it does o
   expect(top).toContain('stop-w1')
   expect(detail).toContain('#1 ')
   expect(detail).not.toContain('stop-w1')
+  await ui.unmount()
+})
+
+const REFUSAL = 'The server-side auto mode classifier gave no verdict for Agent: the request that produced this action did not ask for one. Issue the action again once, as-is.'
+
+function refusedRun(): Run {
+  const ids = ['w1', 'w2', 'w3'] as WorkerId[]
+  const workers = ids.map(id => ({ id, path: `/tmp/meld/r1/${id}`, ref: `${id}@`, agent: { type: 'meld:worker' } }))
+  const run = startRun({ id: 'r1', request: 'Add a dark theme', repo: '/repo', base: BASE, vcs: 'jj', now: NOW, workers })
+  return ids.reduce((current, id) => refuseWorker(current, id, REFUSAL, NOW), run)
+}
+
+test('agents that did not start show the first sentence of the refusal once', async ($, on) => {
+  const state = new FakeState().load(refusedRun(), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const said = 'w1, w2, w3 did not start. The server-side auto mode classifier gave no verdict for Agent: the request that produced this action did not ask for one.'
+  expect(await ui.findAll({ type: 'Text', text: said })).toHaveLength(1)
+  await ui.unmount()
+})
+
+test('the lane of an agent that did not start says only that', async ($, on) => {
+  const state = new FakeState().load(refusedRun(), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.findAll({ type: 'Text', text: 'not started' })).toHaveLength(3)
+  await ui.unmount()
+})
+
+test('a run that ended with no tasks says so, with no agents planning', async ($, on) => {
+  const state = new FakeState().load(refusedRun(), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: 'No tasks: the run ended before the agents planned.' })).toBeDefined()
   await ui.unmount()
 })

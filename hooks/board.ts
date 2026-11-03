@@ -84,10 +84,13 @@ export function bindWorker(run: Run, id: WorkerId, agentId: string, now: number)
   return { run: settled(replaceWorker(run, bound)), value: bound }
 }
 
+/** Marks the last action of a worker that never started, ahead of the engine's reason for the refusal. */
+export const NOT_STARTED = 'not started: '
+
 /** A worker whose spawn the engine refused: stopped, with the reason as its last action. */
 export function refuseWorker(run: Run, id: WorkerId, reason: string, now: number): Run {
   const worker = findWorker(run, id)
-  const refused = replaceWorker(run, { ...worker, state: 'stopped', activity: `not started: ${reason}`, activityAt: now })
+  const refused = replaceWorker(run, { ...worker, state: 'stopped', activity: `${NOT_STARTED}${reason}`, activityAt: now })
   return settled(withEntry(refused, { at: now, by: 'you', kind: 'event', text: `${id} did not start: ${reason}` }))
 }
 

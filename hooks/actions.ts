@@ -362,6 +362,20 @@ function describeCall(e: ToolCallInput): string {
 }
 
 /** The tokens a turn added: its input, the context it wrote to the cache and its output, not the cached context it read again. */
+/** Why meld approves the start of its own worker, as the permission check records it. */
+export const SPAWN_APPROVAL = 'meld starts a worker of a run that the person started.'
+
+/**
+ * The verdict on an Agent call. Auto mode's classifier allows a call that it links to the person's request. A spawn that
+ * a plugin makes carries no request, so the classifier gives no verdict and the spawn fails. A mod may approve an
+ * action, so meld approves its own spawn while its run lives. Each action of the worker still goes through the mode.
+ * Every other verdict stands: a deny from a rule, the ceiling of the organization, and each call that meld did not raise.
+ */
+export function spawnVerdict<V extends { decision: string }>(verdict: V, plugin: string, run: Run | null): V | { decision: 'allow'; reason: string } {
+  if (verdict.decision !== 'ask' || plugin !== 'meld' || !run || !LIVE_STATES.has(run.state)) return verdict
+  return { decision: 'allow', reason: SPAWN_APPROVAL }
+}
+
 export function freshTokens(usage: TurnUsage | undefined): number {
   if (!usage) return 0
   return usage.input_tokens + usage.cache_creation_input_tokens + usage.output_tokens

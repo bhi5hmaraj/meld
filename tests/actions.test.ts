@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
-import { deliver, discard, freshTokens, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, startFromView, startRun, steerRun, stopOne } from '../hooks/actions'
+import { deliver, discard, freshTokens, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, SPAWN_APPROVAL, spawnVerdict, startFromView, startRun, steerRun, stopOne } from '../hooks/actions'
 import { addTasks, bindWorker, claimTask, declareFinal, isFailure, setActivity, startRun as startBoard, steer, takeIntegration } from '../hooks/board'
 import { JJ_RESOLVE_TEMPLATE } from '../hooks/vcs'
 import type { AgentSpec, Change, Run, VcsKind, WorkerId } from '../types'
@@ -31,6 +31,29 @@ function ioWith(run: Run | null): FakeIo {
   io.current = run
   return io
 }
+
+const ASK = { decision: 'ask' }
+
+test('meld approves its own spawn while its run lives', () => {
+  expect(spawnVerdict(ASK, 'meld', working())).toEqual({ decision: 'allow', reason: SPAWN_APPROVAL })
+})
+
+test('the ask on a spawn of another plugin stands', () => {
+  expect(spawnVerdict(ASK, 'other', working())).toBe(ASK)
+})
+
+test('the ask on a spawn with no run stands', () => {
+  expect(spawnVerdict(ASK, 'meld', null)).toBe(ASK)
+})
+
+test('the ask on a spawn of a stopped run stands', () => {
+  expect(spawnVerdict(ASK, 'meld', { ...working(), state: 'stopped' })).toBe(ASK)
+})
+
+test('a deny from a rule stands on a spawn of meld', () => {
+  const deny = { decision: 'deny', reason: 'a rule' }
+  expect(spawnVerdict(deny, 'meld', working())).toBe(deny)
+})
 
 function parsed(result: unknown): unknown {
   if (typeof result !== 'string') throw new Error(`a tool result is a string, not ${typeof result}`)
