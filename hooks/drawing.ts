@@ -1,4 +1,6 @@
 import type { CommitFact, Entry, LaneFacts } from '../types'
+import { floored } from './progress'
+import type { Parts } from './progress'
 
 /** The categorical palette in its validated order, one hue per worker; light and dark steps of the same hue. */
 export const AGENT_COLORS = [
@@ -20,6 +22,7 @@ const PROGRESS = { light: '#2a78d6', dark: '#3987e5' }
 export const LANE_WIDTH = 200
 export const LANE_HEIGHT = 20
 export const BAR_WIDTH = 240
+export const ROW_BAR_WIDTH = 64
 export const BAR_HEIGHT = 10
 const LANE_Y = 13
 const FIRST_X = 20
@@ -28,7 +31,6 @@ const MAX_DOTS = 12
 const BAR_GAP = 2
 
 export type LaneMarks = { lane: LaneFacts; color: number; checks: Entry[]; final?: string }
-export type TaskCounts = { done: number; doing: number; open: number }
 
 export function agentColor(index: number): { light: string; dark: string } {
   return AGENT_COLORS[index] ?? AGENT_COLORS[AGENT_COLORS.length - 1]!
@@ -70,25 +72,32 @@ export function laneGlyphs(marks: LaneMarks): string {
   return `·${glyphs.join('')}${marks.lane.edits ? '○' : ''}`
 }
 
-/** The tasks as one bar: done, in progress and open, with a gap between the parts. */
-export function taskBarSvg(counts: TaskCounts): string {
-  const total = counts.done + counts.doing + counts.open
-  if (!total) return svg(BAR_WIDTH, BAR_HEIGHT, [`<rect x="0" y="2" width="${BAR_WIDTH}" height="6" rx="3" fill="${MUTED}" opacity="0.35"/>`])
+/** The work of a task or of the request as one bar: done, claimed and open, with a gap between the parts. */
+export function partsBarSvg(shares: Parts, width = BAR_WIDTH): string {
+  const total = shares.done + shares.claimed + shares.open
+  if (!total) return svg(width, BAR_HEIGHT, [`<rect x="0" y="2" width="${width}" height="6" rx="3" fill="${MUTED}" opacity="0.35"/>`])
   const parts = [`<style>${colorRule('progress', 'fill', PROGRESS)}</style>`]
   const segments: [number, string][] = [
-    [counts.done, `fill="${STATUS.good}"`],
-    [counts.doing, 'class="progress"'],
-    [counts.open, `fill="${MUTED}"`],
+    [shares.done, `fill="${STATUS.good}"`],
+    [shares.claimed, 'class="progress"'],
+    [shares.open, `fill="${MUTED}"`],
   ]
-  const shown = segments.filter(([count]) => count > 0)
-  const room = BAR_WIDTH - BAR_GAP * (shown.length - 1)
+  const shown = segments.filter(([share]) => share > 0)
+  const room = width - BAR_GAP * (shown.length - 1)
   let x = 0
-  for (const [count, paint] of shown) {
-    const width = Math.max(4, (room * count) / total)
-    parts.push(`<rect x="${round(x)}" y="1" width="${round(width)}" height="8" rx="3" ${paint}/>`)
-    x += width + BAR_GAP
+  for (const [share, paint] of shown) {
+    const part = Math.max(4, (room * share) / total)
+    parts.push(`<rect x="${round(x)}" y="1" width="${round(part)}" height="8" rx="3" ${paint}/>`)
+    x += part + BAR_GAP
   }
-  return svg(BAR_WIDTH, BAR_HEIGHT, parts)
+  return svg(width, BAR_HEIGHT, parts)
+}
+
+/** The same bar in text cells. The done cells are cut down, so a full bar means that all the work is done. */
+export function barCells(shares: Parts, cells: number): Parts {
+  const done = floored(cells * shares.done)
+  const claimed = Math.min(cells - done, Math.round(cells * shares.claimed))
+  return { done, claimed, open: cells - done - claimed }
 }
 
 /** One commit on a lane, painted with the fill class of its agent: classes differ per lane, so lanes drawn in one page keep their colors. */

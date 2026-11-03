@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { startRun } from '../hooks/board'
-import { BOARD_TOOLS, TOOL, TOOL_SPECS, workerPrompt, workerRules } from '../hooks/contract'
+import { BOARD_TOOLS, splitNudge, TOOL, TOOL_SPECS, workerPrompt, workerRules } from '../hooks/contract'
 import type { Run, VcsKind, WorkerId } from '../types'
 
 const IDS: WorkerId[] = ['w1', 'w2', 'w3']
@@ -80,4 +80,47 @@ test('the note tool sends a fact, a fail and an interface to share', () => {
   const note = TOOL_SPECS.find(spec => spec.name === 'note')
   expect(note?.description).toContain('For a fact, a fail or an interface, use share.')
   expect(note?.description).not.toContain('need: an interface')
+})
+
+test('the split tool takes a task, its version and two or more new tasks', () => {
+  const split = TOOL_SPECS.find(spec => spec.name === 'split')
+  expect(split?.inputSchema).toMatchObject({
+    properties: { task: { type: 'number' }, version: { type: 'number' }, tasks: { type: 'array', minItems: 2 } },
+    required: ['task', 'version', 'tasks'],
+  })
+})
+
+test('a new task takes a parent, a size of S, M or L, and the tasks it needs', () => {
+  const add = TOOL_SPECS.find(spec => spec.name === 'add_tasks')
+  expect(add?.inputSchema).toMatchObject({
+    properties: { tasks: { items: { properties: { parent: { type: 'number' }, size: { enum: ['S', 'M', 'L'] }, needs: { type: 'array', items: { type: 'number' } } } } } },
+  })
+})
+
+test('a part of a split takes a size and needs, and no parent', () => {
+  const split = TOOL_SPECS.find(spec => spec.name === 'split')
+  expect(split?.inputSchema).toMatchObject({ properties: { tasks: { items: { properties: { size: { enum: ['S', 'M', 'L'] }, needs: { type: 'array' } } } } } })
+  expect(JSON.stringify(split?.inputSchema)).not.toContain('"parent"')
+})
+
+test('the rules ask for titles in plain words, 8 words at most, with no file paths', () => {
+  expect(workerRules(runOn('git'), 'w1')).toContain('Give each task a title in plain words, 8 words at most, with no file paths.')
+})
+
+test('the rules tell a worker to split a task that has more than one deliverable', () => {
+  expect(workerRules(runOn('jj'), 'w1')).toContain(`Split a task that has more than one deliverable with ${TOOL.split}`)
+})
+
+test('the rules tell a worker to give needs when a task needs the result of another task', () => {
+  expect(workerRules(runOn('git'), 'w2')).toContain('Give needs when a task needs the result of another task.')
+})
+
+test('the rules list WAITING with the board errors that fail one call', () => {
+  const rules = workerRules(runOn('git'), 'w1')
+  expect(rules).toContain('(STALE_VERSION, TAKEN, NOT_OWNER, WAITING, CONFLICT, INVALID)')
+  expect(rules).toContain('WAITING names the task that the claim waits for.')
+})
+
+test('the nudge tells the owner of a leaf to split it or finish it', () => {
+  expect(splitNudge(4)).toBe('Split #4 into smaller tasks, or finish it.')
 })

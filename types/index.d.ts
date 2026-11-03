@@ -5,6 +5,8 @@ export type VcsChoice = VcsKind | 'auto'
 export type RunState = 'starting' | 'working' | 'ready' | 'delivered' | 'stopped'
 export type WorkerState = 'starting' | 'working' | 'idle' | 'stopped'
 export type TaskState = 'open' | 'claimed' | 'done'
+/** The size of a task: S, M or L, with weights 1, 3 and 8. */
+export type TaskSize = 'S' | 'M' | 'L'
 export type EntryKind = 'task' | 'note' | 'check' | 'steer' | 'event' | 'share'
 export type ContextKind = 'fact' | 'fail' | 'interface'
 export type ErrorCode =
@@ -18,6 +20,7 @@ export type ErrorCode =
   | 'STALE_TASK_LIST'
   | 'CONFLICT'
   | 'INVALID'
+  | 'WAITING'
 
 /** What runs one worker: an agent type (`meld:worker`, `general-purpose`, a plugin's agent) and an optional model. */
 export type AgentSpec = { type: string; model?: string }
@@ -39,6 +42,10 @@ export type Worker = {
   calls?: number
 }
 
+/**
+ * A task of the board. A task that other tasks name as their parent is a parent: it is open until all its children are
+ * done, and no worker claims it. The fields after summary are absent in a run that meld 0.6.0 stored.
+ */
 export type Task = {
   id: number
   title: string
@@ -48,6 +55,24 @@ export type Task = {
   version: number
   commit?: string
   summary?: string
+  /** The task that this task is a part of; absent for a top-level task. */
+  parent?: number
+  /** M when absent. */
+  size?: TaskSize
+  /** The tasks whose results this task needs: it is ready when they are done, and the needs of its ancestors too. */
+  needs?: number[]
+  addedAt?: number
+  /** When its last need was done, or addedAt; absent while it waits. */
+  readyAt?: number
+  /** When its current owner claimed it; absent while it is open. */
+  claimedAt?: number
+  doneAt?: number
+  /** How many times it went back to open: a release, or the stop of its owner. */
+  releases?: number
+  /** The tool calls of its owner since the claim. */
+  calls?: number
+  /** meld told its owner to split it or finish it. */
+  nudged?: boolean
 }
 
 export type Entry = {
@@ -109,7 +134,7 @@ export type Run = {
 }
 
 export type Failure = { error: ErrorCode; message: string; taskList?: number; tasks?: Task[] }
-export type NewTask = { title: string; detail?: string }
+export type NewTask = { title: string; detail?: string; parent?: number; size?: TaskSize; needs?: number[] }
 export type Change<T> = { run: Run; value: T } | Failure
 
 export type Notice = { revision: number; steers: string[] }
@@ -146,13 +171,15 @@ export type ResultFacts = { commit: string; files: FileChange[]; fileCount: numb
 
 export type Facts = { run: string; lanes: LaneFacts[]; result?: ResultFacts }
 
-/** What the pane keeps between draws: the open diff and the start form. */
+/** What the pane keeps between draws: the open diff, the start form and the open rows of the progress. */
 export type PaneView = {
   showDiff: boolean
   task: string
   agents: number
   model: string
   vcs: VcsChoice
+  /** The tasks whose children the progress shows; absent in a view that meld 0.6.0 stored. */
+  open?: number[]
 }
 
 declare module 'claude-code' {

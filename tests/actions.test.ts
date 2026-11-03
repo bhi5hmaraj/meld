@@ -6,6 +6,7 @@ import { addTasks, bindWorker, claimTask, declareFinal, isFailure, setActivity, 
 import { JJ_RESOLVE_TEMPLATE } from '../hooks/vcs'
 import type { AgentSpec, Change, Run, VcsKind, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
+import { STORED_BY_0_6_0 } from './stored-runs'
 
 const NOW = 1_800_000_000_000
 const ID = NOW.toString(36)
@@ -398,6 +399,17 @@ test('when every worker has ended with open tasks, meld starts one worker for ea
   expect(io.spawned[1]?.prompt).toContain('These tasks are open: #1 Tokens')
 })
 
+test('a restart offers the tasks that a worker can claim, not a parent or a task that waits', async () => {
+  const tasks = [{ title: 'Theme' }, { title: 'Tokens', parent: 1 }, { title: 'Docs', needs: [2] }]
+  const io = ioWith(runOf(addTasks(working(3), 'w1', { seen: 0, tasks }, NOW)))
+  await markWorker(io, 'agent-1', 'idle')
+  await markWorker(io, 'agent-2', 'idle')
+  await markWorker(io, 'agent-3', 'idle')
+  await restartIdleWorkers(io)
+  expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w1'])
+  expect(io.spawned[0]?.prompt).toContain('These tasks are open: #2 Tokens. Claim one and do it.')
+})
+
 test('a worker that ended starts again when a working peer adds tasks', async () => {
   const io = ioWith(working(3))
   await markWorker(io, 'agent-2', 'idle')
@@ -615,6 +627,53 @@ test('a board read from the main session is a string the model can read', async 
   expect(view).toMatchObject({ id: 'r1', vcs: 'git', state: 'working', workers: [{ id: 'w1' }, { id: 'w2' }, { id: 'w3' }] })
 })
 
+test('add_tasks keeps the parent, the size and the needs of each new task', async () => {
+  const io = ioWith(working())
+  const tasks = [{ title: 'Theme', size: 'L' }, { title: 'Tokens', parent: 1, size: 's' }, { title: 'Docs', parent: '#1', needs: ['2'] }]
+  await serveTool(io, call({ tool: 'mcp__meld__add_tasks', seen: 0, tasks, agentId: 'agent-1' }))
+  expect(io.current?.tasks.map(task => [task.id, task.parent, task.size, task.needs])).toEqual([
+    [1, undefined, 'L', undefined],
+    [2, 1, 'S', undefined],
+    [3, 1, undefined, [2]],
+  ])
+})
+
+test('add_tasks reads one need that a model gives as a number', async () => {
+  const io = ioWith(working())
+  await serveTool(io, call({ tool: 'mcp__meld__add_tasks', seen: 0, tasks: [{ title: 'Tokens' }, { title: 'Docs', needs: 1 }], agentId: 'agent-1' }))
+  expect(io.current?.tasks[1]?.needs).toEqual([1])
+})
+
+test('add_tasks refuses a size other than S, M or L', async () => {
+  const io = ioWith(working())
+  const replied = await serveTool(io, call({ tool: 'mcp__meld__add_tasks', seen: 0, tasks: [{ title: 'Tokens', size: 'XL' }], agentId: 'agent-1' }))
+  expect(parsed(replied.result)).toMatchObject({ error: 'INVALID' })
+  expect(io.current?.tasks).toEqual([])
+})
+
+test('a split through the board keeps the first part as the claim of the caller, and tells the working peers', async () => {
+  const io = ioWith(claimedBy('w1'))
+  const parts = [{ title: 'Light tokens' }, { title: 'Dark tokens', size: 'S' }]
+  const replied = await serveTool(io, call({ tool: 'mcp__meld__split', task: 1, version: 2, tasks: parts, agentId: 'agent-1' }))
+  expect(parsed(replied.result)).toMatchObject({ ok: true })
+  expect(io.current?.tasks.map(task => [task.id, task.parent, task.state, task.owner, task.size])).toEqual([
+    [1, undefined, 'open', undefined, undefined],
+    [2, 1, 'claimed', 'w1', undefined],
+    [3, 1, 'open', undefined, 'S'],
+  ])
+  expect(io.sent).toEqual(['agent-2: meld: There is open work on the board. Read the board with mcp__meld__board, then go on.'])
+})
+
+test('a split ends the count of the leaf, and its first part counts from zero', async () => {
+  const io = ioWith(claimedBy('w2'))
+  for (let calls = 2; calls < 40; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
+  const parts = [{ title: 'Light tokens' }, { title: 'Dark tokens' }]
+  await serveTool(io, call({ tool: 'mcp__meld__split', task: 1, version: 2, tasks: parts, agentId: 'agent-2' }))
+  for (let calls = 0; calls < 5; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
+  expect(io.sent.filter(message => message.includes('Split #'))).toEqual([])
+  expect(io.current?.tasks[1]).toMatchObject({ owner: 'w2', calls: 6 })
+})
+
 test('a stale add from a worker answers with the tasks of the other worker', async () => {
   const io = ioWith(working())
   await serveTool(io, call({ tool: 'mcp__meld__add_tasks', seen: 0, tasks: [{ title: 'src/math.js: add and multiply' }], agentId: 'agent-1' }))
@@ -685,6 +744,56 @@ test('each tool call of a worker counts, the board tools too', async () => {
   await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
   await serveTool(io, call({ tool: 'mcp__meld__board', agentId: 'agent-2' }))
   expect(io.current?.workers.map(worker => worker.calls)).toEqual([0, 3])
+})
+
+function claimedBy(id: WorkerId): Run {
+  return runOf(claimTask(runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }] }, NOW)), id, 1, 1, NOW))
+}
+
+test('a worker with 40 tool calls on one leaf is told one time to split it or finish it', async () => {
+  const io = ioWith(claimedBy('w2'))
+  for (let calls = 0; calls <= 40; calls++) await guardCall(io, call({ tool: 'Bash', command: 'pnpm test', agentId: 'agent-2' }))
+  expect(io.sent).toEqual(['agent-2: Split #1 into smaller tasks, or finish it.'])
+  expect(io.current?.tasks[0]).toMatchObject({ calls: 41, nudged: true })
+})
+
+test('a board read counts toward the nudge of a leaf', async () => {
+  const io = ioWith(claimedBy('w2'))
+  for (let calls = 1; calls < 40; calls++) await guardCall(io, call({ tool: 'Read', file_path: '/tmp/meld/r1/w2/a.ts', agentId: 'agent-2' }))
+  expect(io.sent).toEqual([])
+  await serveTool(io, call({ tool: 'mcp__meld__board', agentId: 'agent-2' }))
+  expect(io.sent).toEqual(['agent-2: Split #1 into smaller tasks, or finish it.'])
+})
+
+test('a board tool call counts toward the nudge of a leaf', async () => {
+  const io = ioWith(claimedBy('w1'))
+  for (let calls = 1; calls < 40; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-1' }))
+  await serveTool(io, call({ tool: 'mcp__meld__note', text: 'The tokens are in theme.css', agentId: 'agent-1' }))
+  expect(io.sent).toContain('agent-1: Split #1 into smaller tasks, or finish it.')
+})
+
+test('the owner of a leaf in a run that meld 0.6.0 stored is told to split it after 40 tool calls', async () => {
+  const io = ioWith(STORED_BY_0_6_0)
+  for (let calls = 0; calls < 40; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-1' }))
+  expect(io.sent).toEqual(['agent-1: Split #2 into smaller tasks, or finish it.'])
+})
+
+test('a restart of a run that meld 0.6.0 stored offers its open task and the task of its owner', async () => {
+  const io = ioWith(STORED_BY_0_6_0)
+  await markWorker(io, 'agent-1', 'idle')
+  await restartIdleWorkers(io)
+  expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w1', 'meld w2'])
+  expect(io.spawned[0]?.prompt).toContain('Your task is not done: #2 Dark toggle')
+  expect(io.spawned[1]?.prompt).toContain('These tasks are open: #3 Docs')
+})
+
+test('a worker that finishes its leaf before 40 tool calls is not told to split it', async () => {
+  const io = ioWith(claimedBy('w2'))
+  io.answers['git rev-parse --verify --quiet HEAD^{commit}'] = FULL
+  for (let calls = 2; calls < 40; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
+  await serveTool(io, call({ tool: 'mcp__meld__finish_task', task: 1, version: 2, commit: 'HEAD', summary: 'Tokens', agentId: 'agent-2' }))
+  for (let calls = 0; calls < 5; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
+  expect(io.sent).toEqual([])
 })
 
 const BOARD_FILE = '/tmp/meld/r1/board.json'

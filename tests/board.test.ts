@@ -9,6 +9,7 @@ import {
   boardFor,
   claimTask,
   CONTEXT_TEXT_LIMIT,
+  countCall,
   countNudge,
   currentContext,
   declareFinal,
@@ -18,15 +19,19 @@ import {
   passContext,
   releaseTask,
   shareEntry,
+  SPLIT_CALLS,
+  splitTask,
   startRun,
   steer,
   stopRun,
   stopWorker,
   takeIntegration,
   takeNotice,
+  takeSplitNudge,
   workerOf,
 } from '../hooks/board'
-import type { Change, Run, WorkerId } from '../types'
+import type { Change, NewTask, Run, WorkerId } from '../types'
+import { STORED_BY_0_6_0 } from './stored-runs'
 
 const NOW = 1_800_000_000_000
 const AGENT = { type: 'meld:worker' }
@@ -53,6 +58,35 @@ function workingThree(): Run {
 
 function withTask(): Run {
   return runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Theme tokens', detail: 'CSS variables' }] }, NOW))
+}
+
+/** Tokens, then a large toggle that needs them, with a part for its docs. */
+function planned(): Run {
+  const tasks: NewTask[] = [{ title: 'Theme tokens', size: 'S' }, { title: 'Dark toggle', size: 'L', needs: [1] }, { title: 'Toggle docs', parent: 2 }]
+  return runOf(addTasks(working(), 'w1', { seen: 0, tasks }, NOW))
+}
+
+function withTokensDone(at: number): Run {
+  const claimed = runOf(claimTask(planned(), 'w1', 1, 1, NOW))
+  return runOf(finishTask(claimed, 'w1', 1, 2, 'def5678', 'Tokens added', at))
+}
+
+const PARTS: NewTask[] = [{ title: 'Colour tokens', size: 'S' }, { title: 'Spacing tokens' }, { title: 'Token docs', needs: [3] }]
+
+/** #1 split by w1 into #2, which w1 keeps, and the open #3 and #4; #4 needs #3. */
+function splitRun(): Run {
+  return runOf(splitTask(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w1', 1, 2, PARTS, NOW + 1))
+}
+
+/** Finishes the parts of the split: #2 at NOW + 2, #3 at NOW + 4 and #4 at NOW + 6. */
+function withPartsDone(run = splitRun()): Run {
+  const second = runOf(finishTask(run, 'w1', 2, 1, 'aaa1111', 'Colours added', NOW + 2))
+  const third = runOf(finishTask(runOf(claimTask(second, 'w2', 3, 1, NOW + 3)), 'w2', 3, 2, 'bbb2222', 'Spacing added', NOW + 4))
+  return runOf(finishTask(runOf(claimTask(third, 'w2', 4, 1, NOW + 5)), 'w2', 4, 2, 'ccc3333', 'Docs added', NOW + 6))
+}
+
+function messageOf<T>(change: Change<T>): string {
+  return isFailure(change) ? change.message : ''
 }
 
 function withFacts(count: number): Run {
@@ -100,6 +134,48 @@ test('a worker is briefed once', () => {
 test('the tokens of each turn add up for the worker', () => {
   const run = addTokens(addTokens(working(), 'w2', 1200), 'w2', 300)
   expect(run.workers.map(worker => worker.tokens)).toEqual([0, 1500])
+})
+
+test('a tool call of a worker adds one to the calls of each task it claimed', () => {
+  const run = countCall(countCall(runOf(claimTask(withTask(), 'w2', 1, 1, NOW)), 'w2'), 'w1')
+  expect(run.tasks[0]?.calls).toBe(1)
+  expect(run.workers.map(worker => worker.calls)).toEqual([1, 1])
+})
+
+test('an open task counts no calls', () => {
+  expect(countCall(withTask(), 'w2').tasks[0]?.calls).toBeUndefined()
+})
+
+test('a leaf with 40 calls of its owner earns one nudge', () => {
+  let run = runOf(claimTask(withTask(), 'w2', 1, 1, NOW))
+  for (let call = 0; call < SPLIT_CALLS; call++) run = countCall(run, 'w2')
+  const nudge = takeSplitNudge(run, 'w2')
+  expect(nudge.task).toMatchObject({ id: 1, calls: 40, nudged: true })
+  expect(takeSplitNudge(nudge.run, 'w2').task).toBeUndefined()
+})
+
+test('a leaf with 39 calls of its owner earns no nudge', () => {
+  let run = runOf(claimTask(withTask(), 'w2', 1, 1, NOW))
+  for (let call = 1; call < SPLIT_CALLS; call++) run = countCall(run, 'w2')
+  expect(takeSplitNudge(run, 'w2').task).toBeUndefined()
+})
+
+test('the nudge of a leaf goes to its owner and to no other worker', () => {
+  let run = runOf(claimTask(withTask(), 'w2', 1, 1, NOW))
+  for (let call = 0; call < SPLIT_CALLS; call++) run = countCall(run, 'w2')
+  expect(takeSplitNudge(run, 'w1').task).toBeUndefined()
+})
+
+test('a finished task counts no more calls', () => {
+  const claimed = countCall(runOf(claimTask(withTask(), 'w2', 1, 1, NOW)), 'w2')
+  const done = runOf(finishTask(claimed, 'w2', 1, 2, 'abc1234', 'Tokens', NOW))
+  expect(countCall(done, 'w2').tasks[0]?.calls).toBe(1)
+})
+
+test('a new claim of a released task counts its calls from zero', () => {
+  const claimed = countCall(runOf(claimTask(withTask(), 'w2', 1, 1, NOW)), 'w2')
+  const released = runOf(releaseTask(claimed, 'w2', 1, 2, '', NOW))
+  expect(runOf(claimTask(released, 'w1', 1, 3, NOW)).tasks[0]?.calls).toBe(0)
 })
 
 test('a worker claims an open task', () => {
@@ -364,4 +440,201 @@ test('a run that meld 0.5.3 stored, with no context, takes a share and shows it'
 
 test('a board read of a run that meld 0.5.3 stored has an empty context', () => {
   expect(boardFor(storedByOldMeld(working()), 'w1').view.context).toEqual([])
+})
+
+test('a new task keeps its parent, size and needs', () => {
+  expect(planned().tasks).toMatchObject([
+    { id: 1, size: 'S' },
+    { id: 2, size: 'L', needs: [1] },
+    { id: 3, parent: 2 },
+  ])
+})
+
+test('a new task has its add time, and a ready time when nothing holds it back', () => {
+  const later = runOf(addTasks(planned(), 'w2', { seen: 1, tasks: [{ title: 'Print styles' }] }, NOW + 10))
+  expect(later.tasks.map(task => [task.addedAt, task.readyAt])).toEqual([
+    [NOW, NOW],
+    [NOW, undefined],
+    [NOW, undefined],
+    [NOW + 10, NOW + 10],
+  ])
+})
+
+test('an add that names a task that is not on the board is refused', () => {
+  expect(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Toggle', needs: [4] }] }, NOW)).toMatchObject({ error: 'NOT_FOUND' })
+  expect(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Toggle', parent: 4 }] }, NOW)).toMatchObject({ error: 'NOT_FOUND' })
+})
+
+test('a new task names an earlier task of the same add, and no later one', () => {
+  expect(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Toggle', needs: [2] }, { title: 'Tokens' }] }, NOW)).toMatchObject({ error: 'NOT_FOUND' })
+})
+
+test('an add with a size other than S, M or L is refused', () => {
+  const tasks = [{ title: 'Toggle', size: 'XL' }] as unknown as NewTask[]
+  expect(addTasks(working(), 'w1', { seen: 0, tasks }, NOW)).toMatchObject({ error: 'INVALID' })
+})
+
+test('a task cannot need one of its ancestors', () => {
+  const tasks: NewTask[] = [{ title: 'Toggle' }, { title: 'Toggle docs', parent: 1 }, { title: 'Toggle test', parent: 2, needs: [1] }]
+  expect(addTasks(working(), 'w1', { seen: 0, tasks }, NOW)).toMatchObject({ error: 'INVALID' })
+})
+
+test('a task cannot go under a done task', () => {
+  expect(addTasks(withTokensDone(NOW), 'w2', { seen: 1, tasks: [{ title: 'Token docs', parent: 1 }] }, NOW)).toMatchObject({ error: 'INVALID' })
+})
+
+test('a task cannot go under a task that a worker claims', () => {
+  const claimed = runOf(claimTask(planned(), 'w1', 1, 1, NOW))
+  expect(addTasks(claimed, 'w2', { seen: 1, tasks: [{ title: 'Token docs', parent: 1 }] }, NOW)).toMatchObject({ error: 'INVALID' })
+})
+
+test('a claim of a task whose need is not done is refused with WAITING, which names the need', () => {
+  const run = runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Theme tokens' }, { title: 'Dark toggle', needs: [1] }] }, NOW))
+  const refused = claimTask(run, 'w2', 2, 1, NOW)
+  expect(refused).toMatchObject({ error: 'WAITING' })
+  expect(messageOf(refused)).toBe('#2 waits for #1, which is open. Claim a task that is ready.')
+})
+
+test('a part waits for the needs of its parent', () => {
+  expect(claimTask(planned(), 'w2', 3, 1, NOW)).toMatchObject({ error: 'WAITING' })
+})
+
+test('a task is ready when its last need is done', () => {
+  const done = withTokensDone(NOW + 5)
+  expect(done.tasks.map(task => task.readyAt)).toEqual([NOW, NOW + 5, NOW + 5])
+  expect(runOf(claimTask(done, 'w2', 3, 1, NOW + 6)).tasks[2]).toMatchObject({ state: 'claimed', owner: 'w2' })
+})
+
+test('a claim keeps its time, and a release counts the release and clears the time', () => {
+  const claimed = runOf(claimTask(withTask(), 'w1', 1, 1, NOW + 1))
+  expect(claimed.tasks[0]?.claimedAt).toBe(NOW + 1)
+  const released = runOf(releaseTask(claimed, 'w1', 1, 2, 'Half done', NOW + 2))
+  expect(released.tasks[0]?.claimedAt).toBeUndefined()
+  expect(released.tasks[0]?.releases).toBe(1)
+  const again = runOf(releaseTask(runOf(claimTask(released, 'w2', 1, 3, NOW + 3)), 'w2', 1, 4, '', NOW + 4))
+  expect(again.tasks[0]?.releases).toBe(2)
+})
+
+test('a finished task keeps its done time', () => {
+  expect(withTokensDone(NOW + 5).tasks[0]).toMatchObject({ state: 'done', claimedAt: NOW, doneAt: NOW + 5 })
+})
+
+test('a stopped worker gives back its claimed task as a release', () => {
+  const stopped = stopWorker(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w1', NOW + 1)
+  expect(stopped.tasks[0]?.releases).toBe(1)
+  expect(stopped.tasks[0]?.claimedAt).toBeUndefined()
+})
+
+test('a run that meld 0.6.0 stored takes claims, finishes and tasks that need its tasks', () => {
+  const claimed = runOf(claimTask(STORED_BY_0_6_0, 'w2', 3, 1, NOW + 10))
+  const done = runOf(finishTask(claimed, 'w1', 2, 2, 'aaa1111', 'Toggle added', NOW + 11))
+  expect(done.tasks.map(task => [task.state, task.claimedAt, task.doneAt])).toEqual([
+    ['done', undefined, undefined],
+    ['done', undefined, NOW + 11],
+    ['claimed', NOW + 10, undefined],
+  ])
+  const added = runOf(addTasks(done, 'w1', { seen: 1, tasks: [{ title: 'Release notes', needs: [3] }] }, NOW + 12))
+  expect(claimTask(added, 'w1', 4, 1, NOW + 13)).toMatchObject({ error: 'WAITING' })
+})
+
+test('the tasks of a run that meld 0.6.0 stored get no ready time later', () => {
+  const done = runOf(finishTask(STORED_BY_0_6_0, 'w1', 2, 2, 'aaa1111', 'Toggle added', NOW + 11))
+  expect(done.tasks.map(task => task.readyAt)).toEqual([undefined, undefined, undefined])
+})
+
+test('a board read of a run that meld 0.6.0 stored shows its tasks and context', () => {
+  const view = boardFor(STORED_BY_0_6_0, 'w2').view
+  expect(view.tasks.map(task => task.state)).toEqual(['done', 'claimed', 'open'])
+  expect(view.context.map(entry => entry.text)).toEqual(['The theme lives in theme.css'])
+})
+
+test('a split makes the task a parent, gives the worker the first part, and leaves the other parts open', () => {
+  const run = splitRun()
+  expect(run.tasks).toMatchObject([
+    { id: 1, state: 'open', version: 3 },
+    { id: 2, parent: 1, size: 'S', state: 'claimed', owner: 'w1', version: 1, addedAt: NOW + 1, readyAt: NOW + 1, claimedAt: NOW + 1 },
+    { id: 3, parent: 1, state: 'open', version: 1, readyAt: NOW + 1 },
+    { id: 4, parent: 1, state: 'open', version: 1, needs: [3] },
+  ])
+  expect(run.tasks[0]?.owner).toBeUndefined()
+  expect(run.tasks[0]?.claimedAt).toBeUndefined()
+  expect(run.tasks[3]?.readyAt).toBeUndefined()
+})
+
+test('a split adds its parts to the task list in one change, and gives the parts to the worker', () => {
+  const change = splitTask(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w1', 1, 2, PARTS, NOW + 1)
+  expect(change).toMatchObject({ value: { taskList: 2, tasks: [{ id: 2, state: 'claimed' }, { id: 3, state: 'open' }, { id: 4, state: 'open' }] } })
+  expect(runOf(change).log.at(-1)?.text).toBe('split #1 into #2 Colour tokens; #3 Spacing tokens; #4 Token docs, and claimed #2')
+})
+
+test('only the owner of a task splits it', () => {
+  expect(splitTask(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w2', 1, 2, PARTS, NOW)).toMatchObject({ error: 'NOT_OWNER' })
+})
+
+test('a split into fewer than two parts is refused', () => {
+  expect(splitTask(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w1', 1, 2, [{ title: 'Colour tokens' }], NOW)).toMatchObject({ error: 'INVALID' })
+})
+
+test('a split whose first part waits is refused with WAITING', () => {
+  const two = runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Theme tokens' }, { title: 'Print styles' }] }, NOW))
+  const parts: NewTask[] = [{ title: 'Colour tokens', needs: [2] }, { title: 'Spacing tokens' }]
+  expect(splitTask(runOf(claimTask(two, 'w1', 1, 1, NOW)), 'w1', 1, 2, parts, NOW)).toMatchObject({ error: 'WAITING' })
+})
+
+test('a part cannot need the task that it splits', () => {
+  const claimed = runOf(claimTask(withTask(), 'w1', 1, 1, NOW))
+  expect(splitTask(claimed, 'w1', 1, 2, [{ title: 'Colour tokens' }, { title: 'Spacing tokens', needs: [1] }], NOW)).toMatchObject({ error: 'INVALID' })
+})
+
+test('a new task cannot need a task that waits for its parent', () => {
+  const claimed = runOf(claimTask(planned(), 'w1', 1, 1, NOW))
+  const change = splitTask(claimed, 'w1', 1, 2, [{ title: 'Colour tokens' }, { title: 'Toggle colours', needs: [2] }], NOW)
+  expect(change).toMatchObject({ error: 'INVALID' })
+  expect(messageOf(change)).toContain('#2')
+})
+
+test('a claim of a parent is refused, and names its open parts', () => {
+  const change = claimTask(splitRun(), 'w2', 1, 3, NOW)
+  expect(change).toMatchObject({ error: 'INVALID' })
+  expect(messageOf(change)).toContain('#3')
+})
+
+test('a finish of a parent is refused, and names its open parts', () => {
+  const change = finishTask(splitRun(), 'w1', 1, 3, 'aaa1111', 'Tokens added', NOW)
+  expect(change).toMatchObject({ error: 'INVALID' })
+  expect(messageOf(change)).toContain('#2 (claimed by w1), #3 (open), #4 (open)')
+})
+
+test('a parent is done when its last part is done, with no commit of its own', () => {
+  const run = withPartsDone()
+  expect(run.tasks[0]).toMatchObject({ state: 'done', version: 4, doneAt: NOW + 6 })
+  expect(run.tasks[0]?.commit).toBeUndefined()
+  expect(run.tasks[0]?.owner).toBeUndefined()
+})
+
+test('a parent with an open part is not done', () => {
+  const second = runOf(finishTask(splitRun(), 'w1', 2, 1, 'aaa1111', 'Colours added', NOW + 2))
+  expect(second.tasks[0]?.state).toBe('open')
+})
+
+test('a done parent makes its own parent done', () => {
+  const nested = runOf(splitTask(splitRun(), 'w1', 2, 1, [{ title: 'Light colours' }, { title: 'Dark colours' }], NOW + 2))
+  const light = runOf(finishTask(nested, 'w1', 5, 1, 'ddd4444', 'Light added', NOW + 3))
+  const dark = runOf(finishTask(runOf(claimTask(light, 'w2', 6, 1, NOW + 3)), 'w2', 6, 2, 'eee5555', 'Dark added', NOW + 4))
+  const spacing = runOf(finishTask(runOf(claimTask(dark, 'w2', 3, 1, NOW + 5)), 'w2', 3, 2, 'bbb2222', 'Spacing added', NOW + 6))
+  const docs = runOf(finishTask(runOf(claimTask(spacing, 'w1', 4, 1, NOW + 7)), 'w1', 4, 2, 'ccc3333', 'Docs added', NOW + 8))
+  expect(docs.tasks.map(task => [task.id, task.state, task.doneAt])).toEqual([
+    [1, 'done', NOW + 8],
+    [2, 'done', NOW + 4],
+    [3, 'done', NOW + 6],
+    [4, 'done', NOW + 8],
+    [5, 'done', NOW + 3],
+    [6, 'done', NOW + 4],
+  ])
+})
+
+test('a task that needs a parent is ready when the parent is done', () => {
+  const added = runOf(addTasks(splitRun(), 'w2', { seen: 2, tasks: [{ title: 'Theme switch', needs: [1] }] }, NOW + 1))
+  expect(added.tasks[4]?.readyAt).toBeUndefined()
+  expect(withPartsDone(added).tasks[4]).toMatchObject({ id: 5, readyAt: NOW + 6 })
 })

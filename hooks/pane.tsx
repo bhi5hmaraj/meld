@@ -1,13 +1,15 @@
 import type { ElementTable, RenderSurface } from 'claude-code'
 
-import type { AgentSpec, ContextKind, Entry, Facts, LaneFacts, PaneView, ResultFacts, Run, RunState, Worker, WorkerState } from '../types'
+import type { AgentSpec, ContextKind, Entry, Facts, LaneFacts, PaneView, ResultFacts, Run, RunState, Task, Worker, WorkerId, WorkerState } from '../types'
 import { deliver, discard, LEADING_CD, stopAll, stopOne } from './actions'
 import { currentContext, NOT_STARTED } from './board'
 import { STEER_PRESETS } from './contract'
-import { agentColor, BAR_HEIGHT, BAR_WIDTH, LANE_HEIGHT, LANE_WIDTH, laneAlt, laneGlyphs, laneSvg, STATUS, taskBarSvg } from './drawing'
-import type { TaskCounts } from './drawing'
+import { agentColor, BAR_HEIGHT, BAR_WIDTH, barCells, LANE_HEIGHT, LANE_WIDTH, laneAlt, laneGlyphs, laneSvg, partsBarSvg, ROW_BAR_WIDTH, STATUS } from './drawing'
 import type { Io } from './io'
 import { agentsOf, formatStart, MAX_AGENTS, MODELS, WORKER_TYPE } from './options'
+import { ownersOf, partsOf, percentLabel, percentOf, requestParts, requestPercent, topTasks } from './progress'
+import type { Parts } from './progress'
+import { childrenOf, waitsFor } from './tasks'
 
 export const PANE = 'meld'
 export const DEFAULT_VIEW: PaneView = { showDiff: false, task: '', agents: 2, model: 'inherit', vcs: 'auto' }
@@ -37,8 +39,15 @@ const STUCK_MS = 300_000
 const ACTIVITY_CHARS = 22
 const CHECK_CHIPS = 6
 const CARD_INDENT = 3
-const CLAIMED_ROWS = 4
 const SUMMARY_WORDS = 24
+const REQUEST_BAR = { width: BAR_WIDTH, cells: 24 }
+const ROW_BAR = { width: ROW_BAR_WIDTH, cells: 8 }
+const ROW_INDENT = 2
+const TITLE_WORDS = 8
+/** A text bar has three runs at most: done, claimed and open. */
+const BAR_RUNS = 3
+/** The words of the rows: the progress block holds 100 words with its heading, the bar and percent of the request, and the count of the rows left out. */
+const ROW_WORDS = 90
 const REQUEST_CHARS = 72
 const SKIPPED_ARGUMENT = /^(?:-|\d|\.$|[|&;<>]+$)/
 const AGENT_OPTIONS = Array.from({ length: MAX_AGENTS }, (_, index) => ({ value: String(index + 1), label: `${index + 1}` }))
@@ -76,7 +85,7 @@ export function paneTree(input: PaneInput) {
       {headerSection(input, run)}
       {refusedSection(input, run)}
       {agentsSection(input, run, facts)}
-      {tasksSection(input, run)}
+      {progressSection(input, run)}
       {contextSection(input, run)}
       {checksSection(input, run)}
       {run.final && resultSection(input, run, facts?.result)}
@@ -207,43 +216,124 @@ function laneRow(input: PaneInput, run: Run, worker: Worker, index: number, lane
   )
 }
 
-function tasksSection(input: PaneInput, run: Run) {
+/** One row of the progress. isOpen: the rows of its children show under it. */
+type Row = { task: Task; depth: number; isParent: boolean; isOpen: boolean; owners: WorkerId[]; waits?: number }
+
+/** The percent of the request, and one row for each top-level task, with the rows of its children when it is open. The rows stop before the block passes 100 words. */
+function progressSection(input: PaneInput, run: Run) {
   const { Box, Text } = input.table
-  const Svg = input.surface !== 'terminal' && 'Svg' in input.table ? input.table.Svg : undefined
-  const counts = taskCounts(run)
-  const claimed = run.tasks.filter(task => task.state === 'claimed').slice(0, CLAIMED_ROWS)
   if (!run.tasks.length) {
     return (
-      <Box key="sec-tasks">
+      <Box key="sec-progress">
         <Text dimColor>{LIVE.has(run.state) ? 'No tasks yet: the agents are planning.' : 'No tasks: the run ended before the agents planned.'}</Text>
       </Box>
     )
   }
+  const rows = rowsOf(run.tasks, topTasks(run.tasks), input.view.open ?? [], 0)
+  const shown = rowsWithin(rows)
+  const percent = percentLabel(requestPercent(run.tasks))
   return (
-    <Box key="sec-tasks" flexDirection="column" gap="sm">
-      {Svg ? (
-        <Svg source={taskBarSvg(counts)} alt={`Tasks: ${counts.done} done, ${counts.doing} in progress, ${counts.open} open`} width={BAR_WIDTH} height={BAR_HEIGHT} />
-      ) : (
-        <Box flexDirection="row">
-          <Text color={STATUS.good}>{'█'.repeat(scaled(counts.done, counts))}</Text>
-          <Text color={agentColor(0).light}>{'█'.repeat(scaled(counts.doing, counts))}</Text>
-          <Text dimColor>{'░'.repeat(scaled(counts.open, counts))}</Text>
+    <Box key="sec-progress" flexDirection="column" gap="sm">
+      <Box key="progress-all" flexDirection="row" justifyContent="space-between" alignItems="center" gap="md">
+        <Text bold>Progress</Text>
+        <Box flexDirection="row" gap="sm" alignItems="center">
+          <Text bold tabular>
+            {percent}
+          </Text>
+          {partsBar(input, 'all', requestParts(run.tasks), REQUEST_BAR, `The request: ${percent} done`)}
         </Box>
-      )}
-      <Box flexDirection="row" gap="lg" flexWrap="wrap">
-        <Text color={STATUS.good}>■ {counts.done} done</Text>
-        <Text color={agentColor(0).light}>■ {counts.doing} doing</Text>
-        <Text dimColor>■ {counts.open} open</Text>
       </Box>
       <Box flexDirection="column" gap="xs">
-        {claimed.map(task => (
-          <Text key={`task-${task.id}`} dimColor wrap="truncate-end">
-            #{task.id} {task.owner} · {task.title}
-          </Text>
-        ))}
+        {shown.map(row => taskRow(input, run, row))}
+        {shown.length < rows.length && <Text dimColor>{`${rows.length - shown.length} more`}</Text>}
       </Box>
     </Box>
   )
+}
+
+/** The title on the left; the owners, the need, the percent and the bar on the right, so the bars line up. A press on a parent opens its children. */
+function taskRow(input: PaneInput, run: Run, row: Row) {
+  const { Box, Text, Button } = input.table
+  const { task, waits } = row
+  const percent = percentLabel(percentOf(run.tasks, task))
+  return (
+    <Box key={`task-${task.id}`} flexDirection="row" justifyContent="space-between" alignItems="center" gap="md" paddingLeft={row.depth * ROW_INDENT}>
+      {row.isParent ? (
+        <Button key={`open-${task.id}`} plain onPress={() => void input.setView(view => ({ ...view, open: toggled(view.open, task.id) }))}>
+          {rowLabel(row)}
+        </Button>
+      ) : (
+        <Text wrap="truncate-end">{rowLabel(row)}</Text>
+      )}
+      <Box flexDirection="row" gap="sm" alignItems="center">
+        {row.owners.map(owner => (
+          <Text key={`dot-${task.id}-${owner}`} color={agentColor(run.workers.findIndex(worker => worker.id === owner)).light}>
+            ●
+          </Text>
+        ))}
+        {waits !== undefined && <Text color="warning">{waitText(waits)}</Text>}
+        <Text tabular>{percent}</Text>
+        {partsBar(input, String(task.id), partsOf(run.tasks, task), ROW_BAR, `#${task.id}: ${percent} done`)}
+      </Box>
+    </Box>
+  )
+}
+
+/** The done, claimed and open parts as a picture on a graphic surface. The terminal draws them as cells of three shapes, so each part reads with no colour. */
+function partsBar(input: PaneInput, id: string, parts: Parts, size: { width: number; cells: number }, alt: string) {
+  const { Box, Text } = input.table
+  const Svg = input.surface !== 'terminal' && 'Svg' in input.table ? input.table.Svg : undefined
+  if (Svg) return <Svg source={partsBarSvg(parts, size.width)} alt={alt} width={size.width} height={BAR_HEIGHT} />
+  const cells = barCells(parts, size.cells)
+  return (
+    <Box key={`bar-${id}`} flexDirection="row">
+      {cells.done > 0 && <Text color={STATUS.good}>{'█'.repeat(cells.done)}</Text>}
+      {cells.claimed > 0 && <Text color={agentColor(0).light}>{'▓'.repeat(cells.claimed)}</Text>}
+      {cells.open > 0 && <Text dimColor>{'░'.repeat(cells.open)}</Text>}
+    </Box>
+  )
+}
+
+/** The rows in tree order: the rows of the children of an open task follow its row. */
+function rowsOf(tasks: readonly Task[], list: readonly Task[], open: readonly number[], depth: number): Row[] {
+  return list.flatMap(task => {
+    const children = childrenOf(tasks, task.id)
+    const isOpen = children.length > 0 && open.includes(task.id)
+    const row: Row = { task, depth, isParent: children.length > 0, isOpen, owners: ownersOf(tasks, task), waits: waitsFor(tasks, task) }
+    return isOpen ? [row, ...rowsOf(tasks, children, open, depth + 1)] : [row]
+  })
+}
+
+/** The first rows whose words add up to ROW_WORDS at most. */
+function rowsWithin(rows: readonly Row[]): Row[] {
+  const shown: Row[] = []
+  let words = 0
+  for (const row of rows) {
+    words += rowWords(row)
+    if (words > ROW_WORDS) break
+    shown.push(row)
+  }
+  return shown
+}
+
+/** The words of a row as the limit of a block counts them, with a text bar on every surface. */
+function rowWords(row: Row): number {
+  const waits = row.waits === undefined ? 0 : wordCount(waitText(row.waits))
+  return wordCount(rowLabel(row)) + 1 + BAR_RUNS + row.owners.length + waits
+}
+
+function rowLabel(row: Row): string {
+  const mark = row.isParent ? (row.isOpen ? '▾' : '▸') : '·'
+  return `${mark} #${row.task.id} ${cutWords(row.task.title, TITLE_WORDS)}`
+}
+
+function waitText(id: number): string {
+  return `waits for #${id}`
+}
+
+function toggled(open: readonly number[] | undefined, id: number): number[] {
+  const current = open ?? []
+  return current.includes(id) ? current.filter(one => one !== id) : [...current, id]
 }
 
 /** One line for each of the newest current entries. The cut is in words, so that five lines keep the block under 100 words. */
@@ -444,19 +534,6 @@ function specLabel(agent: AgentSpec): string {
   return agent.model ? `${agent.type} ${agent.model}` : agent.type
 }
 
-function taskCounts(run: Run): TaskCounts {
-  return {
-    done: run.tasks.filter(task => task.state === 'done').length,
-    doing: run.tasks.filter(task => task.state === 'claimed').length,
-    open: run.tasks.filter(task => task.state === 'open').length,
-  }
-}
-
-function scaled(count: number, counts: TaskCounts): number {
-  const total = counts.done + counts.doing + counts.open
-  return total ? Math.round((24 * count) / total) : 0
-}
-
 function latestChecks(run: Run): Entry[] {
   const byCommand = new Map<string, Entry>()
   for (const entry of run.log) if (entry.kind === 'check') byCommand.set(entry.text, entry)
@@ -484,4 +561,8 @@ function cut(text: string, chars: number): string {
 function cutWords(text: string, words: number): string {
   const all = text.split(/\s+/).filter(Boolean)
   return all.length > words ? `${all.slice(0, words).join(' ')}…` : all.join(' ')
+}
+
+function wordCount(text: string): number {
+  return text.split(/\s+/).filter(Boolean).length
 }

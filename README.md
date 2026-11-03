@@ -57,7 +57,7 @@ If Claude Code refuses to start a worker, meld stops that worker and shows the r
 - **The header** shows the state of the run, the version control and the number of agents. Next to them are the time since the start and the dollars that your session spent since the run started. Where Claude Code keeps no cost record, the header shows the tool calls of all agents. **Stop all** stops the run.
 - **The agent lanes** show one lane for each agent, drawn from its real commits since the base, from the oldest to the newest. A diamond is a merge, a star is the final commit, and a red cross is a conflict. A hollow dot shows edits that the agent did not commit. A green check above a commit shows a check that passed on it, and a red cross a check that failed. The terminal draws each lane in characters.
 - **Next to each lane**, meld shows the task that the agent claimed, its last action, the time since that action, and the number of its tool calls. If a working agent makes no tool call for 2 minutes, that time turns yellow, and after 5 minutes it turns red. This is the stall warning. **Stop** stops one agent, and its claimed tasks open for the other agents.
-- **The task bar** shows the tasks that are done, in progress and open, and the claimed tasks with their owners.
+- **Progress** shows a bar and a percent for the whole request. Under it, each top-level task has one row: its title, its percent, a small bar of its done, claimed and open parts, a dot in the colour of each agent that works on it, and the chip `waits for #N` when a task that it needs is not done. A press on the row of a parent shows its children, and a second press hides them. The terminal draws the bars in text. Each percent is cut to the whole number below it, so 100% means that all the work is done.
 - **The shared context** shows the five newest current entries, one line each: a shape for the kind (■ fact, ✕ fail, ◇ interface), the worker that shared the entry, its text, and the number of workers that read it.
 - **The check chips** show the last result of each check command, with its commit. The pane shows six chips at most.
 - **The result** shows the final commit, the number of changed files, the lines added and removed, and the checks that ran on that commit. A warning shows when no check ran on it. **Show diff** (key `v`) opens the diff of the first eight files. **Deliver** (key `d`) merges the result into your branch.
@@ -76,7 +76,7 @@ What you type in the chat goes to Claude, not to the workers. To steer the worke
 4. One worker takes the integration: it merges the work of every worker, runs the checks, and declares the final commit. The run is ready for you.
 5. If you steer a ready run, the workers change the result, and the run changes to the working state.
 
-The workers use ten board tools: `board`, `add_tasks`, `claim`, `release`, `finish_task`, `note`, `share`, `check`, `integrate` and `finish`. The main session uses three more: `start`, `steer` and `stop`. Each reply of a board tool carries the shared context, the board read of the main session included.
+The workers use eleven board tools: `board`, `add_tasks`, `claim`, `split`, `release`, `finish_task`, `note`, `share`, `check`, `integrate` and `finish`. The main session uses three more: `start`, `steer` and `stop`. Each reply of a board tool carries the shared context, the board read of the main session included.
 
 The tools `finish_task`, `check` and `finish` keep the full id of the commit that the revision names in the folder of the worker. `share` does the same when it names a commit. `HEAD` or `@-` names the commit of the worker that calls the tool. meld refuses a final commit with a conflict.
 
@@ -85,6 +85,16 @@ The tools `finish_task`, `check` and `finish` keep the full id of the commit tha
 After each change of the board, meld writes the board to `/tmp/meld/<run>/board.json`, with the tasks, the log and the shared context. That file stays when your session ends. Deliver and Discard remove it with the folder of the run.
 
 The task list has a version. A worker adds its tasks in one call, with the version of its last board read. If another worker added tasks since that read, the add fails and shows the current tasks. The worker claims the tasks that cover its work, and adds the tasks that are missing. A claim is a compare-and-set on the task version, so two workers cannot claim one task.
+
+**The task tree.** A new task can name a `parent`, a `size` and `needs`. The parents make the tasks a tree. The size is S, M or L, with the weights 1, 3 and 8. A task with no size is M. The needs name the tasks whose results the task needs, so the tasks and their needs make a DAG. While a need of a task, or a need of one of its parents, is not done, a claim of that task fails with `WAITING`, and the error names that need. `add_tasks` refuses a need that makes a loop, for example a need on a parent of the new task. The rules tell a worker to give each task a title in plain words, 8 words at most, with no file paths, and to give needs when a task needs the result of another task.
+
+As in DeLM, a worker splits a task with `split`: the task id, its version and the new tasks. The split is one change, so no other worker can take a part between two calls. The task becomes a parent, and the new tasks become its children. The worker keeps the first child as its claim, and the other children are open. The rules tell a worker to split a task that has more than one deliverable. A parent has no commit of its own. It is done when all its children are done. `claim` and `finish_task` refuse a parent with the names of its children that are not done. The first child of a split cannot wait: the worker keeps it.
+
+Each task keeps the time when it was added, the time when it became ready, the time of its claim and the time when it was done. A task is ready when its last need is done, or when it is added with no need that is not done. Each task counts the times that it went back to open: a release, or a stop of its owner.
+
+**Percent.** meld computes the percent from the states of the tasks, and no agent reports a percent. A leaf is 0 until a worker finishes it. A finished leaf is 100. A parent is the mean of its children, with their sizes as weights. The request is the same mean of the top-level tasks.
+
+**The nudge.** When a worker makes 40 tool calls on one leaf with no finish and no split, meld tells it one time: "Split #N into smaller tasks, or finish it."
 
 meld refuses an edit that a worker makes outside its own workspace.
 
@@ -131,11 +141,11 @@ claude plugin test .
 node scripts/adapters.mjs
 ```
 
-`hooks/board.ts` holds the board rules as pure functions. `hooks/actions.ts` holds the steps of a run and takes an `Io` port. `hooks/vcs.ts` holds the version control port and its two adapters, jj and git. `hooks/options.ts` reads the options of `/meld`. `hooks/pane.tsx` and `hooks/drawing.ts` draw the pane.
+`hooks/board.ts` holds the board rules as pure functions. `hooks/tasks.ts` holds the helpers of the task tree. `hooks/progress.ts` gives the percent and the parts of each task. `hooks/actions.ts` holds the steps of a run and takes an `Io` port. `hooks/vcs.ts` holds the version control port and its two adapters, jj and git. `hooks/options.ts` reads the options of `/meld`. `hooks/pane.tsx` and `hooks/drawing.ts` draw the pane.
 
 `hooks/register.tsx` is the one file that calls the engine, because a hooks module spells `$` at its call sites and does not give it to other functions. Each hook builds its own `Io`. An agent that a hook spawns runs under that hook and skips it. For this reason, meld has three tool hooks: the start, steer and stop tools, the board tools, and the guard of every other tool. An agent that a timer or a button closure starts skips every hook of meld, the board and the guard included. For this reason, a `ui.press` and a `ui.input` hook serve the buttons and fields that start agents, and the restarts come from hooks of the main session. The guard lets each `SubagentHandback` through, because that call ends the run of a worker.
 
-The tests use a fake `Io` and mount the pane on each surface. A test holds each block of the pane to 100 words at most, with eight agents or with a ready result.
+The tests use a fake `Io` and mount the pane on each surface. A test holds each block of the pane to 100 words at most, with eight agents, with a ready result, or with a long task tree.
 
 `scripts/adapters.mjs` checks the two adapters with real processes. It compiles `hooks/` with `tsc` into CommonJS in a temporary folder. For each adapter, it makes a temporary git repository and goes through a run: three workspaces, a commit in each, the integration, resolve, lanes, result, deliver and remove. HOME is a temporary folder, so the check does not read or change your git or jj config. It prints PASS or FAIL for each step, and it exits with code 1 when a step fails. It needs `tsc` 5.6 or newer, git, and jj 0.40 or newer.
 

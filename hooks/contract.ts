@@ -7,6 +7,7 @@ export const TOOL = {
   board: 'mcp__meld__board',
   addTasks: 'mcp__meld__add_tasks',
   claim: 'mcp__meld__claim',
+  split: 'mcp__meld__split',
   release: 'mcp__meld__release',
   finishTask: 'mcp__meld__finish_task',
   note: 'mcp__meld__note',
@@ -24,6 +25,7 @@ export const BOARD_TOOLS = [
   TOOL.board,
   TOOL.addTasks,
   TOOL.claim,
+  TOOL.split,
   TOOL.release,
   TOOL.finishTask,
   TOOL.note,
@@ -49,6 +51,13 @@ const TASK_VERSION = {
 }
 
 const COMMIT = { type: 'string', description: 'A revision that names one commit in your folder: HEAD or a hash for git, @- or a commit id for jj.' }
+
+const PART = {
+  title: { type: 'string', description: 'Plain words, 8 words at most, with no file paths.' },
+  detail: { type: 'string' },
+  size: { type: 'string', enum: ['S', 'M', 'L'], description: 'The weight of the task in the percent: S 1, M 3, L 8. M when absent.' },
+  needs: { type: 'array', items: { type: 'number' }, description: 'The tasks whose results this task needs. Until they are done, a claim of this task fails with WAITING.' },
+}
 
 export const TOOL_SPECS: ToolSpec[] = [
   {
@@ -93,7 +102,11 @@ export const TOOL_SPECS: ToolSpec[] = [
         tasks: {
           type: 'array',
           minItems: 1,
-          items: { type: 'object', properties: { title: { type: 'string' }, detail: { type: 'string' } }, required: ['title'] },
+          items: {
+            type: 'object',
+            properties: { ...PART, parent: { type: 'number', description: 'The task that this task is a part of.' } },
+            required: ['title'],
+          },
         },
       },
       required: ['seen', 'tasks'],
@@ -101,8 +114,26 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: 'claim',
-    description: 'Claim an open task before you start it.',
+    description: 'Claim an open task before you start it. While a task that it needs is not done, the claim fails with WAITING.',
     inputSchema: { type: 'object', properties: TASK_VERSION, required: ['task', 'version'] },
+  },
+  {
+    name: 'split',
+    description:
+      'Split a task that you claimed into smaller tasks, in one change. The task becomes their parent: it has no commit of its own, and it is done when all its parts are done. You keep the first part as your claim, and the other parts are open for the other workers.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...TASK_VERSION,
+        tasks: {
+          type: 'array',
+          minItems: 2,
+          description: 'The parts of the task. You keep the first part.',
+          items: { type: 'object', properties: PART, required: ['title'] },
+        },
+      },
+      required: ['task', 'version', 'tasks'],
+    },
   },
   {
     name: 'release',
@@ -191,14 +222,15 @@ Your folder: ${you.path}. Your ref: ${you.ref}. The other workers: ${peers.map(p
 The rules for a meld worker:
 1. Work only in your folder. Never edit the main checkout or the folder of another worker. Read CLAUDE.md or AGENTS.md in your folder if they exist. Install dependencies in your folder if your checks need them, and keep dependency folders out of your commits.
 2. Read the board with ${TOOL.board}. Plan the request as a few small tasks that can go on at the same time, and add them all in one call with ${TOOL.addTasks}, with the taskList version of your read. If another worker added tasks since your read, the call fails and shows its tasks: claim the ones that cover your work, and add only what is still missing. Claim a task with ${TOOL.claim} before you start it.
-3. Commit after each step. When a task is done, call ${TOOL.finishTask} with the commit and a one-line summary. Give the contracts that other tasks use in interfaces, and the work that you did not do in unfinished. Tell the other workers about each decision with ${TOOL.note}.
-4. Each board reply carries the shared context: the current entries, newest first. Read it before you start a task, and do not try the approach of a fail. Share with ${TOOL.share}: a fact when a peer can use it, a fail when an approach did not work, and an interface before a peer depends on it. Give a fact with its evidence, a fail with its reason, and an interface as a name and its shape. To correct an entry, share a new entry with replaces and the id of the old entry.
-5. Use the work of the other workers through version control, as below. Do not do again what another worker did.
-6. Record each test or build you run with ${TOOL.check}, with the commit it ran on.
-7. When every task is done, one worker integrates: it calls ${TOOL.integrate}, merges the work of every worker into its own, runs the checks, then calls ${TOOL.finish} with the final commit and a summary. While another worker integrates, review its commits, add tests, or fix what the checks show.
-8. A board reply can carry a notice: the person changed the request. Follow the newest instruction.
-9. Do not wait with sleep or loops. When nothing is left for you, end your run with a short report. When there is new work, meld starts a new agent for you in your folder, and it reads the board to go on.
-10. A board error (STALE_VERSION, TAKEN, NOT_OWNER, CONFLICT, INVALID) fails only that call. Read the board again, fix the call, and go on.
+3. Give each task a title in plain words, 8 words at most, with no file paths. Give needs when a task needs the result of another task. Until those tasks are done, a claim of that task fails with WAITING. Split a task that has more than one deliverable with ${TOOL.split}: you keep the first part, and the other parts are open. A task with parts has no commit of its own. It is done when all its parts are done.
+4. Commit after each step. When a task is done, call ${TOOL.finishTask} with the commit and a one-line summary. Give the contracts that other tasks use in interfaces, and the work that you did not do in unfinished. Tell the other workers about each decision with ${TOOL.note}.
+5. Each board reply carries the shared context: the current entries, newest first. Read it before you start a task, and do not try the approach of a fail. Share with ${TOOL.share}: a fact when a peer can use it, a fail when an approach did not work, and an interface before a peer depends on it. Give a fact with its evidence, a fail with its reason, and an interface as a name and its shape. To correct an entry, share a new entry with replaces and the id of the old entry.
+6. Use the work of the other workers through version control, as below. Do not do again what another worker did.
+7. Record each test or build you run with ${TOOL.check}, with the commit it ran on.
+8. When every task is done, one worker integrates: it calls ${TOOL.integrate}, merges the work of every worker into its own, runs the checks, then calls ${TOOL.finish} with the final commit and a summary. While another worker integrates, review its commits, add tests, or fix what the checks show.
+9. A board reply can carry a notice: the person changed the request. Follow the newest instruction.
+10. Do not wait with sleep or loops. When nothing is left for you, end your run with a short report. When there is new work, meld starts a new agent for you in your folder, and it reads the board to go on.
+11. A board error (STALE_VERSION, TAKEN, NOT_OWNER, WAITING, CONFLICT, INVALID) fails only that call. Read the board again, fix the call, and go on. WAITING names the task that the claim waits for. Claim another task.
 
 ${run.vcs === 'jj' ? jjGuide(you, peers) : gitGuide(you, peers)}`
 }
@@ -221,6 +253,11 @@ function jjGuide(you: Worker, peers: Worker[]): string {
 - Do not rewrite a commit that you gave to the board or that another worker uses: no jj describe, squash, rebase or abandon on it. Make a new commit on top.
 - If jj says the working copy is stale, run jj workspace update-stale.
 - Integrate: commit your work, then jj new ${['@-', ...lasts].join(' ')} -m "meld: integrate", fix the conflicts, run the checks, jj commit -m "meld: integrate", and give @- to finish.`
+}
+
+/** What meld tells the owner of a leaf after SPLIT_CALLS tool calls on it, with no finish and no split. */
+export function splitNudge(task: number): string {
+  return `Split #${task} into smaller tasks, or finish it.`
 }
 
 export function wakeText(reason: string): string {

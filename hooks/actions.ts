@@ -1,12 +1,13 @@
 import type { CommandRunResult, ToolCallInput, ToolCallResult, TurnUsage } from 'claude-code'
 
-import type { BoardView, Change, Facts, NewTask, PaneView, Run, Task, VcsKind, Worker, WorkerId, WorkerState } from '../types'
+import type { BoardView, Change, Facts, NewTask, PaneView, Run, Task, TaskSize, VcsKind, Worker, WorkerId, WorkerState } from '../types'
 import * as board from './board'
-import { TOOL, wakeText, workerPrompt, workerRules } from './contract'
+import { splitNudge, TOOL, wakeText, workerPrompt, workerRules } from './contract'
 import { headCommit, isDirty, repoRoot } from './git'
 import type { Io, Spawned } from './io'
 import { agentsOf, parseStart } from './options'
 import type { StartOptions } from './options'
+import { claimable } from './tasks'
 import { detectVcs, runHome, vcsFor } from './vcs'
 import type { Prepared } from './vcs'
 
@@ -14,7 +15,7 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 /** The tool that ends the run of an agent that meld starts: the guard never refuses it, or the agent cannot end. */
 const HANDBACK_TOOL = 'SubagentHandback'
 const COMMIT_TOOLS = new Set<string>([TOOL.finishTask, TOOL.check, TOOL.finish])
-const OPEN_WORK_TOOLS = new Set<string>([TOOL.addTasks, TOOL.release])
+const OPEN_WORK_TOOLS = new Set<string>([TOOL.addTasks, TOOL.split, TOOL.release])
 const LIVE_STATES = new Set(['starting', 'working', 'ready'])
 const BIND_POLL_MS = 200
 const BIND_POLLS = 100
@@ -181,15 +182,29 @@ export async function serveTool(io: Io, e: ToolCallInput, cwd = ''): Promise<Too
   if (tool === TOOL.board) return reply(await readBoard(io, worker.id, now))
   const checked = await withResolvedCommit(io, tool, e as unknown as Args, worker)
   let answer: unknown = { error: 'RUN_ENDED', message: 'There is no meld run.' }
+  let nudge: Task | undefined
   await save(io, run => {
     if (!run) return run
     const done = answered(run, worker.id, 'error' in checked ? checked : mutate(run, worker.id, tool, checked.args, now))
     const passed = board.passContext(done.run, worker.id)
     answer = { ...done.answer, context: passed.context }
-    return board.countCall(board.setWorkerState(passed.run, worker.id, 'working', now), worker.id)
+    const counted = countedCall(passed.run, worker.id, now)
+    nudge = counted.task
+    return counted.run
   })
   await afterChange(io, worker.id, tool)
+  await sendNudge(io, worker.id, nudge)
   return reply(answer)
+}
+
+/** A tool call of a worker: the worker works, and the call counts. A call can bring a leaf of the worker to its nudge. */
+function countedCall(run: Run, by: WorkerId, now: number): { run: Run; task?: Task } {
+  return board.takeSplitNudge(board.countCall(board.setWorkerState(run, by, 'working', now), by), by)
+}
+
+async function sendNudge(io: Io, by: WorkerId, task: Task | undefined): Promise<void> {
+  const worker = task ? (await readRun(io))?.workers.find(one => one.id === by) : undefined
+  if (task && worker) tell(io, worker, splitNudge(task.id))
 }
 
 /** A refusal leaves the run as it was; a change answers with its value and the steers that the worker has not seen. */
@@ -235,6 +250,8 @@ function mutate(run: Run, by: WorkerId, tool: string, args: Args, now: number): 
       return board.addTasks(run, by, { seen: Number(args.seen), tasks: newTasks(args.tasks) }, now)
     case TOOL.claim:
       return board.claimTask(run, by, Number(args.task), Number(args.version), now)
+    case TOOL.split:
+      return board.splitTask(run, by, Number(args.task), Number(args.version), newTasks(args.tasks), now)
     case TOOL.release:
       return board.releaseTask(run, by, Number(args.task), Number(args.version), text(args.note), now)
     case TOOL.finishTask: {
@@ -262,8 +279,30 @@ function newTasks(value: unknown): NewTask[] {
   if (!Array.isArray(value)) return []
   return value
     .filter(isRecord)
-    .map(task => ({ title: text(task.title), detail: task.detail === undefined ? undefined : text(task.detail) }))
+    .map(task => ({
+      title: text(task.title),
+      detail: task.detail === undefined ? undefined : text(task.detail),
+      parent: taskId(task.parent),
+      size: sizeOf(task.size),
+      needs: taskIds(task.needs),
+    }))
     .filter(task => task.title)
+}
+
+/** A model can give a task as 3, "3" or "#3". */
+function taskId(value: unknown): number | undefined {
+  return value === undefined || value === null || value === '' ? undefined : Number(text(value).replace(/^#/, ''))
+}
+
+/** A model can give one task, not a list. */
+function taskIds(value: unknown): number[] | undefined {
+  if (value === undefined || value === null) return undefined
+  return (Array.isArray(value) ? value : [value]).map(taskId).filter((id): id is number => id !== undefined)
+}
+
+/** The board refuses a size other than S, M or L. */
+function sizeOf(value: unknown): TaskSize | undefined {
+  return (text(value).trim().toUpperCase() || undefined) as TaskSize | undefined
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -287,13 +326,17 @@ function paths(value: unknown): string[] {
 /** The board of a worker; its first read also carries its rules, for an agent of any type. */
 async function readBoard(io: Io, id: WorkerId, now: number): Promise<BoardView | Refused> {
   let view: BoardView | undefined
+  let nudge: Task | undefined
   await save(io, run => {
     if (!run) return run
     const seen = board.boardFor(run, id)
     const briefed = seen.run.workers.find(worker => worker.id === id)?.briefed ?? true
     view = briefed ? seen.view : { ...seen.view, rules: workerRules(seen.run, id) }
-    return board.countCall(board.setWorkerState(briefed ? seen.run : board.markBriefed(seen.run, id), id, 'working', now), id)
+    const counted = countedCall(briefed ? seen.run : board.markBriefed(seen.run, id), id, now)
+    nudge = counted.task
+    return counted.run
   })
+  await sendNudge(io, id, nudge)
   return view ?? { error: 'RUN_ENDED', message: 'There is no meld run.' }
 }
 
@@ -377,7 +420,13 @@ export async function guardCall(io: Io, e: ToolCallInput): Promise<string | unde
   const path = editedPath(e)
   if (path && !isInside(path, worker.path)) return `meld: you work in ${worker.path}. Edit ${moved(path, run.repo, worker.path)} instead.`
   const now = await io.now()
-  await writeRun(io, current => board.countCall(board.setWorkerState(board.setActivity(current, worker.id, describeCall(e), now), worker.id, 'working', now), worker.id))
+  let nudge: Task | undefined
+  await writeRun(io, current => {
+    const counted = countedCall(board.setActivity(current, worker.id, describeCall(e), now), worker.id, now)
+    nudge = counted.task
+    return counted.run
+  })
+  await sendNudge(io, worker.id, nudge)
   return undefined
 }
 
@@ -482,7 +531,7 @@ function restartsFor(run: Run): Restart[] {
   const idle = live.filter(worker => worker.state === 'idle')
   const everyoneIdle = idle.length === live.length
   const ready = everyoneIdle ? idle : idle.filter(worker => hasNews(run, worker))
-  const open = run.tasks.filter(task => task.state === 'open')
+  const open = claimable(run.tasks)
   const owners = ready.filter(worker => claimsOf(run, worker).length)
   const takers = ready.filter(worker => !claimsOf(run, worker).length).slice(0, open.length)
   const restarts = [

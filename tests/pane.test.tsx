@@ -1,7 +1,9 @@
 import { expect, test } from 'claude-code/testing'
 
-import { addCheck, addTasks, bindWorker, boardFor, claimTask, declareFinal, isFailure, refuseWorker, setActivity, shareEntry, startRun, takeIntegration } from '../hooks/board'
-import type { Change, ContextKind, Facts, Run, WorkerId } from '../types'
+import { addCheck, addTasks, bindWorker, boardFor, claimTask, declareFinal, finishTask, isFailure, refuseWorker, setActivity, shareEntry, splitTask, startRun, takeIntegration } from '../hooks/board'
+import { agentColor } from '../hooks/drawing'
+import type { Change, ContextKind, Facts, Run, Task, WorkerId } from '../types'
+import { STORED_BY_0_6_0 } from './stored-runs'
 
 const NOW = 1_800_000_000_000
 const FULL = 'f'.repeat(40)
@@ -27,6 +29,8 @@ const SHARES: { by: WorkerId; kind: ContextKind; text: string }[] = [
   { by: 'w3', kind: 'interface', text: 'useTheme() gives light or dark.' },
 ]
 const CORRECTION = 'useTheme(): Theme gives the stored theme, light or dark.'
+const CLOSED_VIEW = { showDiff: false, task: '', agents: 2, model: 'inherit', vcs: 'auto' }
+const LONG_TITLE = 'Make the theme tokens, the toggle, the docs and the tests of the dark theme'
 
 type Stored = { value: unknown; version: number }
 
@@ -72,6 +76,53 @@ function workingRun(count: number): Run {
     run = runOf(addCheck(run, ids[index % count] ?? 'w1', { command, commit: FULL, passed: index !== 1, output: '' }, NOW))
   }
   return run
+}
+
+function task(id: number, title: string, fields: Partial<Task> = {}): Task {
+  return { id, title, detail: '', state: 'open', version: 1, ...fields }
+}
+
+/** #1 is an L parent of a done part and a part that w3 claims; w2 claims #2; #3 waits for #1. The request is at 33%. */
+function treeRun(): Run {
+  const tasks = [
+    task(1, 'Theme tokens', { size: 'L' }),
+    task(2, 'Toggle in the header', { state: 'claimed', owner: 'w2', version: 2 }),
+    task(3, 'Docs for the theme', { size: 'S', needs: [1] }),
+    task(4, 'Colour tokens', { parent: 1, state: 'done', owner: 'w1', version: 3, commit: FULL, summary: 'Colours' }),
+    task(5, 'Spacing tokens', { parent: 1, state: 'claimed', owner: 'w3', version: 2 }),
+  ]
+  return { ...workingRun(3), tasks, taskList: 2 }
+}
+
+/** Eight workers on the eight parts of #1, and twelve tasks with long titles that wait for #1. */
+function crowdedRun(): Run {
+  const ids = Array.from({ length: 8 }, (_, index) => `w${index + 1}` as WorkerId)
+  const parts = ids.map((id, index) => task(index + 2, LONG_TITLE, { parent: 1, state: 'claimed', owner: id, version: 2 }))
+  const waiting = Array.from({ length: 12 }, (_, index) => task(index + 10, LONG_TITLE, { needs: [1] }))
+  return { ...workingRun(8), tasks: [task(1, LONG_TITLE, { size: 'L' }), ...parts, ...waiting] }
+}
+
+/** Every string that a drawn element shows, in document order: the label of a Button, and the strings of the children. */
+function textsOf(node: unknown): string[] {
+  if (typeof node === 'string') return [node]
+  const element = node as { props?: { label?: unknown }; children?: unknown[] } | undefined
+  const label = element?.props?.label
+  return [...(typeof label === 'string' ? [label] : []), ...(element?.children ?? []).flatMap(textsOf)]
+}
+
+function rowKeys(boxes: { key: string | undefined }[]): (string | undefined)[] {
+  return boxes.filter(box => box.key?.startsWith('task-')).map(box => box.key)
+}
+
+/** w1 splits its claim #1 into #5, which it keeps, and #6, which is open. */
+function splitRun(): Run {
+  return runOf(splitTask(workingRun(3), 'w1', 1, 2, [{ title: 'Colour tokens' }, { title: 'Spacing tokens', size: 'S' }], NOW))
+}
+
+/** w1 finishes #5, and w2 claims and finishes #6: #1 is done. */
+function splitDoneRun(): Run {
+  const first = runOf(finishTask(splitRun(), 'w1', 5, 1, FULL, 'Colours', NOW))
+  return runOf(finishTask(runOf(claimTask(first, 'w2', 6, 1, NOW)), 'w2', 6, 2, OTHER, 'Spacing', NOW))
 }
 
 function readyRun(run = workingRun(3)): Run {
@@ -123,7 +174,7 @@ test('the pane draws one lane per agent on every graphic surface, each with a st
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   for (const surface of GRAPHIC_SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(await ui.findAll({ type: 'Svg' })).toHaveLength(4)
+    expect((await ui.findAll({ type: 'Svg' })).filter(svg => /^w\d+: /.test(String(svg.props.alt)))).toHaveLength(3)
     expect(await ui.find({ key: 'stop-w3' })).toBeDefined()
     expect(await ui.find({ key: 'stop' })).toBeDefined()
     await ui.unmount()
@@ -398,5 +449,170 @@ test('a run that meld 0.5.3 stored, with no context, draws the pane with no Shar
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await ui.find({ key: 'stop' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: 'Shared context' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the progress section shows a bar and a percent for the whole request on every surface', async ($, on) => {
+  const state = new FakeState().load(treeRun(), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  for (const surface of ALL_SURFACES) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(textsOf(await ui.find({ key: 'progress-all' })).slice(0, 2)).toEqual(['Progress', '33%'])
+    await ui.unmount()
+  }
+})
+
+test('a graphic surface draws the bar of the request and of each row as a picture', async ($, on) => {
+  const state = new FakeState().load(treeRun(), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  for (const surface of GRAPHIC_SURFACES) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    const alts = (await ui.findAll({ type: 'Svg' })).map(svg => String(svg.props.alt)).filter(alt => !/^w\d+: /.test(alt))
+    expect(alts).toEqual(['The request: 33% done', '#1: 50% done', '#2: 0% done', '#3: 0% done'])
+    await ui.unmount()
+  }
+})
+
+test('the terminal draws the bars in text, with one shape for each part, in the order done, claimed, open', async ($, on) => {
+  const state = new FakeState().load(treeRun(), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.findAll({ type: 'Svg' })).toHaveLength(0)
+  expect(partsOf(await ui.find({ key: 'bar-all' }))).toEqual(['█'.repeat(8), '▓'.repeat(14), '░'.repeat(2)])
+  expect(partsOf(await ui.find({ key: 'bar-1' }))).toEqual(['█'.repeat(4), '▓'.repeat(4)])
+  expect(partsOf(await ui.find({ key: 'bar-3' }))).toEqual(['░'.repeat(8)])
+  await ui.unmount()
+})
+
+test('each top-level task has one row with its title and its percent, and the parts of a task stay closed', async ($, on) => {
+  const state = new FakeState().load(treeRun(), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  for (const surface of ALL_SURFACES) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(rowKeys(await ui.findAll({ type: 'Box' }))).toEqual(['task-1', 'task-2', 'task-3'])
+    expect((await ui.find({ key: 'open-1' }))?.text).toBe('▸ #1 Theme tokens')
+    expect(textsOf(await ui.find({ key: 'task-1' })).slice(0, 3)).toEqual(['▸ #1 Theme tokens', '●', '50%'])
+    expect(textsOf(await ui.find({ key: 'task-2' })).slice(0, 3)).toEqual(['· #2 Toggle in the header', '●', '0%'])
+    await ui.unmount()
+  }
+})
+
+test('a row shows a dot in the colour of each worker that claims a part of its task', async ($, on) => {
+  const state = new FakeState().load(treeRun(), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const dots = (await ui.findAll({ type: 'Text', text: '●' })).map(dot => dot.props.color)
+  expect(dots).toContain(agentColor(2).light)
+  expect(JSON.stringify(await ui.find({ key: 'task-1' }))).toContain(agentColor(2).light)
+  expect(JSON.stringify(await ui.find({ key: 'task-2' }))).toContain(agentColor(1).light)
+  expect(JSON.stringify(await ui.find({ key: 'task-3' }))).not.toContain('●')
+  await ui.unmount()
+})
+
+test('a row says "waits for #N" while a need of its task is not done', async ($, on) => {
+  const state = new FakeState().load(treeRun(), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  for (const surface of ALL_SURFACES) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(textsOf(await ui.find({ key: 'task-3' })).slice(0, 3)).toEqual(['· #3 Docs for the theme', 'waits for #1', '0%'])
+    expect(await ui.findAll({ type: 'Text', text: /^waits for/ })).toHaveLength(1)
+    await ui.unmount()
+  }
+})
+
+test('a press on a row opens its children under it, and a second press closes them', async ($, on) => {
+  const state = new FakeState().load(treeRun(), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  on('state.set', ($, e) => ({ value: state.set(e) }))
+  const first = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await first.press({ key: 'open-1' })
+  await first.unmount()
+  const second = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(rowKeys(await second.findAll({ type: 'Box' }))).toEqual(['task-1', 'task-4', 'task-5', 'task-2', 'task-3'])
+  expect((await second.find({ key: 'open-1' }))?.text).toBe('▾ #1 Theme tokens')
+  await second.press({ key: 'open-1' })
+  await second.unmount()
+  const third = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(rowKeys(await third.findAll({ type: 'Box' }))).toEqual(['task-1', 'task-2', 'task-3'])
+  await third.unmount()
+})
+
+test('the pane view keeps the open rows in its field open, and its shape stays view-1', async ($, on) => {
+  const state = new FakeState().load(treeRun(), null, CLOSED_VIEW)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  on('state.set', ($, e) => ({ value: state.set(e) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'open-1' })
+  await ui.unmount()
+  expect(state.get('view').value).toEqual({ shape: 'view-1', value: { ...CLOSED_VIEW, open: [1] } })
+})
+
+test('a row of a task with no parts has nothing to open', async ($, on) => {
+  const state = new FakeState().load(treeRun(), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ key: 'open-2' })).toBeUndefined()
+  expect(await ui.find({ key: 'open-3' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the progress section holds 100 words at most, with long titles, eight owners and open rows, and counts the rows it leaves out', async ($, on) => {
+  const state = new FakeState().load(crowdedRun(), null, { ...CLOSED_VIEW, open: [1] })
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  for (const surface of ALL_SURFACES) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    const block = await ui.find({ key: 'sec-progress' })
+    expect(wordsOf(block), surface).toBeLessThanOrEqual(WORD_LIMIT)
+    const shown = rowKeys(await ui.findAll({ type: 'Box' })).length
+    expect(shown).toBeGreaterThan(1)
+    expect((await ui.find({ type: 'Text', text: / more$/ }))?.text).toBe(`${21 - shown} more`)
+    await ui.unmount()
+  }
+})
+
+test('a run that meld 0.6.0 stored, with no task tree and a view with no open rows, draws each task as a top-level row', async ($, on) => {
+  const state = new FakeState().load(STORED_BY_0_6_0, null, CLOSED_VIEW)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  for (const surface of ALL_SURFACES) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(rowKeys(await ui.findAll({ type: 'Box' }))).toEqual(['task-1', 'task-2', 'task-3'])
+    expect(textsOf(await ui.find({ key: 'progress-all' })).slice(0, 2)).toEqual(['Progress', '33%'])
+    expect(await ui.find({ type: 'Text', text: /^waits for/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('a split task shows as a parent row, and its parts open under it with their owners', async ($, on) => {
+  const state = new FakeState().load(splitRun(), null, { ...CLOSED_VIEW, open: [1] })
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  for (const surface of ALL_SURFACES) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(rowKeys(await ui.findAll({ type: 'Box' }))).toEqual(['task-1', 'task-5', 'task-6', 'task-2', 'task-3', 'task-4'])
+    expect(textsOf(await ui.find({ key: 'task-1' })).slice(0, 3)).toEqual(['▾ #1 Theme tokens in theme.css', '●', '0%'])
+    expect(textsOf(await ui.find({ key: 'task-5' })).slice(0, 3)).toEqual(['· #5 Colour tokens', '●', '0%'])
+    expect(textsOf(await ui.find({ key: 'task-6' })).slice(0, 2)).toEqual(['· #6 Spacing tokens', '0%'])
+    await ui.unmount()
+  }
+})
+
+test('a parent row is at 100% when the workers finish its parts', async ($, on) => {
+  const state = new FakeState().load(splitDoneRun(), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(textsOf(await ui.find({ key: 'task-1' })).slice(0, 2)).toEqual(['▸ #1 Theme tokens in theme.css', '100%'])
+  expect(textsOf(await ui.find({ key: 'progress-all' })).slice(0, 2)).toEqual(['Progress', '25%'])
   await ui.unmount()
 })

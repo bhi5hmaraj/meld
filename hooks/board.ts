@@ -14,18 +14,23 @@ import type {
   Notice,
   Run,
   Task,
+  TaskSize,
   VcsKind,
   Worker,
   WorkerId,
   WorkerState,
 } from '../types'
 import type { AgentState } from './io'
+import { childrenOf, isParent, isReady, taskOf, waitsFor, waitsOn } from './tasks'
 
 const LOG_LIMIT = 500
 const CONTEXT_KEPT = 200
 export const CONTEXT_KINDS: readonly ContextKind[] = ['fact', 'fail', 'interface']
 export const CONTEXT_TEXT_LIMIT = 500
 export const CONTEXT_SHOWN = 20
+const SIZES: readonly TaskSize[] = ['S', 'M', 'L']
+/** The tool calls on one leaf, with no finish and no split, after which meld tells its owner to split it or finish it. */
+export const SPLIT_CALLS = 40
 const ACTIVE = new Set(['starting', 'working'])
 const STEERABLE = new Set(['starting', 'working', 'ready'])
 
@@ -117,9 +122,19 @@ export function markBriefed(run: Run, id: WorkerId): Run {
   return replaceWorker(run, { ...findWorker(run, id), briefed: true })
 }
 
+/** A tool call of a worker counts for the worker and for each leaf that it claimed. */
 export function countCall(run: Run, id: WorkerId): Run {
   const worker = findWorker(run, id)
-  return replaceWorker(run, { ...worker, calls: (worker.calls ?? 0) + 1 })
+  const tasks = run.tasks.map(task => (isClaimedBy(task, id) ? { ...task, calls: (task.calls ?? 0) + 1 } : task))
+  return replaceWorker({ ...run, tasks }, { ...worker, calls: (worker.calls ?? 0) + 1 })
+}
+
+/** The first leaf of the worker with SPLIT_CALLS calls or more and no nudge: it gets its nudge, so meld tells its owner one time. */
+export function takeSplitNudge(run: Run, by: WorkerId): { run: Run; task?: Task } {
+  const task = run.tasks.find(one => isClaimedBy(one, by) && !one.nudged && (one.calls ?? 0) >= SPLIT_CALLS)
+  if (!task) return { run }
+  const nudged: Task = { ...task, nudged: true }
+  return { run: { ...run, tasks: run.tasks.map(one => (one.id === task.id ? nudged : one)) }, task: nudged }
 }
 
 export function addTokens(run: Run, id: WorkerId, tokens: number): Run {
@@ -152,25 +167,110 @@ export function addTasks(
       tasks: run.tasks,
     }
   }
-  const first = Math.max(0, ...run.tasks.map(task => task.id)) + 1
-  const added: Task[] = input.tasks.map((task, index) => ({ id: first + index, title: task.title, detail: task.detail ?? '', state: 'open', version: 1 }))
+  const added = newTasks(run.tasks, input.tasks, now)
+  if (!Array.isArray(added)) return added
   const taskList = run.taskList + 1
   const text = `added ${added.map(task => `#${task.id} ${task.title}`).join('; ')}`
   return { run: withEntry({ ...run, tasks: [...run.tasks, ...added], taskList }, { at: now, by, kind: 'task', text }), value: { tasks: added, taskList } }
+}
+
+/** The new tasks take the next numbers in order, so a new task can name a task of the board or an earlier new task. */
+function newTasks(tasks: readonly Task[], inputs: NewTask[], now: number): Task[] | Failure {
+  const first = Math.max(0, ...tasks.map(task => task.id)) + 1
+  const added: Task[] = []
+  for (const [index, input] of inputs.entries()) {
+    const known = [...tasks, ...added]
+    const refused = newTaskFailure(known, input)
+    if (refused) return refused
+    added.push(newTask(known, first + index, input, now))
+  }
+  return added
+}
+
+function newTaskFailure(known: readonly Task[], input: NewTask): Failure | undefined {
+  const name = `"${input.title}"`
+  if (input.size !== undefined && !SIZES.includes(input.size)) return failure('INVALID', `The size of ${name} is S, M or L, not "${input.size}".`)
+  const missing = [input.parent, ...(input.needs ?? [])].find(id => id !== undefined && !taskOf(known, id))
+  if (missing !== undefined) return failure('NOT_FOUND', `${name} names #${missing}, which is not on the board. Name a task of the board, or an earlier task of the same call.`)
+  const parent = taskOf(known, input.parent)
+  if (parent?.state === 'done') return failure('INVALID', `#${parent.id} is done. Add ${name} under an open task, or with no parent.`)
+  if (parent?.state === 'claimed') return failure('INVALID', `${parent.owner} claims #${parent.id}. Its owner can divide it with split.`)
+  const ancestors = ancestorsOf(known, input.parent)
+  for (const need of input.needs ?? []) {
+    const loop = waitsOn(known, need, ancestors)
+    if (loop === need) return failure('INVALID', `${name} cannot need #${need}: ${name} is a part of #${need}, and a parent waits for its parts.`)
+    if (loop !== undefined) return failure('INVALID', `${name} cannot need #${need}: #${need} waits for #${loop}, and #${loop} waits for ${name}.`)
+  }
+  return undefined
+}
+
+function newTask(known: readonly Task[], id: number, input: NewTask, now: number): Task {
+  const needs = [...new Set(input.needs ?? [])]
+  const task: Task = {
+    id,
+    title: input.title,
+    detail: input.detail ?? '',
+    state: 'open',
+    version: 1,
+    ...(input.parent === undefined ? {} : { parent: input.parent }),
+    ...(input.size === undefined ? {} : { size: input.size }),
+    ...(needs.length ? { needs } : {}),
+    addedAt: now,
+  }
+  return isReady([...known, task], task) ? { ...task, readyAt: now } : task
+}
+
+/**
+ * Splits a task of the worker into parts in one change, so no peer takes a part between two calls. The task becomes
+ * their parent, with no owner. The worker keeps the first part as its claim, and the other parts are open.
+ */
+export function splitTask(
+  run: Run,
+  by: WorkerId,
+  id: number,
+  version: number,
+  parts: NewTask[],
+  now: number,
+): Change<{ tasks: Task[]; taskList: number }> {
+  const checked = checkOwnedTask(run, by, id, version)
+  if (isTaskFailure(checked)) return checked
+  const parent: Task = { ...checked, state: 'open', owner: undefined, claimedAt: undefined, calls: undefined, nudged: undefined, version: checked.version + 1 }
+  const tasks = run.tasks.map(one => (one.id === id ? parent : one))
+  const made = newTasks(tasks, parts.map(part => ({ ...part, parent: id })), now)
+  if (!Array.isArray(made)) return made
+  const [first, ...others] = made
+  if (!first || !others.length) return failure('INVALID', `A split makes two parts or more. To do #${id} as one task, finish it.`)
+  const need = taskOf(tasks, waitsFor([...tasks, ...made], first))
+  if (need) return failure('WAITING', `The first part waits for #${need.id}, which is ${describeTask(need)}. You keep the first part, so it must be ready.`)
+  const kept: Task = { ...first, state: 'claimed', owner: by, claimedAt: now, calls: 0 }
+  const added = [kept, ...others]
+  const taskList = run.taskList + 1
+  const text = `split #${id} into ${added.map(task => `#${task.id} ${task.title}`).join('; ')}, and claimed #${kept.id}`
+  return { run: withEntry({ ...run, tasks: [...tasks, ...added], taskList }, { at: now, by, kind: 'task', text }), value: { tasks: added, taskList } }
+}
+
+/** The task and the tasks above it, up to the top. */
+function ancestorsOf(tasks: readonly Task[], id: number | undefined): number[] {
+  const ancestors: number[] = []
+  for (let current = taskOf(tasks, id); current && !ancestors.includes(current.id); current = taskOf(tasks, current.parent)) ancestors.push(current.id)
+  return ancestors
 }
 
 export function claimTask(run: Run, by: WorkerId, id: number, version: number, now: number): Change<Task> {
   const checked = checkTask(run, id, version)
   if (isTaskFailure(checked)) return checked
   if (checked.state !== 'open') return failure('TAKEN', `#${id} is ${describeTask(checked)}.`)
-  return updateTask(run, { ...checked, state: 'claimed', owner: by, version: checked.version + 1 }, by, now, `claimed #${id}`)
+  if (isParent(run.tasks, id)) return failure('INVALID', `#${id} has parts, and no worker claims a task with parts. ${openPartsOf(run.tasks, id)}`)
+  const need = taskOf(run.tasks, waitsFor(run.tasks, checked))
+  if (need) return failure('WAITING', `#${id} waits for #${need.id}, which is ${describeTask(need)}. Claim a task that is ready.`)
+  const claimed: Task = { ...checked, state: 'claimed', owner: by, version: checked.version + 1, claimedAt: now, calls: 0, nudged: undefined }
+  return updateTask(run, claimed, by, now, `claimed #${id}`)
 }
 
 export function releaseTask(run: Run, by: WorkerId, id: number, version: number, note: string, now: number): Change<Task> {
   const checked = checkOwnedTask(run, by, id, version)
   if (isTaskFailure(checked)) return checked
-  const released: Task = { ...checked, state: 'open', owner: undefined, version: checked.version + 1 }
-  return updateTask(run, released, by, now, `released #${id}${note ? `: ${note}` : ''}`)
+  return updateTask(run, givenBack(checked), by, now, `released #${id}${note ? `: ${note}` : ''}`)
 }
 
 export function finishTask(
@@ -183,6 +283,9 @@ export function finishTask(
   now: number,
   handover: Handover = {},
 ): Change<Task> {
+  const found = checkTask(run, id, version)
+  if (isTaskFailure(found)) return found
+  if (isParent(run.tasks, id)) return failure('INVALID', `#${id} has parts: it has no commit of its own, and it is done when all its parts are done. ${openPartsOf(run.tasks, id)}`)
   const checked = checkOwnedTask(run, by, id, version)
   if (isTaskFailure(checked)) return checked
   const interfaces = handover.interfaces?.trim() ?? ''
@@ -193,7 +296,7 @@ export function finishTask(
     ...(interfaces ? [{ at: now, kind: 'interface' as const, by, text: `#${id}: ${interfaces}`, commit, files: [] }] : []),
     ...(unfinished ? [{ at: now, kind: 'fact' as const, by, text: `#${id} unfinished: ${unfinished}`, commit, files: [] }] : []),
   ].reduce(withContext, run)
-  const done: Task = { ...checked, state: 'done', commit, summary, version: checked.version + 1 }
+  const done: Task = { ...checked, state: 'done', commit, summary, version: checked.version + 1, doneAt: now }
   return updateTask({ ...handed, nudges: 0 }, done, by, now, `finished #${id}: ${summary}`, commit)
 }
 
@@ -346,9 +449,7 @@ export function setWorkerState(run: Run, by: WorkerId, state: WorkerState, now: 
 
 export function stopWorker(run: Run, by: WorkerId, now: number): Run {
   const worker = findWorker(run, by)
-  const tasks = run.tasks.map(task =>
-    task.state === 'claimed' && task.owner === by ? { ...task, state: 'open' as const, owner: undefined, version: task.version + 1 } : task,
-  )
+  const tasks = run.tasks.map(task => (task.state === 'claimed' && task.owner === by ? givenBack(task) : task))
   const integrator = run.integrator === by ? undefined : run.integrator
   const stopped = replaceWorker({ ...run, tasks, integrator }, { ...worker, state: 'stopped', activity: 'stopped', activityAt: now })
   return withEntry(stopped, { at: now, by: 'you', kind: 'event', text: `stopped ${by}` })
@@ -436,6 +537,10 @@ function checkTask(run: Run, id: number, version: number): Task | Failure {
   return task
 }
 
+function isClaimedBy(task: Task, by: WorkerId): boolean {
+  return task.state === 'claimed' && task.owner === by
+}
+
 function checkOwnedTask(run: Run, by: WorkerId, id: number, version: number): Task | Failure {
   const task = checkTask(run, id, version)
   if (isTaskFailure(task)) return task
@@ -444,12 +549,35 @@ function checkOwnedTask(run: Run, by: WorkerId, id: number, version: number): Ta
 }
 
 function updateTask(run: Run, task: Task, by: WorkerId, now: number, text: string, commit?: string): Change<Task> {
-  const tasks = run.tasks.map(one => (one.id === task.id ? task : one))
+  const tasks = withReadyTimes(withDoneParents(run.tasks.map(one => (one.id === task.id ? task : one)), now), now)
   return { run: withEntry({ ...run, tasks }, { at: now, by, kind: 'task', text, commit }), value: task }
+}
+
+/** A task back to open: a release, or the stop of its owner. */
+function givenBack(task: Task): Task {
+  return { ...task, state: 'open', owner: undefined, claimedAt: undefined, releases: (task.releases ?? 0) + 1, version: task.version + 1 }
+}
+
+/** Marks done each parent whose parts are all done, from the lowest parent up. */
+function withDoneParents(tasks: Task[], now: number): Task[] {
+  const parent = tasks.find(task => task.state !== 'done' && isParent(tasks, task.id) && childrenOf(tasks, task.id).every(part => part.state === 'done'))
+  if (!parent) return tasks
+  return withDoneParents(tasks.map(task => (task.id === parent.id ? { ...task, state: 'done' as const, doneAt: now, version: task.version + 1 } : task)), now)
+}
+
+/** The parts of a parent that are not done, with their state. */
+function openPartsOf(tasks: readonly Task[], id: number): string {
+  const open = childrenOf(tasks, id).filter(part => part.state !== 'done')
+  return open.length ? `Its open parts: ${open.map(part => `#${part.id} (${describeTask(part)})`).join(', ')}.` : 'All its parts are done.'
+}
+
+/** Gives the time to each task that is ready now and has no ready time. A task that meld 0.6.0 added has no times, and gets none. */
+function withReadyTimes(tasks: Task[], now: number): Task[] {
+  return tasks.map(task => (task.addedAt !== undefined && task.readyAt === undefined && isReady(tasks, task) ? { ...task, readyAt: now } : task))
 }
 
 function describeTask(task: Task): string {
   if (task.state === 'open') return 'open'
-  if (task.state === 'done') return `done by ${task.owner ?? 'a worker'}`
+  if (task.state === 'done') return task.owner ? `done by ${task.owner}` : 'done'
   return `claimed by ${task.owner}`
 }
