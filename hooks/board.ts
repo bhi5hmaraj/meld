@@ -1,4 +1,5 @@
 import type {
+  AgentSpec,
   Author,
   BoardView,
   Change,
@@ -10,6 +11,7 @@ import type {
   Notice,
   Run,
   Task,
+  VcsKind,
   Worker,
   WorkerId,
   WorkerState,
@@ -24,31 +26,35 @@ export type StartInput = {
   request: string
   repo: string
   base: string
+  vcs: VcsKind
   now: number
-  workers: { path: string; branch: string }[]
+  workers: { id: WorkerId; path: string; ref: string; agent: AgentSpec }[]
 }
 
 export type CheckInput = { command: string; commit: string; passed: boolean; output: string }
 
 export function startRun(input: StartInput): Run {
-  const ids: WorkerId[] = ['w1', 'w2']
   return {
     id: input.id,
     request: input.request,
     revision: 1,
     state: 'starting',
+    vcs: input.vcs,
     repo: input.repo,
     base: input.base,
     startedAt: input.now,
-    workers: ids.map((id, index) => ({
-      id,
-      path: input.workers[index]?.path ?? '',
-      branch: input.workers[index]?.branch ?? '',
+    workers: input.workers.map(worker => ({
+      id: worker.id,
+      agent: worker.agent,
+      path: worker.path,
+      ref: worker.ref,
       state: 'starting',
+      briefed: false,
       seenRevision: 1,
       seenEntry: 0,
       activity: 'starting',
       activityAt: input.now,
+      tokens: 0,
     })),
     tasks: [],
     log: [],
@@ -71,9 +77,30 @@ export function bindWorker(run: Run, id: WorkerId, agentId: string, now: number)
   const worker = findWorker(run, id)
   if (worker.agentId) return failure('TAKEN', `${id} is already bound to another agent.`)
   const bound: Worker = { ...worker, agentId, state: 'working', activity: 'started', activityAt: now }
-  const workers = run.workers.map(one => (one.id === id ? bound : one))
-  const state = workers.every(one => one.agentId) ? 'working' : run.state
-  return { run: { ...run, workers, state }, value: bound }
+  return { run: settled(replaceWorker(run, bound)), value: bound }
+}
+
+/** A worker whose spawn the engine refused: stopped, with the reason as its last action. */
+export function refuseWorker(run: Run, id: WorkerId, reason: string, now: number): Run {
+  const worker = findWorker(run, id)
+  const refused = replaceWorker(run, { ...worker, state: 'stopped', activity: `not started: ${reason}`, activityAt: now })
+  return settled(withEntry(refused, { at: now, by: 'you', kind: 'event', text: `${id} did not start: ${reason}` }))
+}
+
+/** A starting run works once every worker is bound or refused, and stops when none started. */
+function settled(run: Run): Run {
+  if (run.state !== 'starting' || !run.workers.every(worker => worker.agentId || worker.state === 'stopped')) return run
+  return run.workers.some(worker => worker.agentId) ? { ...run, state: 'working' } : { ...run, state: 'stopped', endedAt: run.startedAt }
+}
+
+export function markBriefed(run: Run, id: WorkerId): Run {
+  return replaceWorker(run, { ...findWorker(run, id), briefed: true })
+}
+
+export function addTokens(run: Run, id: WorkerId, tokens: number): Run {
+  if (!tokens) return run
+  const worker = findWorker(run, id)
+  return replaceWorker(run, { ...worker, tokens: worker.tokens + tokens })
 }
 
 /** Adds a batch of tasks only when the worker has seen the current task list: a stale add fails alone and shows the tasks it missed. */
@@ -184,12 +211,14 @@ export function steersOf(run: Run): string[] {
 
 export function boardFor(run: Run, by: WorkerId): { run: Run; view: BoardView } {
   const you = findWorker(run, by)
-  const peer = run.workers.find(worker => worker.id !== by) ?? you
   const steers = unseenSteers(run, you)
   const news = run.log.filter(entry => entry.id > you.seenEntry && entry.by !== by && entry.by !== 'you')
   const view: BoardView = {
-    you: { id: you.id, path: you.path, branch: you.branch },
-    peer: { id: peer.id, state: peer.state, branch: peer.branch, activity: peer.activity },
+    you: { id: you.id, path: you.path, ref: you.ref },
+    peers: run.workers
+      .filter(worker => worker.id !== by)
+      .map(worker => ({ id: worker.id, state: worker.state, ref: worker.ref, activity: worker.activity })),
+    vcs: run.vcs,
     request: run.request,
     steers: steersOf(run),
     revision: run.revision,

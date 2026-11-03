@@ -1,0 +1,68 @@
+import { expect, test } from 'claude-code/testing'
+
+import { parseStart, WORKER_TYPE } from '../hooks/options'
+
+test('a task alone starts two meld workers and lets meld choose the version control', () => {
+  expect(parseStart('Add a dark theme')).toEqual({
+    request: 'Add a dark theme',
+    agents: [{ type: WORKER_TYPE }, { type: WORKER_TYPE }],
+    vcs: 'auto',
+  })
+})
+
+test('a count and a model give that many workers on that model', () => {
+  expect(parseStart('--agents 3 --model sonnet Add a dark theme')).toMatchObject({
+    request: 'Add a dark theme',
+    agents: [
+      { type: WORKER_TYPE, model: 'sonnet' },
+      { type: WORKER_TYPE, model: 'sonnet' },
+      { type: WORKER_TYPE, model: 'sonnet' },
+    ],
+  })
+})
+
+test('a list gives one worker per item: a model, a type with a model, or a type', () => {
+  expect(parseStart('--agents opus,general-purpose@haiku,Explore,meld:worker@sonnet Add a dark theme')).toMatchObject({
+    agents: [
+      { type: WORKER_TYPE, model: 'opus' },
+      { type: 'general-purpose', model: 'haiku' },
+      { type: 'Explore' },
+      { type: WORKER_TYPE, model: 'sonnet' },
+    ],
+  })
+})
+
+test('the model option fills the list items that name no model', () => {
+  expect(parseStart('--agents Explore,general-purpose@haiku --model opus Add a dark theme')).toMatchObject({
+    agents: [{ type: 'Explore', model: 'opus' }, { type: 'general-purpose', model: 'haiku' }],
+  })
+})
+
+test('the version control can be chosen', () => {
+  expect(parseStart('--vcs git Add a dark theme')).toMatchObject({ vcs: 'git' })
+  expect(parseStart('--vcs jj Add a dark theme')).toMatchObject({ vcs: 'jj' })
+})
+
+test('the path of another repository stays in the request for the run to resolve', () => {
+  expect(parseStart('--agents 2 /elsewhere Add a dark theme')).toMatchObject({ request: '/elsewhere Add a dark theme' })
+})
+
+test('more than eight workers is refused', () => {
+  expect(parseStart('--agents 9 Add a dark theme')).toEqual({ error: 'meld runs 1 to 8 workers.' })
+})
+
+test('zero workers is refused', () => {
+  expect(parseStart('--agents 0 Add a dark theme')).toEqual({ error: 'meld runs 1 to 8 workers.' })
+})
+
+test('an unknown option is refused', () => {
+  expect(parseStart('--color red Add a dark theme')).toEqual({ error: 'meld has no option --color.' })
+})
+
+test('an unknown version control is refused', () => {
+  expect(parseStart('--vcs svn Add a dark theme')).toEqual({ error: 'Use --vcs auto, jj or git.' })
+})
+
+test('options with no task are refused', () => {
+  expect(parseStart('--agents 3')).toEqual({ error: 'Write the task after /meld.' })
+})

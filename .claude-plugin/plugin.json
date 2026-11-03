@@ -1,8 +1,10 @@
 {
   "name": "meld",
-  "version": "0.1.0",
-  "description": "Two Claude Code agents work on one task in their own git worktrees, share a task board, and meld their work into one commit. You watch and steer them in a pane.",
-  "author": { "name": "Bhishmaraj" },
+  "version": "0.2.0",
+  "description": "Several Claude Code agents work on one task, each in its own jj or git workspace, share a task board, and meld their work into one commit. A pane shows real commits, checks and the diff, with one button for each decision.",
+  "author": {
+    "name": "Bhishmaraj"
+  },
   "license": "MIT",
   "types": "./types/index.d.ts"
 }

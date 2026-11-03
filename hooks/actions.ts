@@ -1,13 +1,14 @@
 import type { CommandRunResult, ToolCallInput, ToolCallResult } from 'claude-code'
 
-import type { BoardView, Change, NewTask, Run, Worker, WorkerId, WorkerState } from '../types'
+import type { BoardView, Change, Facts, NewTask, Run, VcsKind, Worker, WorkerId, WorkerState } from '../types'
 import * as board from './board'
-import { launchPrompt, TOOL, wakeText, workerRules } from './contract'
-import * as git from './git'
-import type { Io } from './io'
+import { TOOL, wakeText, workerPrompt, workerRules } from './contract'
+import { headCommit, isDirty, repoRoot } from './git'
+import type { Io, Spawned } from './io'
+import type { StartOptions } from './options'
+import { detectVcs, vcsFor } from './vcs'
+import type { Prepared } from './vcs'
 
-const WORKTREES = '/tmp/meld'
-const WORKER_IDS: WorkerId[] = ['w1', 'w2']
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 const COMMIT_TOOLS = new Set<string>([TOOL.finishTask, TOOL.check, TOOL.finish])
 const OPEN_WORK_TOOLS = new Set<string>([TOOL.addTasks, TOOL.release])
@@ -15,11 +16,12 @@ const LIVE_STATES = new Set(['starting', 'working', 'ready'])
 const BIND_POLL_MS = 200
 const BIND_POLLS = 100
 const NUDGE_LIMIT = 3
+const JJ_MISSING = 'jj 0.40 or newer is not installed. Use --vcs git or --vcs auto.'
 
 type Args = Record<string, unknown>
+type Refused = { error: string; message: string }
 
-let launches = 0
-let pendingBinds = 0
+let pendingSpawns = 0
 
 export async function readRun(io: Io): Promise<Run | null> {
   return (await io.read()) ?? null
@@ -34,78 +36,97 @@ async function writeRun(io: Io, change: (run: Run) => Run): Promise<Run | null> 
   return written
 }
 
-export async function startRun(io: Io, cwd: string, request: string): Promise<CommandRunResult> {
-  if (!request) return { text: 'meld: write the task after /meld.' }
+export async function startRun(io: Io, cwd: string, options: StartOptions): Promise<CommandRunResult> {
   const current = await readRun(io)
-  if (current && LIVE_STATES.has(current.state)) {
-    return { text: 'meld: a run is active. Deliver, discard or stop it in the meld pane first.' }
-  }
-  const named = await namedRepo(io, request)
-  const repo = named?.repo ?? (await git.repoRoot(io, cwd))
+  if (current && LIVE_STATES.has(current.state)) return { text: 'A run is active. Deliver, discard or stop it in the meld pane first.' }
+  const named = await namedRepo(io, options.request)
+  const repo = named?.repo ?? (await repoRoot(io, cwd))
   if (!repo) return { text: 'meld needs a git repository in the working directory.' }
-  const task = named?.task ?? request
-  const base = await git.headCommit(io, repo)
+  const request = named?.task ?? options.request
+  const base = await headCommit(io, repo)
   const now = await io.now()
   const id = now.toString(36)
-  const workers = WORKER_IDS.map(name => ({ path: `${WORKTREES}/${id}/${name}`, branch: `meld/${id}/${name}` }))
-  const failed = await makeWorktrees(io, repo, base, workers)
-  if (failed) return { text: `meld could not make a worktree: ${failed}` }
-  const run = board.startRun({ id, request: task, repo, base, now, workers })
+  const ids = options.agents.map((_, index) => `w${index + 1}` as WorkerId)
+  const preferred: VcsKind = options.vcs === 'git' ? 'git' : await detectVcs(io, repo)
+  if (options.vcs === 'jj' && preferred !== 'jj') return { text: JJ_MISSING }
+  const place = { id, repo, base }
+  let kind = preferred
+  let prepared: Prepared = await vcsFor(kind).prepare(io, place, ids)
+  let fallback = ''
+  if ('error' in prepared && kind === 'jj' && options.vcs === 'auto') {
+    fallback = ` jj failed (${prepared.error}), so the workers use git.`
+    kind = 'git'
+    prepared = await vcsFor(kind).prepare(io, place, ids)
+  }
+  if ('error' in prepared) return { text: `meld could not make the workspaces: ${prepared.error}` }
+  const workspaces = prepared.workspaces
+  const workers = ids.map((wid, index) => ({ id: wid, agent: options.agents[index] ?? { type: 'meld:worker' }, path: workspaces[index]?.path ?? '', ref: workspaces[index]?.ref ?? '' }))
+  const run = board.startRun({ id, request, repo, base, vcs: kind, now, workers })
   await io.write(() => run)
-  launches = 0
-  pendingBinds = 0
+  await io.writeFacts(null)
   void io.openPane(false)
-  void io.submit(launchPrompt(run))
-  const dirty = (await git.isDirty(io, repo)) ? ' Your uncommitted changes are not in their worktrees.' : ''
-  return { text: `meld: run ${id} starts two workers from commit ${base.slice(0, 7)}.${dirty}`, context: [workerRules(run)] }
+  const refused = await spawnWorkers(io, run)
+  if (refused.length === workers.length) return { text: `No worker started: ${refused[0]}.${fallback}` }
+  const notStarted = refused.length ? ` ${refused.length} did not start: ${refused[0]}.` : ''
+  const dirty = (await isDirty(io, repo)) ? ' Your uncommitted changes are not in their workspaces.' : ''
+  return { text: `Run ${id}: ${workers.length} workers on ${kind}, from commit ${base.slice(0, 7)}.${fallback}${notStarted}${dirty}` }
 }
 
 /** `/meld /path/to/repo task` works in that repository; a first word that names no repository is part of the task. */
 async function namedRepo(io: Io, request: string): Promise<{ repo: string; task: string } | undefined> {
   const [first = '', ...rest] = request.split(/\s+/)
   if (!first.startsWith('/') || rest.length === 0) return undefined
-  const repo = await git.repoRoot(io, first)
+  const repo = await repoRoot(io, first)
   return repo ? { repo, task: request.slice(first.length).trim() } : undefined
 }
 
-async function makeWorktrees(io: Io, repo: string, base: string, workers: { path: string; branch: string }[]): Promise<string | undefined> {
-  for (const [index, worker] of workers.entries()) {
-    const added = await git.addWorktree(io, repo, worker.path, worker.branch, base)
-    if (added.ok) continue
-    for (const made of workers.slice(0, index)) await git.removeWorktree(io, repo, made.path, made.branch)
-    return added.err || added.out
+/** Starts each worker in its own folder and binds it by the agent id the engine answers. Returns the reasons of the refused spawns. */
+async function spawnWorkers(io: Io, run: Run): Promise<string[]> {
+  const refused: string[] = []
+  for (const worker of run.workers) {
+    pendingSpawns += 1
+    try {
+      const spawned = await spawnOne(io, run, worker)
+      const now = await io.now()
+      const agentId = spawned.agentId
+      if (agentId) await writeRun(io, current => runOf(board.bindWorker(current, worker.id, agentId, now), current))
+      else {
+        const reason = spawned.deny ?? 'the engine started no agent'
+        refused.push(reason)
+        await writeRun(io, current => board.refuseWorker(current, worker.id, reason, now))
+      }
+    } finally {
+      pendingSpawns = Math.max(0, pendingSpawns - 1)
+    }
   }
-  return undefined
+  return refused
 }
 
-/** The worker a fork of the main loop becomes while a run starts; undefined for any other spawn. */
-export async function claimSlot(io: Io, isFork: boolean, parentAgentId: string | undefined): Promise<Worker | undefined> {
-  const run = await readRun(io)
-  if (!run || run.state !== 'starting' || !isFork || parentAgentId !== undefined || launches >= WORKER_IDS.length) return undefined
-  const worker = run.workers[launches]
-  launches += 1
-  pendingBinds += 1
-  return worker
-}
-
-export async function bindAgent(io: Io, id: WorkerId, agentId: string | undefined): Promise<void> {
-  pendingBinds = Math.max(0, pendingBinds - 1)
-  if (!agentId) return
-  const now = await io.now()
-  await writeRun(io, run => runOf(board.bindWorker(run, id, agentId, now), run))
+async function spawnOne(io: Io, run: Run, worker: Worker): Promise<Spawned> {
+  try {
+    return await io.spawn({
+      prompt: workerPrompt(run, worker.id),
+      description: `meld ${worker.id}`,
+      subagentType: worker.agent.type,
+      model: worker.agent.model,
+      cwd: worker.path,
+    })
+  } catch (error) {
+    return { deny: String(error) }
+  }
 }
 
 function runOf<T>(change: Change<T>, fallback: Run): Run {
   return board.isFailure(change) ? fallback : change.run
 }
 
-/** A fork can call a tool before its spawn returns its id: wait for the binding while one is pending. */
+/** A worker can call a tool before its spawn returns its id: wait for the binding while a spawn is pending. */
 async function workerWithWait(io: Io, agentId: string | undefined): Promise<Worker | undefined> {
   if (agentId === undefined) return undefined
   for (let poll = 0; poll < BIND_POLLS; poll++) {
     const run = await readRun(io)
     const worker = run ? board.workerOf(run, agentId) : undefined
-    if (worker || pendingBinds === 0) return worker
+    if (worker || pendingSpawns === 0) return worker
     await io.sleep(BIND_POLL_MS)
   }
   return undefined
@@ -113,24 +134,23 @@ async function workerWithWait(io: Io, agentId: string | undefined): Promise<Work
 
 export async function serveTool(io: Io, e: ToolCallInput): Promise<ToolCallResult> {
   const tool = String(e.tool)
-  const args = e as unknown as Args
   const worker = await workerWithWait(io, e.agentId)
-  if (!worker) return reply(tool === TOOL.board ? await overview(io) : { error: 'NOT_WORKER', message: 'The meld tools are for the two meld workers.' })
-  if (tool === TOOL.board) return reply(await readBoard(io, worker.id))
-  const missing = await missingCommit(io, tool, args)
-  if (missing) return reply(missing)
+  if (!worker) return reply(tool === TOOL.board ? await overview(io) : { error: 'NOT_WORKER', message: 'The meld tools are for the meld workers.' })
   const now = await io.now()
+  if (tool === TOOL.board) return reply(await readBoard(io, worker.id, now))
+  const checked = await withResolvedCommit(io, tool, e as unknown as Args, worker)
+  if ('error' in checked) return reply(checked)
   let answer: unknown = { error: 'RUN_ENDED', message: 'There is no meld run.' }
   await io.write(run => {
     if (!run) return run
-    const change = mutate(run, worker.id, tool, args, now)
+    const change = mutate(run, worker.id, tool, checked.args, now)
     if (board.isFailure(change)) {
       answer = change
-      return run
+      return board.setWorkerState(run, worker.id, 'working', now)
     }
     const taken = board.takeNotice(change.run, worker.id)
     answer = { ok: true, value: change.value, notice: taken.notice }
-    return taken.run
+    return board.setWorkerState(taken.run, worker.id, 'working', now)
   })
   await afterChange(io, worker.id, tool)
   return reply(answer)
@@ -139,6 +159,21 @@ export async function serveTool(io: Io, e: ToolCallInput): Promise<ToolCallResul
 /** A plugin tool answers the model with text: the JSON of the value. */
 function reply(value: unknown): ToolCallResult {
   return { result: JSON.stringify(value) }
+}
+
+/** The board keeps the full id of the commit that a revision names in the folder of the worker; a final commit with a conflict is refused. */
+async function withResolvedCommit(io: Io, tool: string, args: Args, worker: Worker): Promise<{ args: Args } | Refused> {
+  if (!COMMIT_TOOLS.has(tool)) return { args }
+  const run = await readRun(io)
+  if (!run) return { args }
+  const vcs = vcsFor(run.vcs)
+  const revision = text(args.commit)
+  const found = revision ? await vcs.resolve(io, run, worker, revision) : undefined
+  if (!found) return { error: 'NOT_FOUND', message: `There is no commit "${revision}" in your folder. ${vcs.commitHint}` }
+  if (tool === TOOL.finish && found.conflict) {
+    return { error: 'CONFLICT', message: `${found.commit.slice(0, 12)} has a conflict. Fix the conflict, commit, and finish with the new commit.` }
+  }
+  return { args: { ...args, commit: found.commit } }
 }
 
 function mutate(run: Run, by: WorkerId, tool: string, args: Args, now: number): Change<unknown> {
@@ -180,46 +215,55 @@ function text(value: unknown): string {
   return typeof value === 'string' ? value : value === undefined ? '' : String(value)
 }
 
-async function missingCommit(io: Io, tool: string, args: Args): Promise<{ error: string; message: string } | undefined> {
-  if (!COMMIT_TOOLS.has(tool)) return undefined
-  const run = await readRun(io)
-  const commit = text(args.commit)
-  if (!run || (commit && (await git.commitExists(io, run.repo, commit)))) return undefined
-  return { error: 'NOT_FOUND', message: `There is no commit "${commit}". Commit your work on your branch, then use its hash.` }
-}
-
-async function readBoard(io: Io, id: WorkerId): Promise<BoardView | { error: string; message: string }> {
+/** The board of a worker; its first read also carries its rules, for an agent of any type. */
+async function readBoard(io: Io, id: WorkerId, now: number): Promise<BoardView | Refused> {
   let view: BoardView | undefined
   await io.write(run => {
     if (!run) return run
     const seen = board.boardFor(run, id)
-    view = seen.view
-    return seen.run
+    const briefed = seen.run.workers.find(worker => worker.id === id)?.briefed ?? true
+    view = briefed ? seen.view : { ...seen.view, rules: workerRules(seen.run, id) }
+    return board.setWorkerState(briefed ? seen.run : board.markBriefed(seen.run, id), id, 'working', now)
   })
   return view ?? { error: 'RUN_ENDED', message: 'There is no meld run.' }
 }
 
+/** What the main session reads of the board: the run as a whole. */
 async function overview(io: Io): Promise<unknown> {
   const run = await readRun(io)
   if (!run) return { state: 'none', message: 'There is no meld run. The person starts one with /meld <task>.' }
   return {
     id: run.id,
     state: run.state,
+    vcs: run.vcs,
     request: run.request,
     steers: board.steersOf(run),
-    workers: run.workers.map(worker => ({ id: worker.id, state: worker.state, activity: worker.activity, branch: worker.branch, path: worker.path })),
+    workers: run.workers.map(worker => ({
+      id: worker.id,
+      agent: worker.agent,
+      state: worker.state,
+      activity: worker.activity,
+      ref: worker.ref,
+      path: worker.path,
+      tokens: worker.tokens,
+    })),
     tasks: run.tasks,
+    integrator: run.integrator,
+    nudges: run.nudges,
     final: run.final,
+    log: run.log.slice(-10),
   }
 }
 
 async function afterChange(io: Io, by: WorkerId, tool: string): Promise<void> {
   const run = await readRun(io)
-  const peer = run?.workers.find(worker => worker.id !== by)
-  if (!run || !peer) return
-  if (OPEN_WORK_TOOLS.has(tool) && peer.state === 'idle') tell(io, peer, wakeText('There is open work on the board.'))
+  if (!run) return
+  const peers = run.workers.filter(worker => worker.id !== by)
+  if (OPEN_WORK_TOOLS.has(tool)) {
+    for (const peer of peers) if (peer.state === 'idle') tell(io, peer, wakeText('There is open work on the board.'))
+  }
   if (tool === TOOL.finish && run.state === 'ready') {
-    if (peer.state !== 'stopped') tell(io, peer, 'meld: the final commit is declared. End your turn now.')
+    for (const peer of peers) if (peer.state !== 'stopped') tell(io, peer, 'The final commit is declared. End your turn now.')
     io.toast('meld: the result is ready. Deliver it from the meld pane.')
   }
 }
@@ -239,7 +283,7 @@ export async function guardCall(io: Io, e: ToolCallInput): Promise<string | unde
   const path = editedPath(e)
   if (path && !isInside(path, worker.path)) return `meld: you work in ${worker.path}. Edit ${moved(path, run.repo, worker.path)} instead.`
   const now = await io.now()
-  await writeRun(io, current => board.setActivity(current, worker.id, describeCall(e), now))
+  await writeRun(io, current => board.setWorkerState(board.setActivity(current, worker.id, describeCall(e), now), worker.id, 'working', now))
   return undefined
 }
 
@@ -266,101 +310,113 @@ function describeCall(e: ToolCallInput): string {
   return path ? `${tool} ${path.split('/').pop()}` : tool
 }
 
-export async function markWorker(io: Io, agentId: string | undefined, state: WorkerState): Promise<void> {
+/** A worker's turn ended: it is idle, its tokens add up, and meld wakes the run when every worker is idle. */
+export async function markWorker(io: Io, agentId: string | undefined, state: WorkerState, tokens = 0): Promise<void> {
   if (agentId === undefined) return
   const run = await readRun(io)
   const worker = run ? board.workerOf(run, agentId) : undefined
   if (!run || !worker) return
   const now = await io.now()
-  await writeRun(io, current => board.setWorkerState(current, worker.id, state, now))
+  await writeRun(io, current => board.addTokens(board.setWorkerState(current, worker.id, state, now), worker.id, tokens))
   if (state === 'idle') await nudgeIfStuck(io)
 }
 
-/** Both live workers idle with no final commit: wake one with the next step, a few times at most. */
+/** Every live worker idle with no final commit: wake them with the open tasks, or the integrator when all are done, a few times at most. */
 async function nudgeIfStuck(io: Io): Promise<void> {
   const run = await readRun(io)
   if (!run || run.state !== 'working') return
   const live = run.workers.filter(worker => worker.state !== 'stopped')
   if (!live.length || live.some(worker => worker.state !== 'idle')) return
   if (run.nudges >= NUDGE_LIMIT) {
-    io.toast('meld: both workers are idle. Steer them or stop the run.')
+    io.toast('meld: all workers are idle. Steer them or stop the run.')
     return
   }
   await writeRun(io, board.countNudge)
   const unfinished = run.tasks.filter(task => task.state !== 'done').map(task => `#${task.id} ${task.title}`)
+  if (unfinished.length) {
+    const step = `All workers are idle, and these tasks are not done: ${unfinished.join('; ')}. Claim one and do it, or release the ones you cannot do with a note.`
+    for (const worker of live) tell(io, worker, wakeText(step))
+    return
+  }
   const integrator = live.find(worker => worker.id === run.integrator) ?? live[0]
-  if (!integrator) return
-  const step = unfinished.length
-    ? `Both workers are idle, and these tasks are not done: ${unfinished.join('; ')}. Do them, or release the ones you cannot do with a note.`
-    : `All tasks are done. Integrate: call ${TOOL.integrate}, merge both branches into yours, run the checks, then call ${TOOL.finish}.`
-  tell(io, integrator, wakeText(step))
+  const step = `All tasks are done. Integrate: call ${TOOL.integrate}, merge the work of every worker into yours, run the checks, then call ${TOOL.finish}.`
+  if (integrator) tell(io, integrator, wakeText(step))
 }
 
 export async function steerRun(io: Io, instruction: string): Promise<string> {
-  if (!instruction) return 'meld: write the instruction after /meld-steer.'
+  if (!instruction) return 'Write the instruction after /meld-steer.'
   const now = await io.now()
-  let outcome = 'meld: there is no run to steer.'
+  let outcome = 'There is no run to steer.'
   let revision = 0
   await io.write(run => {
     if (!run) return run
     const change = board.steer(run, instruction, now)
     if (board.isFailure(change)) {
-      outcome = `meld: ${change.message}`
+      outcome = change.message
       return run
     }
     revision = change.value
-    outcome = `meld: both workers get revision ${revision}.`
     return change.run
   })
   const run = await readRun(io)
-  if (revision && run) {
-    for (const worker of run.workers) {
-      if (worker.state !== 'stopped') tell(io, worker, wakeText(`The person changed the request (revision ${revision}): ${instruction}`))
-    }
-  }
-  return outcome
+  if (!revision || !run) return outcome
+  const live = run.workers.filter(worker => worker.state !== 'stopped')
+  for (const worker of live) tell(io, worker, wakeText(`The person changed the request (revision ${revision}): ${instruction}`))
+  return `All ${live.length} workers get revision ${revision}.`
 }
 
 export async function stopAll(io: Io): Promise<string> {
   const now = await io.now()
   const run = await writeRun(io, current => board.stopRun(current, now))
-  if (!run) return 'meld: there is no run.'
+  if (!run) return 'There is no run.'
   for (const worker of run.workers) tell(io, worker, 'meld stopped the run. End your turn now.')
-  return 'meld: stopped. The worktrees and branches stay until you discard them in the meld pane.'
+  return 'Stopped. The workspaces stay until you discard them in the meld pane.'
 }
 
 export async function stopOne(io: Io, id: WorkerId): Promise<string> {
   const now = await io.now()
   const run = await writeRun(io, current => board.stopWorker(current, id, now))
   const worker = run?.workers.find(one => one.id === id)
-  const peer = run?.workers.find(one => one.id !== id)
-  if (!run || !worker) return 'meld: there is no run.'
+  if (!run || !worker) return 'There is no run.'
   tell(io, worker, 'meld stopped you. End your turn now.')
-  if (peer && peer.state !== 'stopped') tell(io, peer, wakeText(`The person stopped ${id}. Its claimed tasks are open again, and you finish the run.`))
-  return `meld: stopped ${id}.`
+  for (const peer of run.workers) {
+    if (peer.id !== id && peer.state !== 'stopped') tell(io, peer, wakeText(`The person stopped ${id}. Its claimed tasks are open again.`))
+  }
+  return `Stopped ${id}.`
 }
 
 export async function deliver(io: Io): Promise<string> {
   const run = await readRun(io)
-  if (!run || run.state !== 'ready' || !run.final) return 'meld: there is no final commit to deliver.'
-  if (await git.isDirty(io, run.repo)) return 'meld: commit or stash the changes in your checkout first, then deliver.'
-  const merged = await git.mergeInto(io, run.repo, run.final.commit, `meld: ${run.request.split('\n')[0]?.slice(0, 72)}`)
-  if (!merged.ok) return `meld: the merge stopped, and nothing changed: ${merged.err || merged.out}`
-  await removeWorktrees(io, run)
+  if (!run || run.state !== 'ready' || !run.final) return 'There is no final commit to deliver.'
+  if (await isDirty(io, run.repo)) return 'Commit or stash the changes in your checkout first, then deliver.'
+  const vcs = vcsFor(run.vcs)
+  const merged = await vcs.deliver(io, run, run.final.commit, `meld: ${run.request.split('\n')[0]?.slice(0, 72)}`)
+  if (!merged.ok) return `The merge stopped, and nothing changed: ${merged.err || merged.out}`
+  await vcs.remove(io, run)
   const now = await io.now()
   await writeRun(io, current => board.markDelivered(current, now))
-  return `meld: merged ${run.final.commit.slice(0, 7)} into your branch.`
+  return `Merged ${run.final.commit.slice(0, 7)} into your branch.`
 }
 
 export async function discard(io: Io): Promise<string> {
   const run = await readRun(io)
-  if (!run) return 'meld: there is no run.'
+  if (!run) return 'There is no run.'
   if (LIVE_STATES.has(run.state)) await stopAll(io)
-  await removeWorktrees(io, run)
+  if (run.state !== 'delivered') await vcsFor(run.vcs).remove(io, run)
   await io.write(() => null)
-  return 'meld: the run, its worktrees and its branches are gone.'
+  await io.writeFacts(null)
+  return 'The run and its workspaces are gone.'
 }
 
-async function removeWorktrees(io: Io, run: Run): Promise<void> {
-  for (const worker of run.workers) await git.removeWorktree(io, run.repo, worker.path, worker.branch)
+/** Reads what the version control shows of the run, for the pane: the commits of each worker, and the change of the final commit. */
+export async function refreshFacts(io: Io): Promise<void> {
+  const run = await readRun(io)
+  if (!run || run.state === 'delivered') return
+  const vcs = vcsFor(run.vcs)
+  const previous = await io.readFacts()
+  const lanes = await vcs.lanes(io, run)
+  const kept = previous?.run === run.id ? previous.result : undefined
+  const result = run.final ? (kept?.commit === run.final.commit ? kept : await vcs.result(io, run, run.final.commit)) : undefined
+  const facts: Facts = result ? { run: run.id, lanes, result } : { run: run.id, lanes }
+  if (JSON.stringify(facts) !== JSON.stringify(previous)) await io.writeFacts(facts)
 }

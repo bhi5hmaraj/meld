@@ -1,5 +1,7 @@
-export type WorkerId = 'w1' | 'w2'
+export type WorkerId = `w${number}`
 export type Author = WorkerId | 'you'
+export type VcsKind = 'git' | 'jj'
+export type VcsChoice = VcsKind | 'auto'
 export type RunState = 'starting' | 'working' | 'ready' | 'delivered' | 'stopped'
 export type WorkerState = 'starting' | 'working' | 'idle' | 'stopped'
 export type TaskState = 'open' | 'claimed' | 'done'
@@ -13,17 +15,24 @@ export type ErrorCode =
   | 'NOT_INTEGRATOR'
   | 'RUN_ENDED'
   | 'STALE_TASK_LIST'
+  | 'CONFLICT'
+
+/** What runs one worker: an agent type (`meld:worker`, `general-purpose`, a plugin's agent) and an optional model. */
+export type AgentSpec = { type: string; model?: string }
 
 export type Worker = {
   id: WorkerId
+  agent: AgentSpec
   agentId?: string
   path: string
-  branch: string
+  ref: string
   state: WorkerState
+  briefed: boolean
   seenRevision: number
   seenEntry: number
   activity: string
   activityAt: number
+  tokens: number
 }
 
 export type Task = {
@@ -56,6 +65,7 @@ export type Run = {
   request: string
   revision: number
   state: RunState
+  vcs: VcsKind
   repo: string
   base: string
   startedAt: number
@@ -76,8 +86,10 @@ export type Change<T> = { run: Run; value: T } | Failure
 export type Notice = { revision: number; steers: string[] }
 
 export type BoardView = {
-  you: { id: WorkerId; path: string; branch: string }
-  peer: { id: WorkerId; state: WorkerState; branch: string; activity: string }
+  you: { id: WorkerId; path: string; ref: string }
+  peers: { id: WorkerId; state: WorkerState; ref: string; activity: string }[]
+  vcs: VcsKind
+  rules?: string
   request: string
   steers: string[]
   revision: number
@@ -90,8 +102,35 @@ export type BoardView = {
   final?: Final
 }
 
+/** A commit of one worker since the base, as the version control has it. */
+export type CommitFact = { commit: string; subject: string; parents: number; conflict: boolean }
+
+/** What the version control shows of one worker: its commits since the base, newest first, and whether it has edits it has not committed. */
+export type LaneFacts = { id: WorkerId; commits: CommitFact[]; edits: boolean }
+
+/** One changed file of the result: its line counts and its unified-diff hunks, cut when long. */
+export type FileChange = { path: string; added: number; removed: number; patch: string }
+
+/** The change of the final commit against the base: the first files with their diffs, and the totals of all files. */
+export type ResultFacts = { commit: string; files: FileChange[]; fileCount: number; added: number; removed: number }
+
+export type Facts = { run: string; lanes: LaneFacts[]; result?: ResultFacts }
+
+/** What the pane keeps between draws: the open diff and the start form. */
+export type PaneView = {
+  showDiff: boolean
+  task: string
+  agents: number
+  model: string
+  vcs: VcsChoice
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    meld: { run: Shaped<Run | null> }
+    meld: {
+      run: Shaped<Run | null>
+      facts: Shaped<Facts | null>
+      view: Shaped<PaneView | null>
+    }
   }
 }

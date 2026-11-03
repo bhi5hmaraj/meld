@@ -4,12 +4,14 @@ import {
   addCheck,
   addNote,
   addTasks,
+  addTokens,
   bindWorker,
   boardFor,
   claimTask,
   declareFinal,
   finishTask,
   isFailure,
+  markBriefed,
   releaseTask,
   startRun,
   steer,
@@ -19,16 +21,15 @@ import {
   takeNotice,
   workerOf,
 } from '../hooks/board'
-import type { Change, Run } from '../types'
+import type { Change, Run, WorkerId } from '../types'
 
 const NOW = 1_800_000_000_000
-const WORKERS = [
-  { path: '/tmp/meld/r1/w1', branch: 'meld/r1/w1' },
-  { path: '/tmp/meld/r1/w2', branch: 'meld/r1/w2' },
-]
+const AGENT = { type: 'meld:worker' }
+const IDS: WorkerId[] = ['w1', 'w2', 'w3']
 
-function fresh(): Run {
-  return startRun({ id: 'r1', request: 'Add a dark theme', repo: '/repo', base: 'abc1234', now: NOW, workers: WORKERS })
+function fresh(count = 2): Run {
+  const workers = IDS.slice(0, count).map(id => ({ id, path: `/tmp/meld/r1/${id}`, ref: `meld/r1/${id}`, agent: AGENT }))
+  return startRun({ id: 'r1', request: 'Add a dark theme', repo: '/repo', base: 'abc1234', vcs: 'git', now: NOW, workers })
 }
 
 function runOf<T>(change: Change<T>): Run {
@@ -40,11 +41,16 @@ function working(): Run {
   return runOf(bindWorker(runOf(bindWorker(fresh(), 'w1', 'agent-1', NOW)), 'w2', 'agent-2', NOW))
 }
 
+function workingThree(): Run {
+  const two = runOf(bindWorker(runOf(bindWorker(fresh(3), 'w1', 'agent-1', NOW)), 'w2', 'agent-2', NOW))
+  return runOf(bindWorker(two, 'w3', 'agent-3', NOW))
+}
+
 function withTask(): Run {
   return runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Theme tokens', detail: 'CSS variables' }] }, NOW))
 }
 
-test('a new run waits for its two workers', () => {
+test('a new run waits for its workers', () => {
   const run = fresh()
   expect(run.state).toBe('starting')
   expect(run.revision).toBe(1)
@@ -57,8 +63,32 @@ test('a run works once both workers are bound', () => {
   expect(workerOf(run, 'agent-2')?.id).toBe('w2')
 })
 
+test('a run of three workers waits for the third binding', () => {
+  const two = runOf(bindWorker(runOf(bindWorker(fresh(3), 'w1', 'agent-1', NOW)), 'w2', 'agent-2', NOW))
+  expect(two.state).toBe('starting')
+  expect(workingThree().state).toBe('working')
+})
+
+test('the board shows every other worker as a peer', () => {
+  const view = boardFor(workingThree(), 'w2').view
+  expect(view.peers.map(peer => peer.id)).toEqual(['w1', 'w3'])
+  expect(view.you).toEqual({ id: 'w2', path: '/tmp/meld/r1/w2', ref: 'meld/r1/w2' })
+  expect(view.vcs).toBe('git')
+})
+
 test('a bound worker cannot be bound again', () => {
   expect(bindWorker(working(), 'w1', 'agent-3', NOW)).toMatchObject({ error: 'TAKEN' })
+})
+
+test('a worker is briefed once', () => {
+  const run = working()
+  expect(run.workers[0]?.briefed).toBe(false)
+  expect(markBriefed(run, 'w1').workers[0]?.briefed).toBe(true)
+})
+
+test('the tokens of each turn add up for the worker', () => {
+  const run = addTokens(addTokens(working(), 'w2', 1200), 'w2', 300)
+  expect(run.workers.map(worker => worker.tokens)).toEqual([0, 1500])
 })
 
 test('a worker claims an open task', () => {
@@ -157,10 +187,11 @@ test('a stopped worker gives back its claimed tasks and the integration', () => 
   expect(stopped.state).toBe('working')
 })
 
-test('notes and checks of one worker are news for the other worker only', () => {
-  const noted = runOf(addNote(working(), 'w1', 'The theme lives in theme.css', undefined, NOW))
+test('notes and checks of one worker are news for the other workers only', () => {
+  const noted = runOf(addNote(workingThree(), 'w1', 'The theme lives in theme.css', undefined, NOW))
   const checked = runOf(addCheck(noted, 'w1', { command: 'pnpm test', commit: 'abc1234', passed: true, output: '' }, NOW))
   expect(boardFor(checked, 'w2').view.news.map(entry => entry.kind)).toEqual(['note', 'check'])
+  expect(boardFor(checked, 'w3').view.news.map(entry => entry.kind)).toEqual(['note', 'check'])
   expect(boardFor(checked, 'w1').view.news).toHaveLength(0)
 })
 
