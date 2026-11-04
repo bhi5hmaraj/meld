@@ -298,6 +298,7 @@ node scripts/shots.mjs
 - `core/resume.ts` lists and takes the runs of other sessions for `/meld-resume`.
 - `mcp/` holds `meld mcp`, which runs on Bun: `main.ts` starts it, `protocol.ts` speaks MCP over standard input and output with no other package, `tools.ts` holds its tools, and `sqlite-store.ts` keeps the boards. Its specs are `*.spec.ts` files, which `bun test mcp/` runs: the engine runner loads only `*.test.ts` files, and those cannot import `bun:sqlite`.
 - `mcp/acp.ts` is the ACP client that starts the agents of other vendors, such as Codex, over the JSON-RPC link of `mcp/json-rpc.ts`. Its spec runs against a stub ACP agent.
+- `mcp/worker.ts` is the worker mode, `meld mcp --worker`: the board tools of one ACP worker, with the commands of `mcp/code-host.ts`. A message of a worker to another agent becomes an action for the leader.
 - `hooks/board-store.ts` connects the hooks to `meld mcp`.
 - `hooks/pane.tsx` and `hooks/drawing.ts` draw the pane.
 - `hooks/register.tsx` is the one file that calls the engine.

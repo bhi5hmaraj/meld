@@ -7,12 +7,15 @@ import type { Adopted, BoardRead, BoardSummary, Committed } from '../core/remote
 import type { Run } from '../types'
 
 /** The version of the tables in the file. A meld that knows only an older version reads the file and writes nothing. */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 /** How long the owner of a board holds it with no write. After that, another session can adopt the board, as a resume does. */
 export const LEASE_MS = 60_000
 /** How long a write waits for the write lock that another process holds. */
 const BUSY_MS = 5000
 const NEWER = 'a newer meld wrote this board file: restart the session, so it loads the newer meld'
+
+/** Work that only the leader of a board can do: a message to an agent, or a toast to the person. Each is taken once. */
+export type Action = { id: number; board: string; kind: 'send' | 'toast'; agent: string; text: string; at: number }
 
 /** A board as a client reads it, with the session that owns it. */
 export type BoardRow = BoardRead & { owner: string | null; ownerAt: number | null }
@@ -71,6 +74,15 @@ const MIGRATIONS: ((db: Database, now: number) => void)[] = [
     )`)
     db.exec('CREATE INDEX context_of_party ON context (party, uploaded, at)')
   },
+  db =>
+    db.exec(`CREATE TABLE actions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      board TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      agent TEXT NOT NULL,
+      text TEXT NOT NULL,
+      at INTEGER NOT NULL
+    )`),
 ]
 
 /**
@@ -200,6 +212,23 @@ export class SqliteBoards {
   leave(party: string, id: string): void {
     if (this.newer) throw new Error(NEWER)
     this.db.query('DELETE FROM members WHERE party = ? AND id = ?').run(party, id)
+  }
+
+  addAction(action: Omit<Action, 'id'>): void {
+    if (this.newer) throw new Error(NEWER)
+    this.db.query('INSERT INTO actions (board, kind, agent, text, at) VALUES (?, ?, ?, ?, ?)').run(action.board, action.kind, action.agent, action.text, action.at)
+  }
+
+  /** The actions for the leader of a board, the oldest first. The transaction holds the write lock, so each action is taken once. */
+  takeActions(board: string): Action[] {
+    if (this.newer) throw new Error(NEWER)
+    return this.db
+      .transaction((): Action[] => {
+        const actions = this.db.query('SELECT id, board, kind, agent, text, at FROM actions WHERE board = ? ORDER BY id').all(board) as Action[]
+        this.db.query('DELETE FROM actions WHERE board = ?').run(board)
+        return actions
+      })
+      .immediate()
   }
 
   /** The boards with a run, the latest write first. */

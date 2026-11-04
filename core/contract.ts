@@ -4,6 +4,9 @@ import { vcsFor } from './vcs'
 import type { ToolSpec } from './ports'
 import type { LineMerge } from './vcs'
 
+/** The start of the name of each tool of meld, as Claude Code names the tools of the plugin meld. */
+export const TOOL_PREFIX = 'mcp__meld__'
+
 export const TOOL = {
   board: 'mcp__meld__board',
   addTasks: 'mcp__meld__add_tasks',

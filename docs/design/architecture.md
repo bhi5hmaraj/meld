@@ -45,7 +45,7 @@ With these ports, `core/actions.ts` (about 1000 lines that start, claim, restart
 
 Each function of the core takes only the ports that it uses, so the type check shows what each step needs. Step 0a found these needs:
 
-- A board call of a worker needs the Runner as well as the Store: it sends nudges and wake texts to other agents. In `meld mcp`, those messages become actions that the plugin carries out.
+- A board call of a worker needs the Runner as well as the Store: it sends nudges and wake texts to other agents. In `meld mcp`, those messages become rows of the table `actions`, and the leader carries them out (step 10b).
 - Each write of the board needs the CodeHost, as it mirrors `board.json`. With SQLite in `~/.meld/`, the store outlives the session, and the mirror can go.
 - Only the start needs every port: the Ledger for the cost at the start, and the Surface to open the pane.
 

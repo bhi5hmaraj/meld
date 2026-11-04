@@ -5,14 +5,13 @@ import { controlRun, countStep, guardCall, markWorker, refreshFacts, restartIdle
 import { cleanFolders } from '../core/clean'
 import type { BoardRead, Boards, BoardSummary, Committed } from '../core/remote-store'
 import { resumeRun } from '../core/resume'
-import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL, TOOL_SPECS, WORKER_SYSTEM } from '../core/contract'
+import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL, TOOL_PREFIX, TOOL_SPECS, WORKER_SYSTEM } from '../core/contract'
 import type { AgentState, FactsStore, Files, Io, Store } from '../core/ports'
 import { parseStart, WORKER_TYPE } from '../core/options'
 import { adoptedOf, BOARD_STORE_TOOLS, boardVerdict, problemOf, sessionStore, storeNote, valueOf, withNote } from './board-store'
 import type { SessionBoard } from './board-store'
 import { DEFAULT_VIEW, paneTree } from './pane'
 
-const MELD_TOOL = 'mcp__meld__'
 // Change a shape tag when the fields of its value change: a value stored by an older version then reads as the initial value.
 const runRef = atom({ plugin: 'meld', key: 'run' } as const, null, { shape: 'run-4' })
 const factsRef = atom({ plugin: 'meld', key: 'facts' } as const, null, { shape: 'facts-1' })
@@ -256,7 +255,7 @@ export const register: Register = on => {
   ).catch(($, e, next) => (next.called ? next(e) : { deny: 'meld: the board failed. Try the call again.' }))
 
   on('tool.call', async ($, e, next) => {
-    if (String(e.tool).startsWith(MELD_TOOL)) return next(e)
+    if (String(e.tool).startsWith(TOOL_PREFIX)) return next(e)
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),

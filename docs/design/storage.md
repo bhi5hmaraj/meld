@@ -68,6 +68,8 @@ Step 0c adds four tables, and gives each board a party, `local` for now:
 
 Each commit of a board adds the new entries of its run in the same transaction, with "insert if absent", so the first write of an entry stays. The steps of `MIGRATIONS` bring an old file to the schema of the meld that opens it. They run in one transaction that takes the write lock, so two processes that open an old file migrate it once. `tests/party-conformance.ts` holds the rules of these rows and members, and the memory store and the SQLite store pass them. No step of the core reads them yet: the ACP runner of 0.10 adds its members, and the hosted phase uploads the outbox.
 
+Step 10b adds the table `actions` (schema 3): the work that only the leader of a board can do, a message to an agent or a toast to the person. A worker of `meld mcp` writes these rows, and the leader takes each row once.
+
 ## Several sessions on one machine
 
 - All runs live in `~/.meld/meld.db`, in WAL mode. Each editor session starts its own `meld mcp` process, and all the processes open the same file. There is no daemon.

@@ -55,6 +55,16 @@ test('a write through the Store port keeps the context entries of the run as row
   expect((await boards.partyStore().context(LOCAL_PARTY)).map(row => row.id)).toEqual([1])
 })
 
+test('an action for the leader of a board is taken once, oldest first', () => {
+  const boards = new SqliteBoards(':memory:')
+  boards.addAction({ board: 'b1', kind: 'send', agent: 'agent-2', text: 'one', at: NOW })
+  boards.addAction({ board: 'b1', kind: 'toast', agent: '', text: 'two', at: NOW + 1 })
+  boards.addAction({ board: 'b2', kind: 'send', agent: 'agent-3', text: 'other', at: NOW })
+  expect(boards.takeActions('b1').map(action => action.text)).toEqual(['one', 'two'])
+  expect(boards.takeActions('b1')).toEqual([])
+  expect(boards.takeActions('b2')).toEqual([{ id: 3, board: 'b2', kind: 'send', agent: 'agent-3', text: 'other', at: NOW }])
+})
+
 test('a new file holds the local party of the machine', () => {
   const boards = new SqliteBoards(':memory:', NOW)
   expect(boards.parties()).toEqual([{ id: LOCAL_PARTY, name: 'local', leader: null, host: 'meld mcp', policies: {}, createdAt: NOW }])
