@@ -517,7 +517,20 @@ export function freshTokens(usage: TurnUsage | undefined): number {
   return usage.input_tokens + usage.cache_creation_input_tokens + usage.output_tokens
 }
 
-/** A worker's turn ended: it is idle and its tokens add up. The clock of meld starts workers again (see restartIdleWorkers). */
+/**
+ * One model call of an agent: its fresh tokens add up on its worker at once. A worker does a task in one long turn, so
+ * a count at the end of the turn showed 0 tokens while it worked. The main session and agents that are no worker count nothing.
+ */
+export async function countStep(io: Io, agentId: string | undefined, usage: TurnUsage | null | undefined): Promise<void> {
+  const tokens = freshTokens(usage ?? undefined)
+  if (agentId === undefined || !tokens) return
+  const run = await readRun(io)
+  const worker = run ? board.workerOf(run, agentId) : undefined
+  if (!worker) return
+  await writeRun(io, current => board.addTokens(current, worker.id, tokens))
+}
+
+/** A worker's turn ended: it is idle. Its tokens added up at each model call (countStep). The clock of meld starts workers again (see restartIdleWorkers). */
 export async function markWorker(io: Io, agentId: string | undefined, state: WorkerState, tokens = 0): Promise<void> {
   if (agentId === undefined) return
   const run = await readRun(io)
