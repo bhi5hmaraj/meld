@@ -2,7 +2,8 @@
 /**
  * A check of the git and the jj adapter of hooks/vcs.ts with real processes. tsc compiles hooks/ into CommonJS in a
  * temporary folder. Each adapter goes through a run in a temporary git repository: three workspaces, a commit in
- * each, the integration line, the integration, the commits that the final commit lacks, resolve, lanes, result, deliver and remove. HOME is a
+ * each, the integration line, the integration, the commits that the final commit lacks, resolve, lanes (and the work that a
+ * plain read hides), result, deliver and remove. HOME is a
  * temporary folder, so the check reads and
  * changes no git or jj config of the person. Run: node scripts/adapters.mjs
  */
@@ -33,6 +34,7 @@ const STEPS = [
   ['missing', missing],
   ['resolve', resolve],
   ['lanes', lanes],
+  ['hidden work', hiddenWork],
   ['result', result],
   ['deliver', deliver],
   ['join', addWorkers],
@@ -251,6 +253,36 @@ async function lanes(s) {
   same(read.map(lane => [lane.id, lane.edits, lane.error]), [['w1', false, undefined], ['w2', true, undefined], ['w3', true, undefined]], 'the lanes and their edits with a snapshot')
   same(read[2].commits, found[2].commits, 'the commits of w3 with a snapshot')
   return 'w1 has the merge and the three commits; w2 and w3 have one commit; w2 has edits; with a snapshot, w3 has its new edit'
+}
+
+/**
+ * A read with a snapshot does not miss work that a plain read hides. git counts the new files of w2 and w3 also when
+ * status.showUntrackedFiles=no hides them from git status. jj refuses to snapshot a new file over snapshot.max-new-file-size
+ * (1 MiB) and still exits 0 with the working copy empty, so the lane of a workspace with such a file is not readable.
+ */
+async function hiddenWork(s) {
+  const expected = [['w1', false, undefined], ['w2', true, undefined], ['w3', true, undefined]]
+  if (s.kind === 'git') {
+    sh(s.repo, ['git', 'config', 'status.showUntrackedFiles', 'no'])
+    try {
+      const read = await s.vcs.lanes(io, s.run, { snapshot: true })
+      same(read.map(lane => [lane.id, lane.edits, lane.error]), expected, 'the lanes and their edits with status.showUntrackedFiles=no')
+    } finally {
+      sh(s.repo, ['git', 'config', '--unset', 'status.showUntrackedFiles'])
+    }
+    return 'with status.showUntrackedFiles=no, the new files of w2 and w3 still count as edits'
+  }
+  const big = join(s.run.workers[0].path, 'big.bin')
+  writeFileSync(big, Buffer.alloc(1024 * 1024 + 1))
+  try {
+    const read = await s.vcs.lanes(io, s.run, { snapshot: true })
+    same(read.map(lane => [lane.id, lane.error === undefined]), [['w1', false], ['w2', true], ['w3', true]], 'the lanes that meld can read with big.bin in w1')
+    if (!/Refused to snapshot.*big\.bin/.test(read[0].error)) throw new Error(`the error of w1 is ${JSON.stringify(read[0].error)}`)
+  } finally {
+    rmSync(big)
+  }
+  same((await s.vcs.lanes(io, s.run, { snapshot: true })).map(lane => [lane.id, lane.edits, lane.error]), expected, 'the lanes once big.bin is gone')
+  return 'a new file of 1 MiB and 1 byte in w1, which jj refuses to snapshot, makes its lane not readable; once the file is gone, meld reads it again'
 }
 
 async function result(s) {
