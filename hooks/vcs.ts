@@ -15,11 +15,17 @@ const FULL_COMMIT = /^[0-9a-f]{40}$/
 const JJ_CONFIG_FOLDER = /^(.+\/repos\/[0-9a-f]{8,64})\/config\.toml$/
 const BASE_BOOKMARK = 'meld_base'
 const FINAL_BOOKMARK = 'meld_final'
+const LINE_BOOKMARK = 'meld_integration'
 
 export type Place = { id: string; repo: string; base: string }
 export type Workspace = { path: string; ref: string }
 export type Prepared = { workspaces: Workspace[] } | { error: string }
 export type Resolved = { commit: string; conflict: boolean }
+/**
+ * A merge into the integration line: merged, with the head of the line (the same head when the line holds the commit);
+ * a conflict, with the head that stays and the files in conflict; or failed, with the reason.
+ */
+export type LineMerge = { state: 'merged'; head: string } | { state: 'conflict'; head: string; files: string[] } | { state: 'failed'; error: string }
 
 /** What meld asks of a version control: workspaces for the workers, the commits they name, the facts the pane shows, and the delivery. */
 export type Vcs = {
@@ -29,6 +35,14 @@ export type Vcs = {
   resolve(io: Io, run: Run, worker: Worker, revision: string): Promise<Resolved | undefined>
   lanes(io: Io, run: Run): Promise<LaneFacts[]>
   result(io: Io, run: Run, commit: string): Promise<ResultFacts>
+  /** The integration line as a worker names it in its folder: a branch for git, a bookmark for jj. */
+  lineName(run: Run): string
+  /**
+   * Merges a finished commit into the integration line with no working copy, so no agent and no folder of a worker takes
+   * part. The line starts at the base. A line that the commit holds moves forward to it. Run one merge at a time: the ref
+   * moves only from the head that the merge read, so a merge that lost a race fails and changes nothing.
+   */
+  mergeIntoLine(io: Io, run: Run, commit: string, message: string): Promise<LineMerge>
   deliver(io: Io, run: Run, commit: string, message: string): Promise<CommandResult>
   remove(io: Io, run: Run): Promise<void>
 }
@@ -73,6 +87,46 @@ async function removeHome(io: Io, place: { id: string; repo: string }): Promise<
 async function dropWorktree(io: Io, repo: string, workspace: Workspace): Promise<void> {
   await git(io, repo, ['worktree', 'remove', '--force', workspace.path])
   await git(io, repo, ['branch', '-D', workspace.ref])
+}
+
+/** The git ref of the integration line of a git run: a branch next to the branches of the workers. */
+function gitLine(run: Run): string {
+  return `meld/${run.id}/integration`
+}
+
+/**
+ * Merges `commit` into the line at `ref` in the git store `gitDir`, with plumbing only: merge-tree makes the tree, commit-tree
+ * the merge commit, and update-ref moves the line from the head it read. `config` gives git options, such as an identity.
+ */
+async function mergeInGit(io: Io, gitDir: string, ref: string, base: string, commit: string, message: string, config: string[] = []): Promise<LineMerge> {
+  const found = await headOf(io, gitDir, ref)
+  const head = found ?? base
+  if ((await git(io, gitDir, ['merge-base', '--is-ancestor', commit, head])).ok) return { state: 'merged', head }
+  let next = commit
+  if (!(await git(io, gitDir, ['merge-base', '--is-ancestor', head, commit])).ok) {
+    const merged = await git(io, gitDir, ['merge-tree', '--write-tree', '--name-only', '--no-messages', head, commit])
+    const [tree = '', ...files] = merged.out.split('\n')
+    if (!FULL_COMMIT.test(tree)) return { state: 'failed', error: merged.err || merged.out || 'git merge-tree made no tree' }
+    if (!merged.ok) return { state: 'conflict', head, files: files.filter(Boolean) }
+    const made = await git(io, gitDir, [...config, 'commit-tree', tree, '-p', head, '-p', commit, '-m', message])
+    if (!made.ok || !FULL_COMMIT.test(made.out)) return { state: 'failed', error: made.err || made.out || 'git commit-tree made no commit' }
+    next = made.out
+  }
+  const moved = await git(io, gitDir, ['update-ref', ref, next, found ?? ''])
+  return moved.ok ? { state: 'merged', head: next } : { state: 'failed', error: moved.err || moved.out }
+}
+
+/** The commit of a ref in the git store `gitDir`, or undefined when the ref is not there yet. */
+async function headOf(io: Io, gitDir: string, ref: string): Promise<string | undefined> {
+  const found = await git(io, gitDir, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`])
+  return found.ok && FULL_COMMIT.test(found.out) ? found.out : undefined
+}
+
+/** The identity of the repository of the person as git options, for a commit that meld makes in the store of jj. */
+async function identityOf(io: Io, repo: string): Promise<string[]> {
+  const name = await git(io, repo, ['config', 'user.name'])
+  const email = await git(io, repo, ['config', 'user.email'])
+  return [...(name.ok && name.out ? ['-c', `user.name=${name.out}`] : []), ...(email.ok && email.out ? ['-c', `user.email=${email.out}`] : [])]
 }
 
 function gitCommits(out: string): CommitFact[] {
@@ -120,11 +174,16 @@ const GIT: Vcs = {
 
   result: (io, run, commit) => gitChange(io, run.repo, run.base, commit),
 
+  lineName: gitLine,
+
+  mergeIntoLine: (io, run, commit, message) => mergeInGit(io, run.repo, `refs/heads/${gitLine(run)}`, run.base, commit, message),
+
   deliver: (io, run, commit, message) => mergeInto(io, run.repo, commit, message),
 
   async remove(io, run) {
     if (!SAFE_ID.test(run.id)) return
     for (const worker of run.workers) await dropWorktree(io, run.repo, worker)
+    await git(io, run.repo, ['branch', '-D', gitLine(run)])
     await removeHome(io, run)
     await git(io, run.repo, ['worktree', 'prune'])
   },
@@ -187,6 +246,24 @@ const JJ: Vcs = {
   },
 
   result: (io, run, commit) => gitChange(io, storeOf(run.id), run.base, commit),
+
+  lineName: () => LINE_BOOKMARK,
+
+  /**
+   * The line is a ref of the store that jj imports as a bookmark, so each workspace sees it. A commit with a conflict of jj
+   * holds the sides of the conflict in its tree, so it is not merged: it counts as a conflict.
+   */
+  async mergeIntoLine(io, run, commit, message) {
+    const store = storeOf(run.id)
+    const ref = `refs/heads/${LINE_BOOKMARK}`
+    const state = await command(io, run.repo, ['jj', '-R', jjRepoOf(run.id), '--ignore-working-copy', 'log', '--no-graph', '-r', commit, '-T', JJ_RESOLVE_TEMPLATE])
+    if (!state.ok) return { state: 'failed', error: state.err || state.out }
+    if (state.out.split('\n').some(line => line.endsWith(' conflict'))) return { state: 'conflict', head: (await headOf(io, store, ref)) ?? run.base, files: [] }
+    const merged = await mergeInGit(io, store, ref, run.base, commit, message, await identityOf(io, run.repo))
+    if (merged.state !== 'merged') return merged
+    const imported = await command(io, run.repo, ['jj', '-R', jjRepoOf(run.id), '--ignore-working-copy', 'git', 'import'])
+    return imported.ok ? merged : { state: 'failed', error: `the line moved to ${merged.head}, but jj did not import it: ${imported.err || imported.out}` }
+  },
 
   async deliver(io, run, commit, message) {
     const repo = jjRepoOf(run.id)
