@@ -1,6 +1,6 @@
 # Build plan
 
-Status: draft. The order is agreed: first make solo good and give it to people, then local parties with Claude Code and Codex, then the hosted version. Steps 0a and 0b of phase 2 are built on the branch `next`. Nothing else in phases 2 to 4 has started.
+Status: draft. The order is agreed: first make solo good and give it to people, then local parties with Claude Code and Codex, then the hosted version. Steps 0a, 0b and 0c of phase 2 are built on the branch `next`. Nothing else in phases 2 to 4 has started.
 
 ## Phase 1: solo 0.8.x for users
 
@@ -16,8 +16,8 @@ Give each release to people, and keep their problems as GitHub issues. The run r
 | Step | Delivers | Done when |
 |---|---|---|
 | 0a | The core moves out of the plugin. `Io` splits into the ports of [architecture.md](architecture.md). An in-memory store and the conformance suite. Built: `core/`, `core/ports.ts`, `core/memory-store.ts`, `tests/store-conformance.ts` and the model test. The model test found that a stopped worker could still claim a task. | All tests pass on the in-memory store, and the plugin works as in 0.8. |
-| 0b | `meld mcp` on Bun, with the SQLite store and one local party. The Claude Code plugin declares it as its MCP server and becomes its client. The 0.8 board shape moves into SQLite rows. Built as the store of the plugin (decision 41): one board for each session in `~/.meld/meld.db`, commits that compare versions, a lease of 60 s for the owner, and `/meld-resume`. The facts of the pane stay in the session state. Without Bun, the plugin works as in 0.8. | A solo run works from start to delivery, and resumes in a new session. |
-| 0c | Random characters in run ids. Parties and members. Events and context as rows that are only added, with the party column and the "uploaded" mark. | The conformance suite covers them. |
+| 0b | `meld mcp` on Bun, with the SQLite store and one local party. The Claude Code plugin declares it as its MCP server and becomes its client. The 0.8 board shape moves into SQLite rows. Built as the store of the plugin (decision 41): one board for each session in `~/.meld/meld.db`, commits that compare versions, a lease of 60 s for the owner, and `/meld-resume`. The facts of the pane stay in the session state. Without Bun, the plugin works as in 0.8. Checked live: a run started in one session, a new session took it with `/meld-resume`, and delivered it. | A solo run works from start to delivery, and resumes in a new session. |
+| 0c | Random characters in run ids. Parties and members. Events and context as rows that are only added, with the party column and the "uploaded" mark. Built: run ids that end with four random characters, schema 2 of the board file with its migration steps ([storage.md](storage.md)), and `tests/party-conformance.ts`. | The conformance suite covers them. |
 
 From 0.9, users need Bun. Compiled binaries come when users ask for them.
 

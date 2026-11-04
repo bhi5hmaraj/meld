@@ -123,7 +123,7 @@ async function startAlone(io: Io, cwd: string, options: StartOptions): Promise<C
   const request = named?.task ?? options.request
   const base = await headCommit(io, repo)
   const now = await io.now()
-  const id = now.toString(36)
+  const id = board.runId(now, io.random(board.RUN_ID_BYTES))
   const ids = options.agents.map((_, index) => `w${index + 1}` as WorkerId)
   const preferred: VcsKind = options.vcs === 'git' ? 'git' : await detectVcs(io, repo)
   if (options.vcs === 'jj' && preferred !== 'jj') return { text: JJ_MISSING }

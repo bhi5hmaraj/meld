@@ -99,6 +99,6 @@ test('a start over a stopped run with no work clears that run before it removes 
   const result = await startRun(io, '/repo', { request: 'More', agents: [WORKER, WORKER], vcs: 'git' })
   expect(io.removed).toBe(true)
   expect(io.late).toEqual([])
-  expect(io.current?.id).toBe(NOW.toString(36))
-  expect(result.text).toBe(`Run ${NOW.toString(36)}: 2 workers on git, from commit ${HEAD.slice(0, 7)}.`)
+  expect(io.current?.id).toBe(`${NOW.toString(36)}0000`)
+  expect(result.text).toBe(`Run ${NOW.toString(36)}0000: 2 workers on git, from commit ${HEAD.slice(0, 7)}.`)
 })

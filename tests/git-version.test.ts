@@ -6,7 +6,7 @@ import type { AgentSpec, Change, Run, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
 
 const NOW = 1_800_000_000_000
-const ID = NOW.toString(36)
+const ID = `${NOW.toString(36)}0000`
 const WORKER: AgentSpec = { type: 'meld:worker' }
 const TWO = [WORKER, WORKER]
 const STARTED = `Run ${ID}: 2 workers on git, from commit ${HEAD.slice(0, 7)}.`

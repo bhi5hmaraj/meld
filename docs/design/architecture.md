@@ -37,6 +37,7 @@ meld 0.8 sends all I/O through one `Io` interface with 15 methods. The ports of 
 | CodeHost | `run` (git, jj), `writeFile` (the jj config, the board mirror) | store.git | bare mirror |
 | Runner | `spawn`, `send`, `agents` | subagents, ACP | drivers, sessions that pull |
 | Clock | `now`, `sleep` | engine clock or system clock | system clock |
+| Entropy | `random`, for the random characters of a run id | `crypto.getRandomValues` | `crypto.getRandomValues` |
 | Surface | `toast`, `openPane`, `command` | pane | web page |
 | Ledger | `cost` | session cost | usage from each driver |
 
@@ -53,6 +54,8 @@ Step 0b found these limits of the engine, in a live session:
 - Each `$.mcp.call` of the plugin goes through the permission check of the engine. A `tool.check` hook of meld allows the calls of meld, and refuses the calls of the model and of other plugins.
 - A timer callback runs outside every hook, so no hook of meld sees its calls, and the engine asks the person. The timer of the pane reads the copy of the run in the session state. The facts stay there too, as only the pane reads them.
 - A hot reload of a mod loads its hooks again, but not its manifest. A server that a new manifest lists starts after `/reload-plugins`, or in a new session.
+
+Step 0c adds the ports of a party in `core/party.ts`: `PartyRows` (the events and context entries of its runs, which are only added, and the outbox) and `Members` (the runners with their worker slots and a lease). They are not in `Io` yet, as no step of the core uses them. The ACP runner of 0.10 uses them.
 
 So 0.10 needs one more channel. The leader must read the board on a timer, as the workers of Codex write through their own `meld mcp`. Options: a Unix socket of `meld mcp` through `$.http.fetch`, or a permission rule that the person adds.
 

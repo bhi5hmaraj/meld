@@ -5,7 +5,9 @@ import { join } from 'node:path'
 import { Database } from 'bun:sqlite'
 
 import { startRun } from '../core/board'
-import type { Run } from '../types'
+import { LOCAL_PARTY } from '../core/party'
+import type { ContextEntry, Entry, Run } from '../types'
+import { MEMBER_CHECKS, ROW_CHECKS } from '../tests/party-conformance'
 import { STORE_CHECKS } from '../tests/store-conformance'
 import { LEASE_MS, SCHEMA_VERSION, SqliteBoards } from './sqlite-store'
 
@@ -19,11 +21,69 @@ function newRun(): Run {
   return startRun({ id: 'r1', request: 'Add a dark theme', repo: '/repo', base: HEAD, vcs: 'git', now: NOW, workers })
 }
 
+function note(id: number): Entry {
+  return { id, at: NOW + id, by: 'w1', kind: 'note', text: `note ${id}` }
+}
+
+function fact(id: number): ContextEntry {
+  return { id, at: NOW + id, kind: 'fact', by: 'w1', text: `fact ${id}`, files: [], seenBy: [] }
+}
+
 function tempFile(): string {
   return join(mkdtempSync(join(tmpdir(), 'meld-db-')), 'meld.db')
 }
 
 for (const [name, check] of STORE_CHECKS) test(`the SQLite store: ${name}`, () => check(new SqliteBoards(':memory:').board('b1')))
+for (const [name, check] of ROW_CHECKS) test(`the SQLite party store: ${name}`, () => check(new SqliteBoards(':memory:').partyStore()))
+for (const [name, check] of MEMBER_CHECKS) test(`the SQLite party store: ${name}`, () => check(new SqliteBoards(':memory:').partyStore()))
+
+test('each commit keeps the log entries of the run as rows of the local party, also after the run trims them', async () => {
+  const boards = new SqliteBoards(':memory:')
+  expect(boards.commit('b1', { ...newRun(), log: [note(1), note(2)] }, 0, 's1', NOW)).toBe('committed')
+  expect(boards.commit('b1', { ...newRun(), log: [note(2), note(3)] }, 1, 's1', NOW)).toBe('committed')
+  const events = await boards.partyStore().events('r1')
+  expect(events.map(row => [row.id, row.party])).toEqual([
+    [1, LOCAL_PARTY],
+    [2, LOCAL_PARTY],
+    [3, LOCAL_PARTY],
+  ])
+})
+
+test('a write through the Store port keeps the context entries of the run as rows too', async () => {
+  const boards = new SqliteBoards(':memory:')
+  await boards.board('b1').write(() => ({ ...newRun(), context: [fact(1)] }))
+  expect((await boards.partyStore().context(LOCAL_PARTY)).map(row => row.id)).toEqual([1])
+})
+
+test('a new file holds the local party of the machine', () => {
+  const boards = new SqliteBoards(':memory:', NOW)
+  expect(boards.parties()).toEqual([{ id: LOCAL_PARTY, name: 'local', leader: null, host: 'meld mcp', policies: {}, createdAt: NOW }])
+})
+
+test('a file of schema 1 gets the tables of schema 2, and its boards stay, in the local party', async () => {
+  const path = tempFile()
+  const old = new Database(path)
+  old.exec('CREATE TABLE boards (id TEXT PRIMARY KEY, run TEXT, version INTEGER NOT NULL DEFAULT 0, owner TEXT, owner_at INTEGER)')
+  old.query('INSERT INTO boards (id, run, version, owner, owner_at) VALUES (?, ?, ?, ?, ?)').run('b1', JSON.stringify(newRun()), 3, 's1', NOW)
+  old.exec('PRAGMA user_version = 1')
+  old.close()
+  const boards = new SqliteBoards(path, NOW)
+  expect(boards.read('b1')).toEqual({ run: newRun(), version: 3, owner: 's1', ownerAt: NOW })
+  expect(boards.commit('b1', { ...newRun(), log: [note(1)] }, 3, 's1', NOW)).toBe('committed')
+  expect((await boards.partyStore().events('r1')).map(row => row.party)).toEqual([LOCAL_PARTY])
+  boards.close()
+  expect((new Database(path).query('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
+  rmSync(path, { force: true })
+})
+
+test('a second open of a file changes nothing of its schema', () => {
+  const path = tempFile()
+  new SqliteBoards(path, NOW).close()
+  const again = new SqliteBoards(path, NOW + 1)
+  expect(again.parties().map(party => party.createdAt)).toEqual([NOW])
+  again.close()
+  rmSync(path, { force: true })
+})
 
 test('two boards of one file stand apart', async () => {
   const boards = new SqliteBoards(':memory:')

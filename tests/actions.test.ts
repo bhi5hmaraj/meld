@@ -9,7 +9,7 @@ import { FakeIo, HEAD } from './fake-io'
 import { STORED_BY_0_6_0, STORED_BY_0_7_0 } from './stored-runs'
 
 const NOW = 1_800_000_000_000
-const ID = NOW.toString(36)
+const ID = `${NOW.toString(36)}0000`
 const FULL = 'f'.repeat(40)
 const WORKER: AgentSpec = { type: 'meld:worker' }
 const TWO = [WORKER, WORKER]
@@ -214,8 +214,8 @@ test('a start after a start that started no worker removes the workspaces of the
   const result = await startRun(io, '/repo', { request: 'Add a dark theme', agents: TWO, vcs: 'git' })
   expect(io.commands).toContain(`git branch -D meld/${ID}/w2`)
   expect(io.commands).toContain(`rm -rf -- /tmp/meld/${ID}`)
-  expect(io.current?.id).toBe((NOW + 60_000).toString(36))
-  expect(result.text).toBe(`Run ${(NOW + 60_000).toString(36)}: 2 workers on git, from commit ${HEAD.slice(0, 7)}.`)
+  expect(io.current?.id).toBe(`${(NOW + 60_000).toString(36)}0000`)
+  expect(result.text).toBe(`Run ${(NOW + 60_000).toString(36)}0000: 2 workers on git, from commit ${HEAD.slice(0, 7)}.`)
 })
 
 test('a start over a stopped run with commits refuses, and names the run, its folder and its count of commits', async () => {

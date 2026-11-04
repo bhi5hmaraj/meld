@@ -62,6 +62,7 @@ export const register: Register = on => {
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
+      random: count => crypto.getRandomValues(new Uint8Array(count)),
       cost: async () => (await $.session.usage()).cost?.usd,
       agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
@@ -124,6 +125,7 @@ export const register: Register = on => {
     const io: Io & Files = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
+      random: count => crypto.getRandomValues(new Uint8Array(count)),
       cost: async () => (await $.session.usage()).cost?.usd,
       agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
@@ -182,6 +184,7 @@ export const register: Register = on => {
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
+      random: count => crypto.getRandomValues(new Uint8Array(count)),
       cost: async () => (await $.session.usage()).cost?.usd,
       agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
@@ -220,6 +223,7 @@ export const register: Register = on => {
       const io: Io = {
         run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
         now: () => $.clock.now(),
+        random: count => crypto.getRandomValues(new Uint8Array(count)),
         cost: async () => (await $.session.usage()).cost?.usd,
         agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
         sleep: ms => $.clock.sleep(ms),
@@ -256,6 +260,7 @@ export const register: Register = on => {
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
+      random: count => crypto.getRandomValues(new Uint8Array(count)),
       cost: async () => (await $.session.usage()).cost?.usd,
       agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
@@ -294,6 +299,7 @@ export const register: Register = on => {
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
+      random: count => crypto.getRandomValues(new Uint8Array(count)),
       cost: async () => (await $.session.usage()).cost?.usd,
       agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
@@ -329,6 +335,7 @@ export const register: Register = on => {
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
+      random: count => crypto.getRandomValues(new Uint8Array(count)),
       cost: async () => (await $.session.usage()).cost?.usd,
       agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
@@ -366,6 +373,7 @@ export const register: Register = on => {
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
+      random: count => crypto.getRandomValues(new Uint8Array(count)),
       cost: async () => (await $.session.usage()).cost?.usd,
       agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
@@ -409,6 +417,7 @@ export const register: Register = on => {
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
+      random: count => crypto.getRandomValues(new Uint8Array(count)),
       cost: async () => (await $.session.usage()).cost?.usd,
       agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
@@ -447,6 +456,7 @@ export const register: Register = on => {
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
+      random: count => crypto.getRandomValues(new Uint8Array(count)),
       cost: async () => (await $.session.usage()).cost?.usd,
       agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),

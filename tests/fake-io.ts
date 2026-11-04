@@ -34,6 +34,10 @@ export class FakeIo extends MemoryStore implements Io, Files {
   /** A change of the run while a command or a spawn runs, by the command or the description of the spawn: a stop, a final, another run. */
   during: Record<string, (run: Run) => Run | null> = {}
 
+  random(count: number): Uint8Array {
+    return new Uint8Array(count)
+  }
+
   async run(argv: string[], cwd: string): Promise<ProcessResult> {
     const command = argv.join(' ')
     this.commands.push(command)

@@ -58,6 +58,9 @@ export type Runner = {
   agents(): Promise<Map<string, AgentState> | undefined>
 }
 
+/** Random bytes, for ids that must not collide: two runs that start in one millisecond, on one machine or on two. */
+export type Entropy = { random(count: number): Uint8Array }
+
 export type Clock = {
   now(): Promise<number>
   sleep(ms: number): Promise<void>
@@ -76,7 +79,7 @@ export type Ledger = {
 }
 
 /** Every port. A hooks module spells `$` only at its call sites, so each hook builds an Io of closures over its own `$`. */
-export type Io = Store & FactsStore & CodeHost & Runner & Clock & Surface & Ledger
+export type Io = Store & FactsStore & CodeHost & Runner & Clock & Entropy & Surface & Ledger
 
 /** A tool that the host offers to the model: its name, what it does, and the JSON schema of its input. */
 export type ToolSpec = { name: string; description: string; inputSchema?: Record<string, unknown> }

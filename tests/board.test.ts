@@ -19,6 +19,7 @@ import {
   passContext,
   releaseTask,
   restartWorker,
+  runId,
   shareEntry,
   SPLIT_CALLS,
   splitTask,
@@ -31,6 +32,7 @@ import {
   takeSplitNudge,
   workerOf,
 } from '../core/board'
+import { SAFE_ID } from '../core/vcs'
 import type { Change, NewTask, Run, TaskSize, WorkerId } from '../types'
 import { STORED_BY_0_6_0, STORED_BY_0_7_0 } from './stored-runs'
 
@@ -791,4 +793,10 @@ test('a task that needs a parent is ready when the parent is done', () => {
   const added = runOf(addTasks(splitRun(), 'w2', { seen: 2, tasks: [{ title: 'Theme switch', needs: [1] }] }, NOW + 1))
   expect(added.tasks[4]?.readyAt).toBeUndefined()
   expect(withPartsDone(added).tasks[4]).toMatchObject({ id: 5, readyAt: NOW + 6 })
+})
+
+test('a run id is the start time in base 36 and four random characters, safe for a folder and a ref', () => {
+  const id = runId(NOW, new Uint8Array([0, 35, 36, 255]))
+  expect(id).toBe(`${NOW.toString(36)}0z03`)
+  expect(SAFE_ID.test(id)).toBe(true)
 })

@@ -27,6 +27,8 @@ import type { AgentState } from './ports'
 import { childrenOf, isParent, isReady, taskOf, waitsFor, waitsOn } from './tasks'
 
 const LOG_LIMIT = 500
+/** The random characters at the end of a run id. */
+export const RUN_ID_BYTES = 4
 const CONTEXT_KEPT = 200
 export const CONTEXT_KINDS: readonly ContextKind[] = ['fact', 'fail', 'interface']
 export const CONTEXT_TEXT_LIMIT = 500
@@ -615,6 +617,11 @@ function findWorker(run: Run, id: WorkerId): Worker {
 
 function replaceWorker(run: Run, worker: Worker): Run {
   return { ...run, workers: run.workers.map(one => (one.id === worker.id ? worker : one)) }
+}
+
+/** The id of a run: the start time in base 36, so the ids sort by time, then one random base-36 character for each byte. */
+export function runId(now: number, bytes: Uint8Array): string {
+  return now.toString(36) + Array.from(bytes, byte => (byte % 36).toString(36)).join('')
 }
 
 /** A worker as meld makes it: no agent yet, nothing read, nothing counted. */

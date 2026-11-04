@@ -49,13 +49,24 @@ Search is the one part that differs: SQLite uses FTS5, and Postgres uses `pg_trg
 
 1. **One owner per run.** A run lives in SQLite or in Postgres, not in both.
 2. **Shared rows are only added.** Events and context entries go to another store with "insert if absent". A repeated upload does no harm.
-3. **Ids that do not collide.** Today a run id is the start time in milliseconds, in base 36 (`hooks/actions.ts`). Two runs that start in the same millisecond get the same id. Add random characters before a run reaches a shared store. Then the run id and the entry number make a key that is unique in every store.
+3. **Ids that do not collide.** From 0.9, a run id is the start time in milliseconds in base 36, then four random base-36 characters. So two runs that start in the same millisecond get different ids, and the run id and the entry number make a key that is unique in every store.
 4. **One schema.** Both stores hold the same Run JSON and the same rows.
 5. **An outbox.** A context entry made in solo mode has an "uploaded" mark. It goes up when the user shares the local party with a hosted party.
 
-## The board file as built in 0.9 step 0b
+## The board file as built in 0.9
 
-One table holds the 0.8 board shape: `boards (id, run, version, owner, owner_at)`. Each session writes its run to its own board, with the Run JSON in `run`. The facts of the pane stay in the session state: the session reads them from the version control again. A commit names the version that it read, and stores the run only when the board is still at that version. A commit of another session while the owner wrote in the last 60 s is refused, and an adopt (a resume) moves the version, so a commit of the old owner from its last read is stale. `PRAGMA user_version` holds the schema version: a meld that knows only an older one reads the file and writes nothing. The tables of 0c (parties, members, events and context) come next to this one.
+One table holds the 0.8 board shape: `boards (id, run, version, owner, owner_at)`. Each session writes its run to its own board, with the Run JSON in `run`. The facts of the pane stay in the session state: the session reads them from the version control again. A commit names the version that it read, and stores the run only when the board is still at that version. A commit of another session while the owner wrote in the last 60 s is refused, and an adopt (a resume) moves the version, so a commit of the old owner from its last read is stale. `PRAGMA user_version` holds the schema version: a meld that knows only an older one reads the file and writes nothing.
+
+Step 0c adds four tables, and gives each board a party, `local` for now:
+
+| Table | Rows | Rule |
+|---|---|---|
+| `parties` | one row for each party; a new file holds the party `local` | a local party has no leader |
+| `members` | the runners that staff a party, with their worker slots | a member is live for 60 s after its last join |
+| `events` | each log entry of each run, with the run id and the entry id as its key | only added: a row stays after the run trims its log |
+| `context` | each context entry of each run, without its readers, with the mark `uploaded` | only added; the outbox is the entries with no mark |
+
+Each commit of a board adds the new entries of its run in the same transaction, with "insert if absent", so the first write of an entry stays. The steps of `MIGRATIONS` bring an old file to the schema of the meld that opens it. They run in one transaction that takes the write lock, so two processes that open an old file migrate it once. `tests/party-conformance.ts` holds the rules of these rows and members, and the memory store and the SQLite store pass them. No step of the core reads them yet: the ACP runner of 0.10 adds its members, and the hosted phase uploads the outbox.
 
 ## Several sessions on one machine
 
