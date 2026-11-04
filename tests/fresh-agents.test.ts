@@ -86,7 +86,7 @@ test('a refused finish_task does not tell the worker to hand back', async () => 
 })
 
 test('a worker that finished its task and handed back starts again while a task is ready, with no news', async () => {
-  const io = ioWith(withTasks([{ title: 'Tokens' }, { title: 'Docs' }, { title: 'Toggle' }]))
+  const io = ioWith(withTasks([{ title: 'Tokens' }, { title: 'Docs' }, { title: 'Toggle' }], working(2)))
   await serve(io, { tool: TOOL.claim, task: 1, version: 1, agentId: 'agent-1' })
   await serve(io, { tool: TOOL.board, agentId: 'agent-2' })
   await serve(io, { tool: TOOL.claim, task: 2, version: 1, agentId: 'agent-2' })
@@ -99,19 +99,21 @@ test('a worker that finished its task and handed back starts again while a task 
 })
 
 test('a worker that handed back stays idle while no task is ready', async () => {
-  const io = ioWith(withTasks([{ title: 'Tokens' }, { title: 'Toggle', needs: [1] }]))
+  const io = ioWith(withTasks([{ title: 'Tokens' }, { title: 'Toggle', needs: [1] }], working(2)))
   await serve(io, { tool: TOOL.claim, task: 1, version: 1, agentId: 'agent-1' })
   await markWorker(io, 'agent-2', 'idle')
   await restartIdleWorkers(io)
   expect(io.spawned).toHaveLength(0)
   await serve(io, { tool: TOOL.finishTask, task: 1, version: 2, commit: 'HEAD', summary: 'Tokens added', agentId: 'agent-1' })
+  await markWorker(io, 'agent-1', 'idle')
   await restartIdleWorkers(io)
-  expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w2'])
+  expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w1'])
   expect(io.spawned[0]?.prompt).toContain('These tasks are open: #2 Toggle.')
 })
 
 test('meld starts no more workers than there are tasks to claim', async () => {
-  const io = ioWith(withTasks([{ title: 'Tokens' }]))
+  const io = ioWith(withTasks([{ title: 'Tokens' }, { title: 'Docs' }]))
+  await serve(io, { tool: TOOL.claim, task: 1, version: 1, agentId: 'agent-1' })
   await serve(io, { tool: TOOL.board, agentId: 'agent-2' })
   await serve(io, { tool: TOOL.board, agentId: 'agent-3' })
   await markWorker(io, 'agent-2', 'idle')
@@ -184,6 +186,7 @@ test('a new agent for a ready task starts from the board, and its claim brings t
   await serve(io, { tool: TOOL.board, agentId: 'agent-3' })
   await serve(io, { tool: TOOL.claim, task: 3, version: 1, agentId: 'agent-3' })
   await markWorker(io, 'agent-1', 'idle')
+  await markWorker(io, 'agent-2', 'idle')
   await restartIdleWorkers(io)
   expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w1'])
   const view = await serve(io, { tool: TOOL.board, agentId: 'spawned-1' })
@@ -207,13 +210,13 @@ test('a board read of a run that meld 0.7.0 stored shows its tasks as they were,
   expect(view.handovers).toBeUndefined()
 })
 
-test('the idle worker of a run that meld 0.7.0 stored starts again when a task gets ready, and its claim brings the handovers', async () => {
+test('an idle worker of a run that meld 0.7.0 stored starts again when a task gets ready, and its claim brings the handovers', async () => {
   const colour = runOf(finishTask(STORED_BY_0_7_0, 'w1', 4, 1, FULL, 'Colour tokens', NOW, { interfaces: '--bg in tokens.css' }))
   const io = ioWith(runOf(finishTask(colour, 'w2', 5, 2, OTHER, 'Spacing tokens', NOW)))
-  await serve(io, { tool: TOOL.board, agentId: 'agent-3' })
-  await markWorker(io, 'agent-3', 'idle')
+  await markWorker(io, 'agent-1', 'idle')
+  await markWorker(io, 'agent-2', 'idle')
   await restartIdleWorkers(io)
-  expect(io.spawned.map(spawn => [spawn.description, spawn.cwd])).toEqual([['meld w3', '/tmp/meld/r070/w3']])
+  expect(io.spawned.map(spawn => [spawn.description, spawn.cwd])).toEqual([['meld w1', '/tmp/meld/r070/w1']])
   expect(io.spawned[0]?.prompt).toContain('These tasks are open: #3 Docs for the theme.')
   const claimed = await serve(io, { tool: TOOL.claim, task: 3, version: 1, agentId: 'spawned-1' })
   expect(claimed).toMatchObject({
