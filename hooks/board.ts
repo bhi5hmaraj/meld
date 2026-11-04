@@ -10,6 +10,8 @@ import type {
   ErrorCode,
   Failure,
   Final,
+  Handover,
+  HandoverView,
   Line,
   NewTask,
   Notice,
@@ -30,8 +32,12 @@ export const CONTEXT_KINDS: readonly ContextKind[] = ['fact', 'fail', 'interface
 export const CONTEXT_TEXT_LIMIT = 500
 export const CONTEXT_SHOWN = 20
 const SIZES: readonly TaskSize[] = ['S', 'M', 'L']
-/** The tool calls on one leaf, with no finish and no split, after which meld tells its owner to split it or finish it. */
-export const SPLIT_CALLS = 40
+/**
+ * The tool calls on one leaf, with no finish and no split, after which meld tells its owner to split it or finish it.
+ * The limit goes by the size of the leaf, and a leaf with no size is M: one limit for every task nudged the owners of
+ * half the tasks of a long run, small and large alike.
+ */
+export const SPLIT_CALLS: Readonly<Record<TaskSize, number>> = { S: 30, M: 60, L: 120 }
 const ACTIVE = new Set(['starting', 'working'])
 const STEERABLE = new Set(['starting', 'working', 'ready'])
 
@@ -50,8 +56,7 @@ export type CheckInput = { command: string; commit: string; passed: boolean; out
 
 export type ShareInput = { kind: string; text: string; commit?: string; files?: string[]; replaces?: number }
 
-/** What a finished task leaves for the other tasks: the interfaces it made, and the part it did not do. */
-export type Handover = { interfaces?: string; unfinished?: string }
+export type { Handover }
 
 /** A split: the task and its version, the version of the task list that the worker saw, and the parts. */
 export type SplitInput = { task: number; version: number; seen: number; tasks: NewTask[] }
@@ -133,9 +138,9 @@ export function countCall(run: Run, id: WorkerId): Run {
   return replaceWorker({ ...run, tasks }, { ...worker, calls: (worker.calls ?? 0) + 1 })
 }
 
-/** The first leaf of the worker with SPLIT_CALLS calls or more and no nudge: it gets its nudge, so meld tells its owner one time. */
+/** The first leaf of the worker with the calls of its size limit or more and no nudge: it gets its nudge, so meld tells its owner one time. */
 export function takeSplitNudge(run: Run, by: WorkerId): { run: Run; task?: Task } {
-  const task = run.tasks.find(one => isClaimedBy(one, by) && !one.nudged && (one.calls ?? 0) >= SPLIT_CALLS)
+  const task = run.tasks.find(one => isClaimedBy(one, by) && !one.nudged && (one.calls ?? 0) >= SPLIT_CALLS[one.size ?? 'M'])
   if (!task) return { run }
   const nudged: Task = { ...task, nudged: true }
   return { run: { ...run, tasks: run.tasks.map(one => (one.id === task.id ? nudged : one)) }, task: nudged }
@@ -303,20 +308,26 @@ export function finishTask(
     ...(interfaces ? [{ at: now, kind: 'interface' as const, by, text: `#${id}: ${interfaces}`, commit, files: [] }] : []),
     ...(unfinished ? [{ at: now, kind: 'fact' as const, by, text: `#${id} unfinished: ${unfinished}`, commit, files: [] }] : []),
   ].reduce(withContext, run)
-  const done: Task = { ...checked, state: 'done', commit, summary, version: checked.version + 1, doneAt: now }
+  const kept: Handover = { ...(interfaces ? { interfaces } : {}), ...(unfinished ? { unfinished } : {}) }
+  const done: Task = { ...checked, state: 'done', commit, summary, ...(interfaces || unfinished ? { handover: kept } : {}), version: checked.version + 1, doneAt: now }
   return updateTask({ ...handed, nudges: 0 }, done, by, now, `finished #${id}: ${summary}`, commit)
 }
 
 /**
  * The finished tasks whose commits the integration line does not hold, in the order they were done: done leaves with a
- * commit, and no task "integrate #N" for them. A run that meld 0.7.0 stored has no line, so all its finished tasks are here.
+ * commit. A run that meld 0.7.0 stored has no line, so all its finished tasks are here.
  */
-export function unmergedTasks(run: Run): Task[] {
+export function lackingTasks(run: Run): Task[] {
   const held = new Set(run.line?.tasks ?? [])
-  const integrated = new Set(run.tasks.map(task => task.integrates))
   return run.tasks
-    .filter(task => task.state === 'done' && task.commit && !isParent(run.tasks, task.id) && !held.has(task.id) && !integrated.has(task.id))
+    .filter(task => task.state === 'done' && task.commit && !isParent(run.tasks, task.id) && !held.has(task.id))
     .sort((a, b) => (a.doneAt ?? 0) - (b.doneAt ?? 0) || a.id - b.id)
+}
+
+/** The tasks that meld merges into the line next: the lacking tasks with no task "integrate #N" for them. */
+export function unmergedTasks(run: Run): Task[] {
+  const integrated = new Set(run.tasks.map(task => task.integrates))
+  return lackingTasks(run).filter(task => !integrated.has(task.id))
 }
 
 /** meld merged the commit of #id into the line: the line moves to `head`, and holds #id and each task that #id integrates. */
@@ -337,6 +348,36 @@ export function addIntegrateTask(run: Run, id: number, detail: string, now: numb
   const task: Task = { ...added[0], integrates: id }
   const text = `added #${task.id} ${task.title}`
   return { run: withEntry({ ...run, tasks: [...run.tasks, task], taskList: run.taskList + 1 }, { at: now, by: 'you', kind: 'task', text }), value: task }
+}
+
+/**
+ * The handovers that a new agent needs for a task: of each done task that it needs, through its needs and the needs of
+ * its ancestors. A need with parts has no commit of its own, so it gives the handovers of its done parts.
+ */
+export function handoversFor(run: Run, id: number): HandoverView[] {
+  const needs = ancestorsOf(run.tasks, id).flatMap(one => taskOf(run.tasks, one)?.needs ?? [])
+  const done = [...new Set(needs.flatMap(need => leavesOf(run.tasks, need)))]
+  return done.flatMap(leaf => {
+    const task = taskOf(run.tasks, leaf)
+    return task?.state === 'done' ? [{ task: task.id, title: task.title, ...(task.commit ? { commit: task.commit } : {}), ...task.handover }] : []
+  })
+}
+
+/** The handovers that the claims of a worker need, each done task one time. */
+function handoversOfClaims(run: Run, by: WorkerId): HandoverView[] {
+  const handovers = run.tasks.filter(task => isClaimedBy(task, by)).flatMap(task => handoversFor(run, task.id))
+  return handovers.filter((handover, index) => handovers.findIndex(one => one.task === handover.task) === index)
+}
+
+/** The task, or the leaves under it when it has parts. */
+function leavesOf(tasks: readonly Task[], id: number): number[] {
+  const parts = childrenOf(tasks, id)
+  return parts.length ? parts.flatMap(part => leavesOf(tasks, part.id)) : [id]
+}
+
+/** A task as a reply to a worker shows it: its handover goes only to the agents of the tasks that need it. */
+function taskView({ handover: _handover, ...task }: Task): Task {
+  return task
 }
 
 export function addNote(run: Run, by: WorkerId, text: string, commit: string | undefined, now: number): Change<Entry> {
@@ -461,11 +502,12 @@ export function boardFor(run: Run, by: WorkerId): { run: Run; view: BoardView } 
     state: run.state,
     notice: steers.length ? { revision: run.revision, steers } : undefined,
     taskList: run.taskList,
-    tasks: run.tasks,
+    tasks: run.tasks.map(taskView),
     news,
     context: passed.context,
     integrator: run.integrator,
     final: run.final,
+    ...nonEmpty('handovers', handoversOfClaims(run, by)),
   }
   const seen: Worker = { ...findWorker(passed.run, by), seenRevision: run.revision, seenEntry: run.log.at(-1)?.id ?? 0 }
   return { run: replaceWorker(passed.run, seen), view }
@@ -519,6 +561,11 @@ export function markDelivered(run: Run, now: number): Run {
 
 function unseenSteers(run: Run, worker: Worker): string[] {
   return run.log.filter(entry => entry.kind === 'steer' && (entry.revision ?? 0) > worker.seenRevision).map(entry => entry.text)
+}
+
+/** The field with its list, or no field when the list is empty, so a reply carries no empty list. */
+export function nonEmpty<K extends string, T>(key: K, list: T[]): { [P in K]?: T[] } {
+  return (list.length ? { [key]: list } : {}) as { [P in K]?: T[] }
 }
 
 function failure(error: ErrorCode, message: string): Failure {

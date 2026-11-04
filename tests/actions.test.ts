@@ -442,9 +442,10 @@ test('a worker that ended starts again when a working peer adds tasks', async ()
   expect(io.spawned[0]?.prompt).toContain('These tasks are open: #1 Tokens; #2 Docs')
 })
 
-test('a worker that ended after it read the board stays idle until there is news', async () => {
+test('an owner that ended after it read the board stays idle until there is news', async () => {
   const io = ioWith(working(3))
   await serveTool(io, call({ tool: 'mcp__meld__add_tasks', seen: 0, tasks: [{ title: 'Tokens' }, { title: 'Docs' }], agentId: 'agent-1' }))
+  await serveTool(io, call({ tool: 'mcp__meld__claim', task: 1, version: 1, agentId: 'agent-2' }))
   await serveTool(io, call({ tool: 'mcp__meld__board', agentId: 'agent-2' }))
   await markWorker(io, 'agent-2', 'idle')
   await restartIdleWorkers(io)
@@ -452,6 +453,7 @@ test('a worker that ended after it read the board stays idle until there is news
   await serveTool(io, call({ tool: 'mcp__meld__note', text: 'The tokens are in theme.css', agentId: 'agent-1' }))
   await restartIdleWorkers(io)
   expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w2'])
+  expect(io.spawned[0]?.prompt).toContain('Your task is not done: #1 Tokens')
 })
 
 test('with no tasks and every worker ended, the lead splits the request', async () => {
@@ -704,7 +706,7 @@ test('a split through the board with no task list version is stale', async () =>
 
 test('a split ends the count of the leaf, and its first part counts from zero', async () => {
   const io = ioWith(claimedBy('w2'))
-  for (let calls = 2; calls < 40; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
+  for (let calls = 2; calls < 60; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
   const parts = [{ title: 'Light tokens' }, { title: 'Dark tokens' }]
   await serveTool(io, call({ tool: 'mcp__meld__split', task: 1, version: 2, seen: 1, tasks: parts, agentId: 'agent-2' }))
   for (let calls = 0; calls < 5; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
@@ -788,16 +790,29 @@ function claimedBy(id: WorkerId): Run {
   return runOf(claimTask(runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }] }, NOW)), id, 1, 1, NOW))
 }
 
-test('a worker with 40 tool calls on one leaf is told one time to split it or finish it', async () => {
+test('a worker with 60 tool calls on one leaf with no size is told one time to split it or finish it', async () => {
   const io = ioWith(claimedBy('w2'))
-  for (let calls = 0; calls <= 40; calls++) await guardCall(io, call({ tool: 'Bash', command: 'pnpm test', agentId: 'agent-2' }))
+  for (let calls = 0; calls <= 60; calls++) await guardCall(io, call({ tool: 'Bash', command: 'pnpm test', agentId: 'agent-2' }))
   expect(io.sent).toEqual(['agent-2: Split #1 into smaller tasks, or finish it.'])
-  expect(io.current?.tasks[0]).toMatchObject({ calls: 41, nudged: true })
+  expect(io.current?.tasks[0]).toMatchObject({ calls: 61, nudged: true })
+})
+
+test('the owner of an S leaf is told to split it after 30 tool calls, and of an L leaf after 120', async () => {
+  const sized = runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Tokens', size: 'S' }, { title: 'Toggle', size: 'L' }] }, NOW))
+  const io = ioWith(runOf(claimTask(runOf(claimTask(sized, 'w1', 1, 1, NOW)), 'w2', 2, 1, NOW)))
+  for (let calls = 1; calls < 30; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-1' }))
+  expect(io.sent).toEqual([])
+  await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-1' }))
+  expect(io.sent).toEqual(['agent-1: Split #1 into smaller tasks, or finish it.'])
+  for (let calls = 1; calls < 120; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
+  expect(io.sent).toHaveLength(1)
+  await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
+  expect(io.sent).toEqual(['agent-1: Split #1 into smaller tasks, or finish it.', 'agent-2: Split #2 into smaller tasks, or finish it.'])
 })
 
 test('a board read counts toward the nudge of a leaf', async () => {
   const io = ioWith(claimedBy('w2'))
-  for (let calls = 1; calls < 40; calls++) await guardCall(io, call({ tool: 'Read', file_path: '/tmp/meld/r1/w2/a.ts', agentId: 'agent-2' }))
+  for (let calls = 1; calls < 60; calls++) await guardCall(io, call({ tool: 'Read', file_path: '/tmp/meld/r1/w2/a.ts', agentId: 'agent-2' }))
   expect(io.sent).toEqual([])
   await serveTool(io, call({ tool: 'mcp__meld__board', agentId: 'agent-2' }))
   expect(io.sent).toEqual(['agent-2: Split #1 into smaller tasks, or finish it.'])
@@ -805,14 +820,16 @@ test('a board read counts toward the nudge of a leaf', async () => {
 
 test('a board tool call counts toward the nudge of a leaf', async () => {
   const io = ioWith(claimedBy('w1'))
-  for (let calls = 1; calls < 40; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-1' }))
+  for (let calls = 1; calls < 60; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-1' }))
   await serveTool(io, call({ tool: 'mcp__meld__note', text: 'The tokens are in theme.css', agentId: 'agent-1' }))
   expect(io.sent).toContain('agent-1: Split #1 into smaller tasks, or finish it.')
 })
 
-test('the owner of a leaf in a run that meld 0.6.0 stored is told to split it after 40 tool calls', async () => {
+test('the owner of a leaf with no size in a run that meld 0.6.0 stored is told to split it after 60 tool calls', async () => {
   const io = ioWith(STORED_BY_0_6_0)
-  for (let calls = 0; calls < 40; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-1' }))
+  for (let calls = 1; calls < 60; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-1' }))
+  expect(io.sent).toEqual([])
+  await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-1' }))
   expect(io.sent).toEqual(['agent-1: Split #2 into smaller tasks, or finish it.'])
 })
 
@@ -825,10 +842,10 @@ test('a restart of a run that meld 0.6.0 stored offers its open task and the tas
   expect(io.spawned[1]?.prompt).toContain('These tasks are open: #3 Docs')
 })
 
-test('a worker that finishes its leaf before 40 tool calls is not told to split it', async () => {
+test('a worker that finishes its leaf before 60 tool calls is not told to split it', async () => {
   const io = ioWith(claimedBy('w2'))
   io.answers['git rev-parse --verify --quiet HEAD^{commit}'] = FULL
-  for (let calls = 2; calls < 40; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
+  for (let calls = 2; calls < 60; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
   await serveTool(io, call({ tool: 'mcp__meld__finish_task', task: 1, version: 2, commit: 'HEAD', summary: 'Tokens', agentId: 'agent-2' }))
   for (let calls = 0; calls < 5; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
   expect(io.sent).toEqual([])

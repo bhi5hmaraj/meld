@@ -2,12 +2,12 @@ import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
 import { markWorker, restartIdleWorkers, serveTool } from '../hooks/actions'
-import { addIntegrateTask, addTasks, bindWorker, claimTask, finishTask, isFailure, lineMerged, startRun, unmergedTasks } from '../hooks/board'
+import { addIntegrateTask, addTasks, bindWorker, claimTask, finishTask, isFailure, lackingTasks, lineMerged, startRun, unmergedTasks } from '../hooks/board'
 import { workerRules } from '../hooks/contract'
 import { JJ_RESOLVE_TEMPLATE } from '../hooks/vcs'
 import type { Change, Run, VcsKind, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
-import { STORED_BY_0_6_0 } from './stored-runs'
+import { STORED_BY_0_6_0, STORED_BY_0_7_0 } from './stored-runs'
 
 const NOW = 1_800_000_000_000
 const FULL = 'f'.repeat(40)
@@ -85,7 +85,9 @@ test('the tasks to merge are the done leaves with a commit that the line does no
   const two = finished(finished(three, 2, 'w2', OTHER, NOW - 2000), 1, 'w1', FULL, NOW - 1000)
   expect(unmergedTasks(two).map(task => task.id)).toEqual([2, 1])
   expect(unmergedTasks(lineMerged(two, 2, OTHER, NOW)).map(task => task.id)).toEqual([1])
-  expect(unmergedTasks(runOf(addIntegrateTask(two, 1, '', NOW))).map(task => task.id)).toEqual([2])
+  const integrating = runOf(addIntegrateTask(two, 1, '', NOW))
+  expect(unmergedTasks(integrating).map(task => task.id)).toEqual([2])
+  expect(lackingTasks(integrating).map(task => task.id)).toEqual([2, 1])
 })
 
 test('a run that meld 0.6.0 stored has no line, and its done task is still to merge', () => {
@@ -164,4 +166,18 @@ test('the rules name the integration line, and merge the branch of a peer only w
   const jj = workerRules(working('jj'), 'w1')
   expect(jj).toContain('meld_integration')
   expect(jj).not.toContain('jj new @- w2@- w3@-')
+})
+
+test('a run that meld 0.7.0 stored gets its line at the next finish: the task it finished before merges first', async () => {
+  const io = new FakeIo()
+  io.current = STORED_BY_0_7_0
+  io.now = async () => NOW + 60_000
+  const store = `/tmp/meld/${STORED_BY_0_7_0.id}/jj`
+  io.answers[`jj -R /tmp/meld/${STORED_BY_0_7_0.id}/w1 --ignore-working-copy log --no-graph -r @- -T ${JJ_RESOLVE_TEMPLATE}`] = `${FULL} clean`
+  await serveTool(io, call({ tool: 'mcp__meld__finish_task', task: 4, version: 1, commit: '@-', summary: 'Colour tokens', agentId: 'agent-1' }))
+  expect(io.current?.line?.tasks).toEqual([2, 4])
+  expect(io.commands.filter(command => command.startsWith(`jj -R ${store} --ignore-working-copy log`)).map(command => command.split(' ')[7])).toEqual([
+    STORED_BY_0_7_0.tasks.find(task => task.id === 2)?.commit,
+    FULL,
+  ])
 })

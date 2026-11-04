@@ -227,15 +227,15 @@ Your folder: ${you.path}. Your ref: ${you.ref}. The other workers: ${peers.map(p
 
 The rules for a meld worker:
 1. Work only in your folder. Never edit the main checkout or the folder of another worker. Read CLAUDE.md or AGENTS.md in your folder if they exist. Install dependencies in your folder if your checks need them, and keep dependency folders out of your commits.
-2. Read the board with ${TOOL.board}. Plan the request as a few small tasks that can go on at the same time, and add them all in one call with ${TOOL.addTasks}, with the taskList version of your read. If another worker added tasks since your read, the call fails and shows its tasks: claim the ones that cover your work, and add only what is still missing. Claim a task with ${TOOL.claim} before you start it.
+2. Read the board with ${TOOL.board}. Plan the request as a few small tasks that can go on at the same time, and add them all in one call with ${TOOL.addTasks}, with the taskList version of your read. If another worker added tasks since your read, the call fails and shows its tasks: claim the ones that cover your work, and add only what is still missing. Claim a task with ${TOOL.claim} before you start it. The reply of a claim gives the handovers of the tasks that your task needs: their commits, interfaces and unfinished work.
 3. Give each task a title in plain words, 8 words at most, with no file paths. Give needs when a task needs the result of another task. Until those tasks are done, a claim of that task fails with WAITING. Split a task that has more than one deliverable with ${TOOL.split}: you keep the first part, and the other parts are open. A task with parts has no commit of its own. It is done when all its parts are done.
 4. Commit after each step. When a task is done, call ${TOOL.finishTask} with the commit and a one-line summary. Give the contracts that other tasks use in interfaces, and the work that you did not do in unfinished. Tell the other workers about each decision with ${TOOL.note}.
 5. Each board reply carries the shared context, newest first: the first reply to you carries the current entries, 20 at most, and each later reply only the entries that are new since your last reply. Read it before you start a task, and do not try the approach of a fail. Share with ${TOOL.share}: a fact when a peer can use it, a fail when an approach did not work, and an interface before a peer depends on it. Give a fact with its evidence, a fail with its reason, and an interface as a name and its shape. To correct an entry, share a new entry with replaces and the id of the old entry.
-6. Use the work of the other workers through version control, as below. Merge the branch of a peer only when your own task needs that code: meld merges the commit of each finished task into the integration line ${line}. Do not do again what another worker did.
+6. Use the work of the other workers through version control, as below. Merge the branch of a peer only when your own task needs that code: the integration line gathers the finished tasks (rule 8). Do not do again what another worker did.
 7. Record each test or build you run with ${TOOL.check}, with the commit it ran on.
-8. meld merges the commit of each finished task into the integration line ${line}, with no agent. Do not move or rewrite the line. When a merge conflicts, meld adds a task integrate #N: its owner merges the line and the commit of #N in its folder, fixes the conflicts, runs the checks, commits, and finishes the task. When every task is done, one worker integrates: it calls ${TOOL.integrate}, starts from the line, runs one final build and the checks, then calls ${TOOL.finish} with the final commit and a summary. While another worker integrates, review its commits, add tests, or fix what the checks show.
+8. meld merges the commit of each finished task into the integration line ${line}, with no agent. Do not move or rewrite the line. When a merge conflicts, meld adds a task integrate #N: its owner merges the line and the commit of #N in its folder, fixes the conflicts, runs the checks, commits, and finishes the task. When every task is done, one worker integrates: it calls ${TOOL.integrate}, starts from the line, runs one final build and the checks, then calls ${TOOL.finish} with the final commit and a summary. While another worker integrates, hand back as in rule 10.
 9. A board reply can carry a notice: the person changed the request. Follow the newest instruction.
-10. Do not wait with sleep or loops. When nothing is left for you, end your run with a short report. When there is new work, meld starts a new agent for you in your folder, and it reads the board to go on.
+10. After ${TOOL.finishTask}, hand back: end your run with a short report. Do not claim the next task: meld starts a new agent for you when a task is ready. Do not wait with sleep or loops. When nothing is left for you, end your run the same way. When there is new work, meld starts a new agent for you in your folder, and it reads the board to go on.
 11. A board error (STALE_VERSION, TAKEN, NOT_OWNER, WAITING, CONFLICT, INVALID) fails only that call. Read the board again, fix the call, and go on. WAITING names the task that the claim waits for. Claim another task.
 
 ${run.vcs === 'jj' ? jjGuide(you, peers, line) : gitGuide(you, peers, line)}`
@@ -263,7 +263,7 @@ function jjGuide(you: Worker, peers: Worker[], line: string): string {
 - Final integration: commit your work, then jj new ${line} -m "meld: integrate", run one final build and the checks, jj commit -m "meld: integrate", and give @- to finish.`
 }
 
-/** What meld tells the owner of a leaf after SPLIT_CALLS tool calls on it, with no finish and no split. */
+/** What meld tells the owner of a leaf after the SPLIT_CALLS of its size, with no finish and no split: S 30, M 60, L 120 tool calls. */
 export function splitNudge(task: number): string {
   return `Split #${task} into smaller tasks, or finish it.`
 }
@@ -290,13 +290,16 @@ export function integrateDetail(run: Run, task: Task, merge: Exclude<LineMerge, 
  * What meld asks of the lead when every task is done. With a line: start from it, merge the commits it lacks, run one
  * final build and finish. A run that meld 0.7.0 stored has no line: merge the work of every worker, as 0.7.0 did.
  */
-export function integrateStep(run: Run, unmerged: readonly Task[]): string {
+export function integrateStep(run: Run, lacking: readonly Task[]): string {
   if (!run.line) return `All tasks are done. Integrate: call ${TOOL.integrate}, merge the work of every worker into yours, run the checks, then call ${TOOL.finish}.`
   const line = vcsFor(run.vcs).lineName(run)
   const start = run.vcs === 'jj' ? `jj new ${line} -m "meld: integrate"` : `git merge ${line}`
-  const lacks = unmerged.length ? ` The line lacks ${unmerged.map(task => `#${task.id} (${(task.commit ?? '').slice(0, 12)})`).join(', ')}: merge those commits too.` : ''
+  const lacks = lacking.length ? ` The line lacks ${lacking.map(task => `#${task.id} (${(task.commit ?? '').slice(0, 12)})`).join(', ')}: merge those commits too.` : ''
   return `All tasks are done, and the integration line ${line} holds them at ${run.line.head.slice(0, 12)}. Integrate: call ${TOOL.integrate}, start from the line (${start}).${lacks} Run one final build and the checks, commit, then call ${TOOL.finish} with that commit.`
 }
+
+/** What the reply of a finish_task tells a worker that claims no other task: a new agent takes the next task. */
+export const HAND_BACK = 'Your task is done. Hand back now with a short report, and claim no other task: meld starts a new agent for you when a task is ready.'
 
 export function wakeText(reason: string): string {
   return `meld: ${reason} Read the board with ${TOOL.board}, then go on.`
