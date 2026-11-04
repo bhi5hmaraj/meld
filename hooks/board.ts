@@ -29,8 +29,12 @@ export const CONTEXT_KINDS: readonly ContextKind[] = ['fact', 'fail', 'interface
 export const CONTEXT_TEXT_LIMIT = 500
 export const CONTEXT_SHOWN = 20
 const SIZES: readonly TaskSize[] = ['S', 'M', 'L']
-/** The tool calls on one leaf, with no finish and no split, after which meld tells its owner to split it or finish it. */
-export const SPLIT_CALLS = 40
+/**
+ * The tool calls on one leaf, with no finish and no split, after which meld tells its owner to split it or finish it.
+ * The limit goes by the size of the leaf, and a leaf with no size is M: one limit for every task nudged the owners of
+ * half the tasks of a long run, small and large alike.
+ */
+export const SPLIT_CALLS: Readonly<Record<TaskSize, number>> = { S: 30, M: 60, L: 120 }
 const ACTIVE = new Set(['starting', 'working'])
 const STEERABLE = new Set(['starting', 'working', 'ready'])
 
@@ -132,9 +136,9 @@ export function countCall(run: Run, id: WorkerId): Run {
   return replaceWorker({ ...run, tasks }, { ...worker, calls: (worker.calls ?? 0) + 1 })
 }
 
-/** The first leaf of the worker with SPLIT_CALLS calls or more and no nudge: it gets its nudge, so meld tells its owner one time. */
+/** The first leaf of the worker with the calls of its size limit or more and no nudge: it gets its nudge, so meld tells its owner one time. */
 export function takeSplitNudge(run: Run, by: WorkerId): { run: Run; task?: Task } {
-  const task = run.tasks.find(one => isClaimedBy(one, by) && !one.nudged && (one.calls ?? 0) >= SPLIT_CALLS)
+  const task = run.tasks.find(one => isClaimedBy(one, by) && !one.nudged && (one.calls ?? 0) >= SPLIT_CALLS[one.size ?? 'M'])
   if (!task) return { run }
   const nudged: Task = { ...task, nudged: true }
   return { run: { ...run, tasks: run.tasks.map(one => (one.id === task.id ? nudged : one)) }, task: nudged }

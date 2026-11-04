@@ -258,7 +258,7 @@ function jjGuide(you: Worker, peers: Worker[]): string {
 - Integrate: commit your work, then jj new ${['@-', ...lasts].join(' ')} -m "meld: integrate", fix the conflicts, run the checks, jj commit -m "meld: integrate", and give @- to finish.`
 }
 
-/** What meld tells the owner of a leaf after SPLIT_CALLS tool calls on it, with no finish and no split. */
+/** What meld tells the owner of a leaf after the SPLIT_CALLS of its size, with no finish and no split: S 30, M 60, L 120 tool calls. */
 export function splitNudge(task: number): string {
   return `Split #${task} into smaller tasks, or finish it.`
 }
