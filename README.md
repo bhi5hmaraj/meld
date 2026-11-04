@@ -300,6 +300,7 @@ node scripts/shots.mjs
 - `mcp/acp.ts` is the ACP client that starts the agents of other vendors, such as Codex, over the JSON-RPC link of `mcp/json-rpc.ts`. Its spec runs against a stub ACP agent.
 - `mcp/worker.ts` is the worker mode, `meld mcp --worker`: the board tools of one ACP worker, with the commands of `mcp/code-host.ts`. A message of a worker to another agent becomes an action for the leader.
 - `mcp/leader.ts` is the ACP runner of the leader. For each ACP worker, `meld mcp` starts an ACP agent with its own `meld mcp --worker`, sends its prompts, and starts the idle ACP workers again at the end of each prompt. `mcp/io.ts` gives the ports of the core in `meld mcp`.
+- `mcp/channel.ts` answers the reads of boards on a Unix socket. The timer of the pane reads its board there, as a timer cannot call `meld mcp`.
 - `hooks/board-store.ts` connects the hooks to `meld mcp`.
 - `hooks/pane.tsx` and `hooks/drawing.ts` draw the pane.
 - `hooks/register.tsx` is the one file that calls the engine.

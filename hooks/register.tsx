@@ -8,7 +8,7 @@ import { resumeRun } from '../core/resume'
 import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL, TOOL_PREFIX, TOOL_SPECS, WORKER_SYSTEM } from '../core/contract'
 import type { AgentState, FactsStore, Files, Io, Spawned, Store } from '../core/ports'
 import { parseStart, WORKER_TYPE } from '../core/options'
-import { adoptedOf, BOARD_STORE_TOOLS, boardVerdict, problemOf, sessionRunner, sessionStore, storeNote, valueOf, withNote } from './board-store'
+import { adoptedOf, BOARD_STORE_TOOLS, boardVerdict, copyFromChannel, problemOf, sessionRunner, sessionStore, storeNote, valueOf, withNote } from './board-store'
 import type { SessionBoard } from './board-store'
 import { DEFAULT_VIEW, paneTree } from './pane'
 
@@ -25,7 +25,7 @@ const PRESS_KEYS = [START_KEY, ...STEER_PRESETS.map(preset => `preset-${preset.k
 
 let sessionCwd = ''
 /** The board of this session in meld mcp. With no board server, each hook keeps the run in the session state, as meld 0.8 does. */
-const board: SessionBoard = { server: '', id: '', owner: '', problem: '' }
+const board: SessionBoard = { server: '', id: '', owner: '', problem: '', channel: '' }
 let refreshing = false
 
 function stateOf(status: AgentStatus): AgentState {
@@ -50,6 +50,7 @@ export const register: Register = on => {
     const connected = await $.mcp.connect('board').catch((error: unknown) => ({ isConnected: false as const, reason: 'failed', message: String(error) }))
     board.server = connected.isConnected ? connected.server : ''
     board.problem = connected.isConnected ? '' : problemOf(connected)
+    board.channel = board.server ? await $.mcp.call(board.server, 'board_channel', {}).then(result => valueOf<{ socketPath: string }>(result).socketPath, () => '') : ''
     board.owner = await $.session.id()
     board.id = (await read($, boardRef)) ?? board.owner
     const sessionState: Store & FactsStore = {
@@ -106,11 +107,14 @@ export const register: Register = on => {
     await $.command.register({ name: 'meld-discard', description: 'Stop the meld run and remove its workspaces', immediate: true })
     await $.command.register({ name: 'meld-add', description: 'Add a worker to the meld run', argumentHint: '[model | agent type | type@model]', immediate: true })
     await $.command.register({ name: 'meld-resume', description: 'List the meld runs of other sessions, or resume one', argumentHint: '[<board>]', immediate: true })
-    // A timer runs outside every hook, so the engine would ask the person about each call of meld mcp. It reads the copy.
+    // A timer runs outside every hook, so the engine would ask the person about each call of meld mcp. It reads the
+    // board over the channel of meld mcp into the copy, and the facts from the copy.
     $.clock.every(FACTS_MS, () => {
       if (refreshing) return
       refreshing = true
-      void refreshFacts({ ...io, ...sessionState })
+      void copyFromChannel(board, url => $.http.fetch(url, { socketPath: board.channel }), sessionState)
+        .catch(() => undefined)
+        .then(() => refreshFacts({ ...io, ...sessionState }))
         .catch(() => undefined)
         .finally(() => {
           refreshing = false

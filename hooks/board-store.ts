@@ -1,16 +1,16 @@
-import type { McpToolResult } from 'claude-code'
+import type { HttpResponse, McpToolResult } from 'claude-code'
 
 import { ACP_PREFIX, isAcpAgent } from '../core/options'
 import type { FactsStore, Runner, Store } from '../core/ports'
 import { remoteStore } from '../core/remote-store'
-import type { Adopted, BoardServer } from '../core/remote-store'
+import type { Adopted, BoardRead, BoardServer } from '../core/remote-store'
 import type { Run } from '../types'
 
 /**
  * Where this session keeps its run: the board server of meld mcp (empty without it), the board, the owner of its writes,
- * and why meld mcp did not connect.
+ * why meld mcp did not connect, and the Unix socket where meld mcp answers board reads (empty without it).
  */
-export type SessionBoard = { server: string; id: string; owner: string; problem: string }
+export type SessionBoard = { server: string; id: string; owner: string; problem: string; channel: string }
 
 /** Where the run of the session lives, for the board tool of the main session. */
 export type StoreNote = { store: string; board?: string; why?: string }
@@ -34,6 +34,18 @@ export function sessionStore(session: SessionBoard, remote: BoardServer, local: 
   if (!session.server) return local
   const run = remoteStore(remote, copy => local.write(current => (sameRun(current, copy) ? current : copy)))
   return { ...run, readFacts: () => local.readFacts(), writeFacts: facts => local.writeFacts(facts) }
+}
+
+/**
+ * Brings the copy of the run in the session state up to date from the board channel of meld mcp. A timer runs outside
+ * every hook, so it cannot call meld mcp, and ACP workers write to the board through their own meld mcp.
+ */
+export async function copyFromChannel(session: SessionBoard, fetch: (url: string) => Promise<HttpResponse>, local: Store): Promise<void> {
+  if (!session.channel) return
+  const answer = await fetch(`http://meld/boards/${encodeURIComponent(session.id)}`)
+  if (!answer.ok) return
+  const { run } = JSON.parse(answer.text) as BoardRead
+  await local.write(current => (sameRun(current, run) ? current : run))
 }
 
 /**

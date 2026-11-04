@@ -51,8 +51,8 @@ test('an unlisted meld mcp names the reload that starts it, and another refusal 
 })
 
 test('the note of the store names the board in meld mcp, or why meld mcp is not there', () => {
-  expect(storeNote({ server: SERVER, id: 's1', owner: 's1', problem: '' })).toEqual({ store: 'meld mcp, ~/.meld/meld.db', board: 's1' })
-  expect(storeNote({ server: '', id: 's1', owner: 's1', problem: 'bun: not found' })).toEqual({ store: 'the session state', why: 'meld mcp did not connect: bun: not found' })
+  expect(storeNote({ server: SERVER, id: 's1', owner: 's1', problem: '', channel: '' })).toEqual({ store: 'meld mcp, ~/.meld/meld.db', board: 's1' })
+  expect(storeNote({ server: '', id: 's1', owner: 's1', problem: 'bun: not found', channel: '' })).toEqual({ store: 'the session state', why: 'meld mcp did not connect: bun: not found' })
 })
 
 test('the note goes into the reply of the board tool of the main session, next to its fields', () => {
@@ -62,7 +62,7 @@ test('the note goes into the reply of the board tool of the main session, next t
 
 test('the runner of a hook gives the ACP spawns and messages to meld mcp, the rest to the engine, and the liveness of both', async () => {
   const calls: string[] = []
-  const runner = sessionRunner({ server: SERVER, id: 's1', owner: 's1', problem: '' }, new RecordingRunner('engine', new Map([['agent-1', 'live']]), calls), new RecordingRunner('acp', new Map([['acp-1', 'ended']]), calls))
+  const runner = sessionRunner({ server: SERVER, id: 's1', owner: 's1', problem: '', channel: '' }, new RecordingRunner('engine', new Map([['agent-1', 'live']]), calls), new RecordingRunner('acp', new Map([['acp-1', 'ended']]), calls))
   expect(await runner.spawn({ ...SPAWN, subagentType: 'acp:codex' })).toEqual({ agentId: 'acp-1' })
   expect(await runner.spawn(SPAWN)).toEqual({ agentId: 'engine-1' })
   await runner.send('acp-1', 'Go on')
@@ -76,7 +76,7 @@ test('the runner of a hook gives the ACP spawns and messages to meld mcp, the re
 
 test('without meld mcp, an ACP worker does not start and says why, and the liveness is that of the engine', async () => {
   const calls: string[] = []
-  const runner = sessionRunner({ server: '', id: 's1', owner: 's1', problem: 'bun: not found' }, new RecordingRunner('engine', new Map([['agent-1', 'live']]), calls), new RecordingRunner('acp', new Map(), calls))
+  const runner = sessionRunner({ server: '', id: 's1', owner: 's1', problem: 'bun: not found', channel: '' }, new RecordingRunner('engine', new Map([['agent-1', 'live']]), calls), new RecordingRunner('acp', new Map(), calls))
   expect(await runner.spawn({ ...SPAWN, subagentType: 'acp:codex' })).toEqual({ deny: 'meld runs ACP agents such as Codex through meld mcp, which did not connect: bun: not found' })
   await runner.send('acp-1', 'Go on')
   expect(calls).toEqual([])

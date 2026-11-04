@@ -45,6 +45,17 @@ export function boardTools(boards: SqliteBoards, now: () => number): ServedTool[
   ]
 }
 
+/** The tool that names the board channel of this process: the Unix socket where the timer of the pane reads the boards. */
+export function channelTool(socketPath: string): ServedTool {
+  return {
+    name: 'board_channel',
+    description: `${ONLY_MELD} Names the Unix socket where this process answers the reads of boards over HTTP, or an empty text when it has none.`,
+    inputSchema: schema({}),
+    annotations: READ_ONLY,
+    answer: () => ({ socketPath }),
+  }
+}
+
 /** The tools of the ACP runner of the leader: the plugin starts, reaches and stops the ACP workers of its board through them. */
 export function runnerTools(runner: AcpRunner, boards: SqliteBoards): ServedTool[] {
   return [

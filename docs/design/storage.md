@@ -81,6 +81,7 @@ Step 10b adds the table `actions` (schema 3): the work that only the leader of a
 - Run folders move from `/tmp/meld/` to `~/.meld/runs/`: a reboot clears `/tmp`, and a resume needs the commits.
 - The file holds a schema version. A child older than the schema does not write, and tells the user to restart the session.
 - Keep the file on a local disk. WAL does not work on network folders.
+- Next to the file, the folder `channels` holds one Unix socket for each `meld mcp` of a session, where the pane reads its board. Only the user opens the folder, and each process removes the sockets of processes that ended.
 
 ## Why not Postgres for all
 

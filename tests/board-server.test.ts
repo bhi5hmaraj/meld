@@ -10,6 +10,7 @@ const NOW = 1_800_000_000_000
 const SERVER = 'plugin:meld:board'
 const SESSION = 'session-1'
 const IDS: WorkerId[] = ['w1', 'w2']
+const CHANNEL = '/tmp/meld/channels/1.sock'
 const TYPED = { origin: { kind: 'composer' as const }, presentation: { isFullscreen: false, columns: 80 } }
 
 type Call = { tool: string; args: Record<string, unknown> }
@@ -27,6 +28,10 @@ function runOf<T>(change: Change<T>): Run {
   return change.run
 }
 
+function withActivity(run: Run, worker: WorkerId, activity: string): Run {
+  return { ...run, workers: run.workers.map(one => (one.id === worker ? { ...one, activity } : one)) }
+}
+
 function working(id = 'r1'): Run {
   const workers = IDS.map(worker => ({ id: worker, path: `/tmp/meld/${id}/${worker}`, ref: `meld/${id}/${worker}`, agent: { type: 'meld:worker' } }))
   let run = startRun({ id, request: 'Add a dark theme', repo: '/repo', base: HEAD, vcs: 'git', now: NOW, workers })
@@ -39,6 +44,7 @@ class FakeMcp {
   boards: Record<string, Row> = {}
   calls: Call[] = []
   actions: Action[] = []
+  channel = CHANNEL
 
   answer(tool: string, args: Record<string, unknown>): McpToolResult {
     this.calls.push({ tool, args })
@@ -66,6 +72,7 @@ class FakeMcp {
       this.boards[id] = { ...row, owner: String(args.owner), ownerAt: NOW, version: row.version + 1 }
       return { result: 'adopted' }
     }
+    if (tool === 'board_channel') return { socketPath: this.channel }
     if (tool === 'spawn_worker') return { agentId: 'acp-1' }
     if (tool === 'send_worker') return { ok: true }
     if (tool === 'acp_agents') return { agents: {} }
@@ -113,14 +120,60 @@ test('the session state gets each run that the board commits, as the pane draws 
   expect(cached.at(-1)).toBe('stopped')
 })
 
-test('the timer of the pane reads the run from the session state and calls no tool of meld mcp, as the engine asks the person for each call of a timer', async ($, on) => {
+test('the timer of the pane calls no tool of meld mcp, as the engine asks the person for each call of a timer; without a channel it fetches nothing', async ($, on) => {
   const mcp = new FakeMcp()
+  const fetched: string[] = []
+  mcp.channel = ''
   const clock = answerTheEngine(on, mcp)
   on('state.get', () => ({ value: { value: undefined, version: 0 } }))
+  on('http.fetch', ($, e) => {
+    fetched.push(e.url)
+    return { value: { status: 404, ok: false, headers: {}, text: '' } }
+  })
   await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  const started = mcp.calls.length
   mcp.boards[SESSION] = { run: working(), version: 1, owner: SESSION, ownerAt: NOW }
   await clock.advance(10_000)
-  expect(mcp.calls).toEqual([])
+  expect(mcp.calls.slice(started)).toEqual([])
+  expect(fetched).toEqual([])
+})
+
+test('the timer of the pane reads the board over the channel of meld mcp, so the session state gets what ACP workers wrote', async ($, on) => {
+  const mcp = new FakeMcp()
+  const fetched: string[] = []
+  const copied: (string | undefined)[] = []
+  const clock = answerTheEngine(on, mcp)
+  on('state.get', () => ({ value: { value: undefined, version: 0 } }))
+  on('state.set', ($, e) => {
+    if (e.key === 'run') copied.push((e.value as { value?: Run } | undefined)?.value?.workers[1]?.activity)
+    return { value: { isSet: true, version: 1 } }
+  })
+  on('http.fetch', ($, e) => {
+    fetched.push(`${e.url} over ${e.init?.socketPath}`)
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(mcp.boards[SESSION]) } }
+  })
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  const started = mcp.calls.length
+  mcp.boards[SESSION] = { run: withActivity(working(), 'w2', 'Edit /tmp/meld/r1/w2/a.txt'), version: 3, owner: SESSION, ownerAt: NOW }
+  await clock.advance(3000)
+  expect(fetched).toEqual([`http://meld/boards/${SESSION} over ${CHANNEL}`])
+  expect(copied).toEqual(['Edit /tmp/meld/r1/w2/a.txt'])
+  expect(mcp.calls.slice(started)).toEqual([])
+})
+
+test('the timer keeps the copy of the run when the channel does not answer the board', async ($, on) => {
+  const mcp = new FakeMcp()
+  const copied: string[] = []
+  const clock = answerTheEngine(on, mcp)
+  on('state.get', () => ({ value: { value: undefined, version: 0 } }))
+  on('state.set', ($, e) => {
+    copied.push(e.key)
+    return { value: { isSet: true, version: 1 } }
+  })
+  on('http.fetch', () => ({ value: { status: 503, ok: false, headers: {}, text: 'meld mcp is closing' } }))
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  await clock.advance(3000)
+  expect(copied).not.toContain('run')
 })
 
 test('without meld mcp, a command keeps the run in the session state, as meld 0.8 does', async ($, on) => {

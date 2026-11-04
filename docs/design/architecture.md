@@ -63,7 +63,12 @@ Step 10c divides the restarts between two hosts:
 - `meld mcp` restarts only its ACP workers, at the end of each prompt. So a party of Codex workers continues while the main session waits.
 - The plugin does the actions for the engine (messages to Claude workers, and toasts) at the end of each turn of the main session. `meld mcp` sends the messages to its ACP agents every 500 ms.
 
-So 0.10 needs one more channel. The leader must read the board on a timer, as the workers of Codex write through their own `meld mcp`. Options: a Unix socket of `meld mcp` through `$.http.fetch`, or a permission rule that the person adds.
+The pane needs one more channel: the workers of Codex write to the board through their own `meld mcp`, and no hook of the main session sees it. Step 10c built it:
+
+- `meld mcp` answers `GET /boards/<id>` over HTTP on a Unix socket, `channels/<pid>.sock` next to the board file. Only the user of the process can open that folder.
+- The tool `board_channel` names the socket. The plugin asks for it at the start of the session, in a hook.
+- The timer of the pane reads the board there with `$.http.fetch`, which gets no permission check, and puts the run into the copy in the session state.
+- The channel answers only reads. A socket path of more than 100 bytes gives no channel, and the pane then shows the copy, as in 0.9.
 
 ## Board addresses
 

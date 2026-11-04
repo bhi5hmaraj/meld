@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { startRun } from '../core/board'
 import type { Run } from '../types'
@@ -9,7 +9,7 @@ import { Client } from './client.spec-helper'
 
 const HEAD = 'abc1234def5678abc1234def5678abc1234def56'
 const NOW = 1_800_000_000_000
-const TOOLS = ['read_board', 'commit_board', 'list_boards', 'adopt_board', 'spawn_worker', 'send_worker', 'stop_worker', 'acp_agents', 'take_actions']
+const TOOLS = ['read_board', 'commit_board', 'list_boards', 'adopt_board', 'board_channel', 'spawn_worker', 'send_worker', 'stop_worker', 'acp_agents', 'take_actions']
 
 function newRun(): Run {
   const workers = [{ id: 'w1' as const, path: '/tmp/meld/r1/w1', ref: 'meld/r1/w1', agent: { type: 'meld:worker' } }]
@@ -36,7 +36,7 @@ test('meld mcp answers initialize with its name and the tools capability, and li
   const listed = await client.request('tools/list')
   const tools = listed.result?.tools as { name: string; annotations?: { readOnlyHint?: boolean } }[]
   expect(tools.map(tool => tool.name)).toEqual(TOOLS)
-  expect(tools.filter(tool => tool.annotations?.readOnlyHint).map(tool => tool.name)).toEqual(['read_board', 'list_boards', 'acp_agents'])
+  expect(tools.filter(tool => tool.annotations?.readOnlyHint).map(tool => tool.name)).toEqual(['read_board', 'list_boards', 'board_channel', 'acp_agents'])
   expect(await client.end()).toBe(0)
 })
 
@@ -57,6 +57,17 @@ test('a commit through the tools keeps the run in the file for the next process'
   expect(await second.call('read_board', { board: 'b1' })).toMatchObject({ run: JSON.parse(JSON.stringify(newRun())), version: 1, owner: 's1' })
   expect(await second.call('list_boards', {})).toMatchObject({ boards: [{ board: 'b1', run: 'r1', state: 'starting' }] })
   await second.end()
+})
+
+test('meld mcp names its board channel next to its board file, the channel answers what a commit wrote, and the socket goes with the process', async () => {
+  const db = tempDb()
+  const client = new Client(db)
+  const { socketPath } = (await client.call('board_channel', {})) as { socketPath: string }
+  expect(dirname(socketPath)).toBe(join(dirname(db), 'channels'))
+  await client.call('commit_board', { board: 'b1', run: newRun(), version: 0, owner: 's1' })
+  expect(await (await fetch('http://meld/boards/b1', { unix: socketPath })).json()).toMatchObject({ run: { id: 'r1' }, version: 1 })
+  expect(await client.end()).toBe(0)
+  expect(existsSync(socketPath)).toBe(false)
 })
 
 test('an adopt waits for the lease of the owner, and a resume after it takes the board', async () => {
