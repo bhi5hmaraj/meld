@@ -2,7 +2,8 @@
 /**
  * A check of the git and the jj adapter of hooks/vcs.ts with real processes. tsc compiles hooks/ into CommonJS in a
  * temporary folder. Each adapter goes through a run in a temporary git repository: three workspaces, a commit in
- * each, the integration line, the integration, resolve, lanes, result, deliver and remove. HOME is a temporary folder, so the check reads and
+ * each, the integration line, the integration, the commits that the final commit lacks, resolve, lanes, result, deliver and remove. HOME is a
+ * temporary folder, so the check reads and
  * changes no git or jj config of the person. Run: node scripts/adapters.mjs
  */
 import { spawnSync } from 'node:child_process'
@@ -29,6 +30,7 @@ const STEPS = [
   ['commit', commit],
   ['line', line],
   ['integrate', integrate],
+  ['missing', missing],
   ['resolve', resolve],
   ['lanes', lanes],
   ['result', result],
@@ -163,6 +165,7 @@ async function line(s) {
   const other = otherW1(s)
   same(await s.vcs.mergeIntoLine(io, s.run, other, 'meld: integrate #4'), { state: 'conflict', head, files: ['w1.txt'] }, 'a merge with a conflict')
   s.line = head
+  s.other = other
   return `${name} moves to ${short(s.commits.w1)}, then merges w2 and w3 into ${short(head)}; a conflict in w1.txt leaves it there`
 }
 
@@ -195,6 +198,15 @@ async function integrate(s) {
     s.final = sh(first.path, ['git', 'rev-parse', 'HEAD'])
   }
   return `w1 merges w2 and w3 into ${short(s.final)}`
+}
+
+/** The final commit holds the commit of each worker, and lacks a commit that no worker merged; a commit that git cannot read counts as lacking. */
+async function missing(s) {
+  same(await s.vcs.missing(io, s.run, s.final, IDS.map(id => s.commits[id])), [], 'the commits that the final commit lacks')
+  const unknown = '0'.repeat(40)
+  same(await s.vcs.missing(io, s.run, s.final, [s.commits.w2, s.other, unknown]), [s.other, unknown], 'the commits that the final commit lacks, with two it does not hold')
+  same(await s.vcs.missing(io, s.run, s.line, IDS.map(id => s.commits[id])), [], 'the commits that the line lacks')
+  return `${short(s.final)} holds the commits of ${IDS.join(', ')}, and lacks ${short(s.other)} and a commit that git cannot read`
 }
 
 async function resolve(s) {

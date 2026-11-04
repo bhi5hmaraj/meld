@@ -41,6 +41,11 @@ export type Vcs = {
    */
   lanes(io: Io, run: LanePlace, read?: LaneRead): Promise<LaneFacts[]>
   result(io: Io, run: Run, commit: string): Promise<ResultFacts>
+  /**
+   * The commits of `commits` that `final` does not hold, as git merge-base --is-ancestor reads them: in the repository of
+   * the person for git, in the store of the run for jj. A commit that git cannot read counts as missing.
+   */
+  missing(io: Io, run: Run, final: string, commits: readonly string[]): Promise<string[]>
   /** The integration line as a worker names it in its folder: a branch for git, a bookmark for jj. */
   lineName(run: Run): string
   /**
@@ -182,6 +187,13 @@ function gitCommits(out: string): CommitFact[] {
     })
 }
 
+/** The commits of `commits` that `final` does not hold in the git store `gitDir`, each one time, in their order. */
+async function missingIn(io: Io, gitDir: string, final: string, commits: readonly string[]): Promise<string[]> {
+  const missing: string[] = []
+  for (const commit of new Set(commits)) if (!(await git(io, gitDir, ['merge-base', '--is-ancestor', commit, final])).ok) missing.push(commit)
+  return missing
+}
+
 const GIT: Vcs = {
   kind: 'git',
   commitHint: 'Commit your work, then give HEAD or the commit hash.',
@@ -224,6 +236,8 @@ const GIT: Vcs = {
   },
 
   result: (io, run, commit) => gitChange(io, run.repo, run.base, commit),
+
+  missing: (io, run, final, commits) => missingIn(io, run.repo, final, commits),
 
   lineName: gitLine,
 
@@ -294,6 +308,9 @@ const JJ: Vcs = {
   },
 
   result: (io, run, commit) => gitChange(io, storeOf(run.id), run.base, commit),
+
+  /** jj keeps each commit in the git store of the run, so git reads the ancestors there. */
+  missing: (io, run, final, commits) => missingIn(io, storeOf(run.id), final, commits),
 
   lineName: () => LINE_BOOKMARK,
 

@@ -443,6 +443,14 @@ export function takeIntegration(run: Run, by: WorkerId, now: number): Change<Wor
   return { run: withEntry({ ...run, integrator: by }, { at: now, by, kind: 'event', text: `${by} integrates` }), value: by }
 }
 
+/**
+ * The work that the final commit must hold: each done task with a commit, as a part, an integrate task or a task that
+ * finished after the merge of the line. A parent has no commit of its own.
+ */
+export function doneWork(run: Run): Task[] {
+  return run.tasks.filter(task => task.state === 'done' && Boolean(task.commit))
+}
+
 export function declareFinal(run: Run, by: WorkerId, commit: string, summary: string, now: number): Change<Final> {
   const ended = endedFailure(run)
   if (ended) return ended

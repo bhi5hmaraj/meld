@@ -332,6 +332,20 @@ export function integrateDetail(run: Run, task: Task, merge: Exclude<LineMerge, 
 }
 
 /**
+ * Why finish refuses a final commit: the done tasks whose commits it lacks, with their commits, and the steps that merge
+ * them in the folder of the integrator. git merges one commit at a time, as an octopus merge stops at a conflict.
+ */
+export function missingWorkText(run: Run, final: string, missing: readonly Task[]): string {
+  const commits = missing.map(task => task.commit ?? '')
+  const tasks = missing.map(task => `#${task.id} ${task.title} (${(task.commit ?? '').slice(0, 12)})`).join(', ')
+  const steps =
+    run.vcs === 'jj'
+      ? `jj new ${final} ${commits.join(' ')} -m "meld: integrate", fix the conflicts, run the checks, jj commit -m "meld: integrate", and finish with @-.`
+      : `git merge ${commits.join(', then git merge ')}, fix the conflicts, run the checks, commit, and finish with HEAD.`
+  return `The final commit ${final.slice(0, 12)} lacks the commits of done tasks: ${tasks}. In your folder: ${steps}`
+}
+
+/**
  * What meld asks of the lead when every task is done. With a line: start from it, merge the commits it lacks, run one
  * final build and finish. A run that meld 0.7.0 stored has no line: merge the work of every worker, as 0.7.0 did.
  */
