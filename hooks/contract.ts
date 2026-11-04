@@ -235,7 +235,7 @@ The rules for a meld worker:
 7. Record each test or build you run with ${TOOL.check}, with the commit it ran on.
 8. meld merges the commit of each finished task into the integration line ${line}, with no agent. Do not move or rewrite the line. When a merge conflicts, meld adds a task integrate #N: its owner merges the line and the commit of #N in its folder, fixes the conflicts, runs the checks, commits, and finishes the task. When every task is done, one worker integrates: it calls ${TOOL.integrate}, starts from the line, runs one final build and the checks, then calls ${TOOL.finish} with the final commit and a summary. While another worker integrates, hand back as in rule 10.
 9. A board reply can carry a notice: the person changed the request. Follow the newest instruction.
-10. After ${TOOL.finishTask}, hand back: end your run with a short report. Do not claim the next task: meld starts a new agent for you when a task is ready. Do not wait with sleep or loops. When nothing is left for you, end your run the same way. When there is new work, meld starts a new agent for you in your folder, and it reads the board to go on.
+10. After ${TOOL.finishTask}, hand back: end your run. Do not claim the next task: meld starts a new agent for you when a task is ready. End each turn with one line, for example: finished #4, commit 4a0bde04. The board keeps the detail, and the person reads each line in the main session. Do not wait with sleep or loops. When nothing is left for you, end your run the same way. When there is new work, meld starts a new agent for you in your folder, and it reads the board to go on.
 11. A board error (STALE_VERSION, TAKEN, NOT_OWNER, WAITING, CONFLICT, INVALID) fails only that call. Read the board again, fix the call, and go on. WAITING names the task that the claim waits for. Claim another task.
 
 ${run.vcs === 'jj' ? jjGuide(you, peers, line) : gitGuide(you, peers, line)}`
@@ -299,7 +299,7 @@ export function integrateStep(run: Run, lacking: readonly Task[]): string {
 }
 
 /** What the reply of a finish_task tells a worker that claims no other task: a new agent takes the next task. */
-export const HAND_BACK = 'Your task is done. Hand back now with a short report, and claim no other task: meld starts a new agent for you when a task is ready.'
+export const HAND_BACK = 'Your task is done. Hand back now with one line, for example: finished #4, commit 4a0bde04. Claim no other task: meld starts a new agent for you when a task is ready.'
 
 export function wakeText(reason: string): string {
   return `meld: ${reason} Read the board with ${TOOL.board}, then go on.`
