@@ -232,7 +232,11 @@ async function lanes(s) {
   for (const [index, id] of ['w2', 'w3'].entries()) {
     same(found[index + 1].commits, [{ commit: s.commits[id], subject: `${id}: add ${id}.txt`, parents: 1, conflict: false }], `the commits of ${id}`)
   }
-  return 'w1 has the merge and the three commits; w2 and w3 have one commit; w2 has edits'
+  writeFileSync(join(s.run.workers[2].path, 'late.txt'), 'edited after the last jj command\n')
+  const read = await s.vcs.lanes(io, s.run, { snapshot: true })
+  same(read.map(lane => [lane.id, lane.edits, lane.error]), [['w1', false, undefined], ['w2', true, undefined], ['w3', true, undefined]], 'the lanes and their edits with a snapshot')
+  same(read[2].commits, found[2].commits, 'the commits of w3 with a snapshot')
+  return 'w1 has the merge and the three commits; w2 and w3 have one commit; w2 has edits; with a snapshot, w3 has its new edit'
 }
 
 async function result(s) {

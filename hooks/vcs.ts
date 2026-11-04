@@ -22,6 +22,7 @@ export type Place = { id: string; repo: string; base: string }
 export type Workspace = { path: string; ref: string }
 export type Prepared = { workspaces: Workspace[] } | { error: string }
 export type Resolved = { commit: string; conflict: boolean }
+export type LaneRead = { snapshot?: boolean }
 /**
  * A merge into the integration line: merged, with the head of the line (the same head when the line holds the commit);
  * a conflict, with the head that stays and the files in conflict; or failed, with the reason.
@@ -34,7 +35,11 @@ export type Vcs = {
   commitHint: string
   prepare(io: Io, place: Place, ids: WorkerId[]): Promise<Prepared>
   resolve(io: Io, run: Run, worker: Worker, revision: string): Promise<Resolved | undefined>
-  lanes(io: Io, run: Run): Promise<LaneFacts[]>
+  /**
+   * The commits of each worker since the base, and its uncommitted edits. jj records the files of a workspace only when a
+   * jj command runs there, so a lane shows them as of that command; with snapshot, jj first records them. git reads the files.
+   */
+  lanes(io: Io, run: Run, read?: LaneRead): Promise<LaneFacts[]>
   result(io: Io, run: Run, commit: string): Promise<ResultFacts>
   /** The integration line as a worker names it in its folder: a branch for git, a bookmark for jj. */
   lineName(run: Run): string
@@ -179,7 +184,9 @@ const GIT: Vcs = {
     for (const worker of run.workers) {
       const log = await git(io, run.repo, ['log', '--format=%H%x09%P%x09%s', '-n', LANE_LIMIT, `${run.base}..${worker.ref}`])
       const status = await git(io, worker.path, ['status', '--porcelain'])
-      lanes.push({ id: worker.id, commits: log.ok ? gitCommits(log.out) : [], edits: status.ok && status.out.length > 0 })
+      const lane = { id: worker.id, commits: log.ok ? gitCommits(log.out) : [], edits: status.ok && status.out.length > 0 }
+      const failed = [log, status].find(read => !read.ok)
+      lanes.push(failed ? { ...lane, error: failed.err || failed.out } : lane)
     }
     return lanes
   },
@@ -235,24 +242,13 @@ const JJ: Vcs = {
     return FULL_COMMIT.test(commit) ? { commit, conflict: state === 'conflict' } : undefined
   },
 
-  async lanes(io, run) {
+  /** A lane with snapshot runs jj in the folder of the worker, which records its files first; else jj reads the repository as it is. */
+  async lanes(io, run, read) {
     const lanes: LaneFacts[] = []
     for (const worker of run.workers) {
-      const log = await command(io, run.repo, [
-        'jj',
-        '-R',
-        jjRepoOf(run.id),
-        '--ignore-working-copy',
-        'log',
-        '--no-graph',
-        '--limit',
-        LANE_LIMIT,
-        '-r',
-        `${BASE_BOOKMARK}..${worker.id}@`,
-        '-T',
-        JJ_LANE_TEMPLATE,
-      ])
-      lanes.push(jjLane(worker.id, log.ok ? log.out : ''))
+      const from = read?.snapshot ? [worker.path] : [jjRepoOf(run.id), '--ignore-working-copy']
+      const log = await command(io, run.repo, ['jj', '-R', ...from, 'log', '--no-graph', '--limit', LANE_LIMIT, '-r', `${BASE_BOOKMARK}..${worker.id}@`, '-T', JJ_LANE_TEMPLATE])
+      lanes.push(log.ok ? jjLane(worker.id, log.out) : { ...jjLane(worker.id, ''), error: log.err || log.out })
     }
     return lanes
   },

@@ -193,6 +193,44 @@ test('jj lanes leave out the working copy, which shows as edits when it is not e
   ])
 })
 
+test('a git lane that git cannot read names the error, so it does not pass for a lane with no work', async () => {
+  const io = new FakeIo()
+  io.failing = [`git log --format=%H%x09%P%x09%s -n 40 ${HEAD}..meld/r1/w2`]
+  expect(await vcsFor('git').lanes(io, runOn('git'))).toStrictEqual([
+    { id: 'w1', commits: [], edits: false },
+    { id: 'w2', commits: [], edits: false, error: 'git: failed' },
+  ])
+  io.failing = ['git status']
+  expect((await vcsFor('git').lanes(io, runOn('git'))).map(lane => lane.error)).toEqual(['git: failed', 'git: failed'])
+})
+
+test('a jj lane that jj cannot read names the error', async () => {
+  const io = new FakeIo()
+  io.failing = [jjLog('w1')]
+  expect(await vcsFor('jj').lanes(io, runOn('jj'))).toStrictEqual([
+    { id: 'w1', commits: [], edits: false, error: 'jj: failed' },
+    { id: 'w2', commits: [], edits: false },
+  ])
+})
+
+test('jj lanes with a snapshot read each workspace in its folder, so edits that no jj command recorded show', async () => {
+  const io = new FakeIo()
+  io.answers[`jj -R /tmp/meld/r1/w1 log --no-graph --limit 40 -r meld_base..w1@ -T ${JJ_LANE_TEMPLATE}`] = `${FULL}\t1\t--\tw1@\t\n`
+  const lanes = await vcsFor('jj').lanes(io, runOn('jj'), { snapshot: true })
+  expect(lanes).toEqual([
+    { id: 'w1', commits: [], edits: true },
+    { id: 'w2', commits: [], edits: false },
+  ])
+  expect(io.ran(`jj -R ${JJ_REPO}`)).toBe(false)
+})
+
+test('git lanes read the files of each worktree with or without a snapshot', async () => {
+  const io = new FakeIo()
+  io.dirty = true
+  const lanes = await vcsFor('git').lanes(io, runOn('git'), { snapshot: true })
+  expect(lanes.map(lane => lane.edits)).toEqual([true, true])
+})
+
 test('jj delivers through a bookmark in the store, a fetch and a merge commit', async () => {
   const io = new FakeIo()
   expect((await vcsFor('jj').deliver(io, runOn('jj'), FULL, 'meld: Add a dark theme')).ok).toBe(true)

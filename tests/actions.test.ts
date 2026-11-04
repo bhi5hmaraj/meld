@@ -2,11 +2,11 @@ import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
 import { deliver, discard, freshTokens, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, SPAWN_APPROVAL, spawnVerdict, startFromView, startRun, steerRun, stopOne } from '../hooks/actions'
-import { addTasks, bindWorker, claimTask, declareFinal, isFailure, setActivity, startRun as startBoard, steer, takeIntegration } from '../hooks/board'
-import { JJ_RESOLVE_TEMPLATE } from '../hooks/vcs'
+import { addTasks, bindWorker, claimTask, declareFinal, isFailure, setActivity, startRun as startBoard, steer, stopRun, takeIntegration } from '../hooks/board'
+import { JJ_LANE_TEMPLATE, JJ_RESOLVE_TEMPLATE } from '../hooks/vcs'
 import type { AgentSpec, Change, Run, VcsKind, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
-import { STORED_BY_0_6_0 } from './stored-runs'
+import { STORED_BY_0_6_0, STORED_BY_0_7_0 } from './stored-runs'
 
 const NOW = 1_800_000_000_000
 const ID = NOW.toString(36)
@@ -182,6 +182,95 @@ test('a second run waits until the first one ends', async () => {
   expect((await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'git' })).text).toBe(
     'A run is active. Deliver, discard or stop it in the meld pane first.',
   )
+})
+
+/** The jj log of the lane of a worker, read in its folder, so jj first records the files there. */
+function jjFreshLog(run: string, worker: WorkerId): string {
+  return `jj -R /tmp/meld/${run}/${worker} log --no-graph --limit 40 -r meld_base..${worker}@ -T ${JJ_LANE_TEMPLATE}`
+}
+
+test('a start over a stopped run with no work removes its workspaces as Discard does, then starts', async () => {
+  const io = ioWith(stopRun(working(), NOW))
+  const result = await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'git' })
+  expect(io.commands).toContain('git worktree remove --force /tmp/meld/r1/w1')
+  expect(io.commands).toContain('git branch -D meld/r1/w2')
+  expect(io.commands).toContain('git branch -D meld/r1/integration')
+  expect(io.commands.indexOf('rm -rf -- /tmp/meld/r1')).toBeLessThan(io.commands.indexOf(`git worktree add -b meld/${ID}/w1 /tmp/meld/${ID}/w1 ${HEAD}`))
+  expect(io.current?.id).toBe(ID)
+  expect(result.text).toBe(`Run ${ID}: 2 workers on git, from commit ${HEAD.slice(0, 7)}.`)
+})
+
+test('a start after a start that started no worker removes the workspaces of the failed start', async () => {
+  const io = ioWith(null)
+  io.spawnDeny = 'the host limit'
+  await startRun(io, '/repo', { request: 'Add a dark theme', agents: TWO, vcs: 'git' })
+  io.spawnDeny = undefined
+  io.now = async () => NOW + 60_000
+  const result = await startRun(io, '/repo', { request: 'Add a dark theme', agents: TWO, vcs: 'git' })
+  expect(io.commands).toContain(`git worktree remove --force /tmp/meld/${ID}/w2`)
+  expect(io.commands).toContain(`rm -rf -- /tmp/meld/${ID}`)
+  expect(io.current?.id).toBe((NOW + 60_000).toString(36))
+  expect(result.text).toBe(`Run ${(NOW + 60_000).toString(36)}: 2 workers on git, from commit ${HEAD.slice(0, 7)}.`)
+})
+
+test('a start over a stopped run with commits refuses, and names the run, its folder and its count of commits', async () => {
+  const io = ioWith(stopRun(working(), NOW))
+  const other = 'e'.repeat(40)
+  io.answers[`git log --format=%H%x09%P%x09%s -n 40 ${HEAD}..meld/r1/w1`] = `${FULL}\t${other} ${HEAD}\tMerge w2\n${other}\t${HEAD}\tAdd add()`
+  io.answers[`git log --format=%H%x09%P%x09%s -n 40 ${HEAD}..meld/r1/w2`] = `${other}\t${HEAD}\tAdd add()`
+  const result = await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'git' })
+  expect(result.text).toBe('Run r1 stopped with work in /tmp/meld/r1: 2 commits. Discard in the meld pane removes its workspaces, then you can start again.')
+  expect(io.ran('git worktree')).toBe(false)
+  expect(io.ran('rm')).toBe(false)
+  expect(io.spawned).toHaveLength(0)
+  expect(io.current).toMatchObject({ id: 'r1', state: 'stopped' })
+})
+
+test('a start over a stopped run with uncommitted edits refuses, and names the workers that made them', async () => {
+  const io = ioWith(stopRun(working(), NOW))
+  io.dirty = true
+  const result = await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'git' })
+  expect(result.text).toBe(
+    'Run r1 stopped with work in /tmp/meld/r1: 0 commits, and uncommitted edits in w1 and w2. Discard in the meld pane removes its workspaces, then you can start again.',
+  )
+  expect(io.ran('rm')).toBe(false)
+})
+
+test('a start over a stopped jj run reads each workspace in its folder, so edits that no jj command recorded count', async () => {
+  const io = ioWith(stopRun(working(3, 'jj'), NOW))
+  io.answers[jjFreshLog('r1', 'w2')] = `${FULL}\t1\t--\tw2@\t\n`
+  const result = await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'auto' })
+  expect(result.text).toBe('Run r1 stopped with work in /tmp/meld/r1: 0 commits, and uncommitted edits in w2. Discard in the meld pane removes its workspaces, then you can start again.')
+  expect(io.commands.filter(command => command.includes(' log '))).toEqual(['w1', 'w2', 'w3'].map(id => jjFreshLog('r1', id as WorkerId)))
+  expect(io.ran('rm')).toBe(false)
+})
+
+test('a start over a stopped run whose workspaces meld cannot read refuses, and removes nothing', async () => {
+  const io = ioWith(stopRun(working(), NOW))
+  io.failing = [`git log --format=%H%x09%P%x09%s -n 40 ${HEAD}..meld/r1/w2`]
+  const result = await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'git' })
+  expect(result.text).toBe(
+    'Run r1 stopped, and meld cannot read its workspaces in /tmp/meld/r1 (w2: git: failed), so they can hold work. Discard in the meld pane removes them, then you can start again.',
+  )
+  expect(io.ran('rm')).toBe(false)
+  expect(io.current?.id).toBe('r1')
+})
+
+test('a start over a stopped run that meld 0.7.0 stored counts the commit of its done task as work', async () => {
+  const io = ioWith(stopRun(STORED_BY_0_7_0, NOW))
+  const toggle = STORED_BY_0_7_0.tasks[1]?.commit ?? ''
+  io.answers[jjFreshLog('r070', 'w3')] = `${FULL}\t1\t-e\tw3@\t\n${toggle}\t1\t--\t\tDark toggle\n`
+  const result = await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'git' })
+  expect(result.text).toBe('Run r070 stopped with work in /tmp/meld/r070: 1 commit. Discard in the meld pane removes its workspaces, then you can start again.')
+})
+
+test('a start over a stopped run that meld 0.7.0 stored, with no work, removes its workspaces and starts', async () => {
+  const io = ioWith(stopRun(STORED_BY_0_7_0, NOW))
+  const result = await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'git' })
+  expect(io.commands).toContain('jj -R /tmp/meld/r070/jj config path --repo')
+  expect(io.commands).toContain('rm -rf -- /tmp/meld/r070')
+  expect(io.current?.id).toBe(ID)
+  expect(result.text).toBe(`Run ${ID}: 2 workers on git, from commit ${HEAD.slice(0, 7)}.`)
 })
 
 test('an edit of a worker outside its worktree is refused with the path inside it', async () => {
