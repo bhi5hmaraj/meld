@@ -18,6 +18,7 @@ import {
   markBriefed,
   passContext,
   releaseTask,
+  restartWorker,
   shareEntry,
   SPLIT_CALLS,
   splitTask,
@@ -392,7 +393,7 @@ test('a board read adds its reader to seenBy of each entry one time, and does no
   const shared = runOf(shareEntry(workingThree(), 'w1', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW))
   const byAuthor = boardFor(shared, 'w1').run
   const twice = boardFor(boardFor(byAuthor, 'w2').run, 'w2')
-  expect(twice.view.context[0]?.seenBy).toEqual(['w2'])
+  expect(twice.run.context?.[0]?.seenBy).toEqual(['w2'])
   expect(boardFor(twice.run, 'w3').run.context?.[0]?.seenBy).toEqual(['w2', 'w3'])
 })
 
@@ -407,6 +408,60 @@ test('a read counts no reader for an entry that it does not show', () => {
   const read = passContext(withFacts(21), 'w2').run
   expect(read.context?.[0]?.seenBy).toEqual([])
   expect(read.context?.[1]?.seenBy).toEqual(['w2'])
+})
+
+test('a later reply carries only the entries that are new for its reader since its last reply', () => {
+  const first = runOf(shareEntry(working(), 'w2', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW))
+  const read = boardFor(first, 'w1')
+  expect(read.view.context.map(entry => entry.text)).toEqual(['The theme lives in theme.css'])
+  const second = runOf(shareEntry(read.run, 'w2', { kind: 'fail', text: 'A CSS filter inverts the images' }, NOW))
+  expect(boardFor(second, 'w1').view.context.map(entry => [entry.id, entry.text, entry.seenBy])).toEqual([[2, 'A CSS filter inverts the images', ['w1']]])
+})
+
+test('a reply carries no entry when nothing is new for its reader', () => {
+  const read = passContext(runOf(shareEntry(working(), 'w2', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW)), 'w1').run
+  expect(passContext(read, 'w1').context).toEqual([])
+  expect(boardFor(read, 'w1').view.context).toEqual([])
+})
+
+test('after its first reply, a reply carries no entry that its reader wrote', () => {
+  const read = passContext(working(), 'w1').run
+  const shared = runOf(shareEntry(read, 'w1', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW))
+  expect(passContext(shared, 'w1').context).toEqual([])
+  expect(passContext(shared, 'w2').context.map(entry => entry.text)).toEqual(['The theme lives in theme.css'])
+})
+
+test('the first reply to an agent carries the current entries, 20 at most, its own entries too', () => {
+  const first = passContext(withFacts(25), 'w1')
+  expect(first.context).toHaveLength(20)
+  expect([first.context[0]?.text, first.context.at(-1)?.text]).toEqual(['Fact 25', 'Fact 6'])
+  expect(passContext(first.run, 'w1').context).toEqual([])
+})
+
+test('a new agent of a worker gets the current entries again at its first reply', () => {
+  const read = passContext(runOf(shareEntry(working(), 'w2', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW)), 'w1').run
+  const again = passContext(restartWorker(read, 'w1', 'agent-9', NOW), 'w1')
+  expect(again.context.map(entry => [entry.text, entry.seenBy])).toEqual([['The theme lives in theme.css', ['w1']]])
+  expect(passContext(again.run, 'w1').context).toEqual([])
+})
+
+test('an entry that the first reply left out is not carried later, and does not count the reader', () => {
+  const later = passContext(passContext(withFacts(21), 'w2').run, 'w2')
+  expect(later.context).toEqual([])
+  expect(later.run.context?.[0]?.seenBy).toEqual([])
+})
+
+test('a correction is new for a reader that got the entry it replaces', () => {
+  const read = passContext(runOf(shareEntry(working(), 'w2', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW)), 'w1').run
+  const fixed = runOf(shareEntry(read, 'w2', { kind: 'fact', text: 'The theme lives in tokens.css', replaces: 1 }, NOW))
+  expect(passContext(fixed, 'w1').context.map(entry => [entry.id, entry.replaces, entry.text])).toEqual([[2, 1, 'The theme lives in tokens.css']])
+})
+
+test('a worker of a run that meld 0.7.0 or older stored gets the current entries at its next reply, then only new ones', () => {
+  const first = passContext(STORED_BY_0_6_0, 'w1')
+  expect(first.context.map(entry => [entry.text, entry.seenBy])).toEqual([['The theme lives in theme.css', ['w1']]])
+  const shared = runOf(shareEntry(first.run, 'w2', { kind: 'fail', text: 'A CSS filter inverts the images' }, NOW))
+  expect(passContext(shared, 'w1').context.map(entry => entry.text)).toEqual(['A CSS filter inverts the images'])
 })
 
 test('a finished task shares its interfaces and what it left unfinished, with its commit', () => {
