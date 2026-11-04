@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
-import { bindWorker, isFailure, startRun } from '../hooks/board'
-import { detectVcs, JJ_LANE_TEMPLATE, JJ_RESOLVE_TEMPLATE, jjConfigMark, vcsFor } from '../hooks/vcs'
+import { bindWorker, isFailure, startRun } from '../core/board'
+import { detectVcs, JJ_LANE_TEMPLATE, JJ_RESOLVE_TEMPLATE, jjConfigMark, vcsFor } from '../core/vcs'
 import type { Change, Run, VcsKind, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
 

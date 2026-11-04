@@ -1,9 +1,9 @@
 import { expect, test } from 'claude-code/testing'
 
-import { startRun } from '../hooks/actions'
-import { bindWorker, isFailure, startRun as startBoard, stopRun } from '../hooks/board'
-import { cleanFolders } from '../hooks/clean'
-import { JJ_LANE_TEMPLATE, vcsFor } from '../hooks/vcs'
+import { startRun } from '../core/actions'
+import { bindWorker, isFailure, startRun as startBoard, stopRun } from '../core/board'
+import { cleanFolders } from '../core/clean'
+import { JJ_LANE_TEMPLATE, vcsFor } from '../core/vcs'
 import type { AgentSpec, Change, Run, VcsKind, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
 

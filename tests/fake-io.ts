@@ -1,12 +1,11 @@
-import type { AgentState, Files, FolderEntry, Io, ProcessResult, SpawnArgs, Spawned } from '../hooks/io'
-import type { Facts, Run } from '../types'
+import { MemoryStore } from '../core/memory-store'
+import type { AgentState, Files, FolderEntry, Io, ProcessResult, SpawnArgs, Spawned } from '../core/ports'
+import type { Run } from '../types'
 
 export const HEAD = 'abc1234def5678abc1234def5678abc1234def56'
 
-/** The engine as the logic of meld sees it: commands answer from tables, and every call is recorded. */
-export class FakeIo implements Io, Files {
-  current: Run | null = null
-  facts: Facts | null = null
+/** The engine as the logic of meld sees it: the run in a memory store, commands that answer from tables, and every call recorded. */
+export class FakeIo extends MemoryStore implements Io, Files {
   repos = ['/repo', '/elsewhere']
   answers: Record<string, string> = {}
   /** Whole results by command, for a command that fails with an output, as git merge-tree does on a conflict. */
@@ -79,24 +78,6 @@ export class FakeIo implements Io, Files {
 
   async agents(): Promise<Map<string, AgentState> | undefined> {
     return this.agentStates
-  }
-
-  async read(): Promise<Run | null> {
-    return this.current
-  }
-
-  async write(change: (run: Run | null) => Run | null): Promise<unknown> {
-    this.current = change(this.current)
-    return this.current
-  }
-
-  async readFacts(): Promise<Facts | null> {
-    return this.facts
-  }
-
-  async writeFacts(facts: Facts | null): Promise<unknown> {
-    this.facts = facts
-    return facts
   }
 
   async writeFile(path: string, text: string): Promise<void> {

@@ -1,15 +1,15 @@
 import type { ElementTable, RenderSurface } from 'claude-code'
 
 import type { AgentSpec, ContextKind, Entry, Facts, LaneFacts, PaneView, ResultFacts, Run, RunState, Task, Worker, WorkerId, WorkerState } from '../types'
-import { deliver, discard, LEADING_CD, stopAll, stopOne } from './actions'
-import { currentContext, NOT_STARTED } from './board'
-import { STEER_PRESETS } from './contract'
+import { deliver, discard, LEADING_CD, stopAll, stopOne } from '../core/actions'
+import { currentContext, NOT_STARTED } from '../core/board'
+import { STEER_PRESETS } from '../core/contract'
 import { agentColor, BAR_HEIGHT, BAR_WIDTH, barCells, LANE_HEIGHT, LANE_WIDTH, laneAlt, laneGlyphs, laneSvg, partsBarSvg, ROW_BAR_WIDTH, STATUS } from './drawing'
-import type { Io } from './io'
-import { agentsOf, formatStart, MAX_AGENTS, MODELS, WORKER_TYPE } from './options'
-import { ownersOf, partsOf, percentLabel, percentOf, requestParts, requestPercent, topTasks } from './progress'
-import type { Parts } from './progress'
-import { childrenOf, waitsFor } from './tasks'
+import type { Io } from '../core/ports'
+import { agentsOf, formatStart, MAX_AGENTS, MODELS, WORKER_TYPE } from '../core/options'
+import { ownersOf, partsOf, percentLabel, percentOf, requestParts, requestPercent, topTasks } from '../core/progress'
+import type { Parts } from '../core/progress'
+import { childrenOf, waitsFor } from '../core/tasks'
 
 export const PANE = 'meld'
 export const DEFAULT_VIEW: PaneView = { showDiff: false, task: '', agents: 2, model: 'inherit', vcs: 'auto' }

@@ -30,7 +30,7 @@ import {
   takeNotice,
   takeSplitNudge,
   workerOf,
-} from '../hooks/board'
+} from '../core/board'
 import type { Change, NewTask, Run, TaskSize, WorkerId } from '../types'
 import { STORED_BY_0_6_0, STORED_BY_0_7_0 } from './stored-runs'
 

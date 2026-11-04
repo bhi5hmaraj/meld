@@ -1,8 +1,7 @@
-import type { ToolSpec } from 'claude-code'
-
 import type { Run, Task, Worker, WorkerId } from '../types'
 import { CONTEXT_KINDS, CONTEXT_TEXT_LIMIT } from './board'
 import { vcsFor } from './vcs'
+import type { ToolSpec } from './ports'
 import type { LineMerge } from './vcs'
 
 export const TOOL = {

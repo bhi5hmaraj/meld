@@ -1,9 +1,9 @@
 import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
-import { deliver, discard, freshTokens, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, SPAWN_APPROVAL, spawnVerdict, startFromView, startRun, steerRun, stopOne } from '../hooks/actions'
-import { addTasks, bindWorker, claimTask, declareFinal, isFailure, setActivity, startRun as startBoard, steer, stopRun, stopWorker, takeIntegration } from '../hooks/board'
-import { JJ_LANE_TEMPLATE, JJ_RESOLVE_TEMPLATE } from '../hooks/vcs'
+import { deliver, discard, freshTokens, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, SPAWN_APPROVAL, spawnVerdict, startFromView, startRun, steerRun, stopOne } from '../core/actions'
+import { addTasks, bindWorker, claimTask, declareFinal, isFailure, setActivity, startRun as startBoard, steer, stopRun, stopWorker, takeIntegration } from '../core/board'
+import { JJ_LANE_TEMPLATE, JJ_RESOLVE_TEMPLATE } from '../core/vcs'
 import type { AgentSpec, Change, Run, VcsKind, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
 import { STORED_BY_0_6_0, STORED_BY_0_7_0 } from './stored-runs'

@@ -1,8 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 
-import { deliver, discard, markWorker, startRun } from '../hooks/actions'
-import { bindWorker, declareFinal, isFailure, startRun as startBoard, stopRun, takeIntegration } from '../hooks/board'
-import type { ProcessResult } from '../hooks/io'
+import { deliver, discard, markWorker, startRun } from '../core/actions'
+import { bindWorker, declareFinal, isFailure, startRun as startBoard, stopRun, takeIntegration } from '../core/board'
+import type { ProcessResult } from '../core/ports'
 import type { AgentSpec, Change, Run, VcsKind, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
 

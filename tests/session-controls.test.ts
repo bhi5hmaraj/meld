@@ -1,9 +1,9 @@
 import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
-import { controlRun, guardCall, serveTool } from '../hooks/actions'
-import { bindWorker, declareFinal, isFailure, startRun as startBoard, stopRun, takeIntegration } from '../hooks/board'
-import { COMMAND_CONTROLS, SESSION_TOOLS, TOOL, TOOL_SPECS } from '../hooks/contract'
+import { controlRun, guardCall, serveTool } from '../core/actions'
+import { bindWorker, declareFinal, isFailure, startRun as startBoard, stopRun, takeIntegration } from '../core/board'
+import { COMMAND_CONTROLS, SESSION_TOOLS, TOOL, TOOL_SPECS } from '../core/contract'
 import type { AgentSpec, Change, Run, VcsKind, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
 import { STORED_BY_0_7_0 } from './stored-runs'

@@ -1,8 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 
-import { startRun as startBoard } from '../hooks/board'
-import { cleanFolders } from '../hooks/clean'
-import { JJ_LANE_TEMPLATE, jjConfigMark } from '../hooks/vcs'
+import { startRun as startBoard } from '../core/board'
+import { cleanFolders } from '../core/clean'
+import { JJ_LANE_TEMPLATE, jjConfigMark } from '../core/vcs'
 import type { Run, RunState, VcsKind, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
 import { STORED_BY_0_7_0 } from './stored-runs'

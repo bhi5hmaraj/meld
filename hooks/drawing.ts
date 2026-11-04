@@ -1,6 +1,6 @@
 import type { CommitFact, Entry, LaneFacts } from '../types'
-import { floored } from './progress'
-import type { Parts } from './progress'
+import { floored } from '../core/progress'
+import type { Parts } from '../core/progress'
 
 /** The categorical palette in its validated order, one hue per worker; light and dark steps of the same hue. */
 export const AGENT_COLORS = [

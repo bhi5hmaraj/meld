@@ -1,11 +1,11 @@
 import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
-import { controlRun, deliver, serveTool } from '../hooks/actions'
-import { addIntegrateTask, addTasks, bindWorker, claimTask, declareFinal, finishTask, isFailure, lackingTasks, lineMerged, startRun as startBoard, takeIntegration } from '../hooks/board'
-import { integrateStep, missingWorkText, TOOL } from '../hooks/contract'
-import { JJ_RESOLVE_TEMPLATE, vcsFor } from '../hooks/vcs'
-import type { ProcessResult } from '../hooks/io'
+import { controlRun, deliver, serveTool } from '../core/actions'
+import { addIntegrateTask, addTasks, bindWorker, claimTask, declareFinal, finishTask, isFailure, lackingTasks, lineMerged, startRun as startBoard, takeIntegration } from '../core/board'
+import { integrateStep, missingWorkText, TOOL } from '../core/contract'
+import { JJ_RESOLVE_TEMPLATE, vcsFor } from '../core/vcs'
+import type { ProcessResult } from '../core/ports'
 import type { Change, Run, VcsKind, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
 

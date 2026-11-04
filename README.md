@@ -272,15 +272,21 @@ meld takes its idea from [DeLM](https://github.com/Decentralized-LM/delm-agent-p
 ```
 claude plugin validate .
 claude plugin test .
+tsc -p tsconfig.core.json
 node scripts/adapters.mjs
 node scripts/shots.mjs
 ```
 
-- `hooks/board.ts` holds the board rules as pure functions, `hooks/tasks.ts` the task tree, and `hooks/progress.ts` the percent.
-- `hooks/actions.ts` holds the steps of a run, and takes an `Io` port.
-- `hooks/vcs.ts` holds the version control port and its two adapters, jj and git.
-- `hooks/options.ts` reads the options of `/meld`.
-- `hooks/clean.ts` lists and removes the folders of other runs for `/meld-clean`.
+`core/` holds the code that needs no Claude Code, so another host can run it: `meld mcp` from 0.9. `hooks/` holds the Claude Code host. `tsc -p tsconfig.core.json` checks `core/` and `types/` with no engine types.
+
+- `core/ports.ts` holds the ports that a host gives the core: `Store` (the run of the session and the facts of the pane), `CodeHost` (commands and files), `Runner` (agents), `Clock`, `Surface` (toasts, the pane, commands) and `Ledger` (the cost). A function takes only the ports that it uses. `Io` is all of them.
+- `core/board.ts` holds the board rules as pure functions, `core/tasks.ts` the task tree, and `core/progress.ts` the percent.
+- `core/actions.ts` holds the steps of a run.
+- `core/vcs.ts` holds the version control port and its two adapters, jj and git, and `core/git.ts` the git commands.
+- `core/contract.ts` holds the tools, the rules and the prompts of the agents.
+- `core/options.ts` reads the options of `/meld`.
+- `core/clean.ts` lists and removes the folders of other runs for `/meld-clean`.
+- `core/memory-store.ts` is a `Store` in memory.
 - `hooks/pane.tsx` and `hooks/drawing.ts` draw the pane.
 - `hooks/register.tsx` is the one file that calls the engine.
 
@@ -289,9 +295,9 @@ node scripts/shots.mjs
 
 A hooks module spells `$` at its call sites and does not give it to other functions, so each hook builds its own `Io`. An agent that a hook starts runs under that hook and skips it. For this reason, meld has three tool hooks: the start, steer and stop tools, the board tools, and the guard of every other tool. An agent that a timer or a button closure starts skips every hook of meld. For this reason, a `ui.press` and a `ui.input` hook serve the buttons and fields that start agents, and the restarts come from hooks of the main session. The guard lets each `SubagentHandback` through, because that call ends the run of an agent. A `turn.step` hook adds the tokens of each model call to the agent that made it.
 
-The tests use a fake `Io` and mount the pane on each surface. A test holds each block of the pane to 100 words at most.
+The tests use a fake `Io` over the memory store, and mount the pane on each surface. A test holds each block of the pane to 100 words at most. `tests/store-conformance.ts` holds the checks that each `Store` must pass, and `tests/memory-store.test.ts` runs them on the memory store: the SQLite store of 0.9 runs the same checks. `tests/model.test.ts` plays 200 seeds of random board calls by three workers, stopped workers too, and checks the rules after each call: one owner for each claimed task, no claim of a task with parts or of a task that waits, a parent done exactly when its parts are done, no loop of needs, and a new version for each change of a task. A broken rule names its seed and the calls before it.
 
-`scripts/adapters.mjs` checks the jj and git adapters with real processes. It compiles `hooks/` with `tsc` into a temporary folder. For each adapter, a temporary git repository goes through a run: three workspaces, a commit in each, the integration line (a move forward, two merge commits, a commit that the line holds, and a conflict), the integration, the commits that the final commit lacks, the lanes (with an edit that no jj command recorded), the work that a plain read hides (new files with `status.showUntrackedFiles=no`, and a new file that jj does not record), the result, deliver, two new workspaces (one from the line, one from the base), the move of the line to the final commit, and remove. A second run of one worker checks a commit on a detached `HEAD`, an edit that `jj new` left behind, and removals through a folder that an agent made a link. HOME is a temporary folder, so the check does not read or change your git or jj config. The script prints PASS or FAIL for each step, and it exits with code 1 when a step fails. It needs `tsc` 5.6 or newer, git, and jj 0.40 or newer.
+`scripts/adapters.mjs` checks the jj and git adapters with real processes. It compiles `core/` with `tsc` into a temporary folder. For each adapter, a temporary git repository goes through a run: three workspaces, a commit in each, the integration line (a move forward, two merge commits, a commit that the line holds, and a conflict), the integration, the commits that the final commit lacks, the lanes (with an edit that no jj command recorded), the work that a plain read hides (new files with `status.showUntrackedFiles=no`, and a new file that jj does not record), the result, deliver, two new workspaces (one from the line, one from the base), the move of the line to the final commit, and remove. A second run of one worker checks a commit on a detached `HEAD`, an edit that `jj new` left behind, and removals through a folder that an agent made a link. HOME is a temporary folder, so the check does not read or change your git or jj config. The script prints PASS or FAIL for each step, and it exits with code 1 when a step fails. It needs `tsc` 5.6 or newer, git, and jj 0.40 or newer.
 
 `scripts/shots.mjs` draws the pictures of this README. `scripts/scenes.tsx` builds sample runs with the board functions and prints the tree that the pane draws for each run. The script makes an HTML page of each tree, and takes a picture in a light and a dark theme with Playwright. The lanes, the bars and the texts are the ones that meld draws. The fonts and the spacing stand in for the app.
 

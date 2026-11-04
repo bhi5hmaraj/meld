@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { ownersOf, partsOf, percentLabel, percentOf, requestParts, requestPercent, SIZE_WEIGHT, topTasks, weightOf } from '../hooks/progress'
+import { ownersOf, partsOf, percentLabel, percentOf, requestParts, requestPercent, SIZE_WEIGHT, topTasks, weightOf } from '../core/progress'
 import type { Task } from '../types'
 
 function task(id: number, fields: Partial<Task> = {}): Task {

@@ -50,7 +50,7 @@ pre { margin: 0; font: 12px/1.4 'JetBrains Mono', monospace; }
 
 function plugin() {
   const folder = mkdtempSync(join(tmpdir(), 'meld-shots-'))
-  for (const part of ['.claude-plugin', 'hooks', 'types']) cpSync(join(ROOT, part), join(folder, part), { recursive: true })
+  for (const part of ['.claude-plugin', 'core', 'hooks', 'types']) cpSync(join(ROOT, part), join(folder, part), { recursive: true })
   mkdirSync(join(folder, 'tests'))
   cpSync(join(ROOT, 'scripts', 'scenes.tsx'), join(folder, 'tests', 'scenes.test.tsx'))
   return folder

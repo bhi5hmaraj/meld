@@ -1,8 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 
-import { markWorker, restartIdleWorkers } from '../hooks/actions'
-import { addTasks, bindWorker, isFailure, startRun } from '../hooks/board'
-import { HAND_BACK, WORKER_SYSTEM, workerPrompt, workerRules } from '../hooks/contract'
+import { markWorker, restartIdleWorkers } from '../core/actions'
+import { addTasks, bindWorker, isFailure, startRun } from '../core/board'
+import { HAND_BACK, WORKER_SYSTEM, workerPrompt, workerRules } from '../core/contract'
 import type { Change, Run } from '../types'
 import { FakeIo, HEAD } from './fake-io'
 

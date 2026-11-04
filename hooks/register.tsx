@@ -1,11 +1,11 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentStatus, Register } from 'claude-code'
 
-import { controlRun, countStep, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll } from './actions'
-import { cleanFolders } from './clean'
-import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL_SPECS, WORKER_SYSTEM } from './contract'
-import type { AgentState, Files, Io } from './io'
-import { parseStart, WORKER_TYPE } from './options'
+import { controlRun, countStep, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll } from '../core/actions'
+import { cleanFolders } from '../core/clean'
+import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL_SPECS, WORKER_SYSTEM } from '../core/contract'
+import type { AgentState, Files, Io } from '../core/ports'
+import { parseStart, WORKER_TYPE } from '../core/options'
 import { DEFAULT_VIEW, paneTree } from './pane'
 
 const MELD_TOOL = 'mcp__meld__'

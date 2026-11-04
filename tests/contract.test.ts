@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
-import { startRun } from '../hooks/board'
-import { BOARD_TOOLS, SESSION_TOOLS, splitNudge, TOOL, TOOL_SPECS, workerPrompt, workerRules } from '../hooks/contract'
+import { startRun } from '../core/board'
+import { BOARD_TOOLS, SESSION_TOOLS, splitNudge, TOOL, TOOL_SPECS, workerPrompt, workerRules } from '../core/contract'
 import type { Run, VcsKind, WorkerId } from '../types'
 
 const IDS: WorkerId[] = ['w1', 'w2', 'w3']

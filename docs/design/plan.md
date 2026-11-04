@@ -1,6 +1,6 @@
 # Build plan
 
-Status: draft. The order is agreed: first make solo good and give it to people, then local parties with Claude Code and Codex, then the hosted version. Nothing in phases 2 to 4 has started.
+Status: draft. The order is agreed: first make solo good and give it to people, then local parties with Claude Code and Codex, then the hosted version. Step 0a of phase 2 is built on the branch `next`. Nothing else in phases 2 to 4 has started.
 
 ## Phase 1: solo 0.8.x for users
 
@@ -15,7 +15,7 @@ Give each release to people, and keep their problems as GitHub issues. The run r
 
 | Step | Delivers | Done when |
 |---|---|---|
-| 0a | The core moves out of the plugin. `Io` splits into the ports of [architecture.md](architecture.md). An in-memory store and the conformance suite. | All tests pass on the in-memory store, and the plugin works as in 0.8. |
+| 0a | The core moves out of the plugin. `Io` splits into the ports of [architecture.md](architecture.md). An in-memory store and the conformance suite. Built: `core/`, `core/ports.ts`, `core/memory-store.ts`, `tests/store-conformance.ts` and the model test. The model test found that a stopped worker could still claim a task. | All tests pass on the in-memory store, and the plugin works as in 0.8. |
 | 0b | `meld mcp` on Bun, with the SQLite store and one local party. The Claude Code plugin declares it as its MCP server and becomes its client. The 0.8 board shape moves into SQLite rows. | A solo run works from start to delivery, and resumes in a new session. |
 | 0c | Random characters in run ids. Parties and members. Events and context as rows that are only added, with the party column and the "uploaded" mark. | The conformance suite covers them. |
 

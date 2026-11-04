@@ -1,5 +1,5 @@
 import type { FileChange, ResultFacts } from '../types'
-import type { Io } from './io'
+import type { CodeHost } from './ports'
 
 export type CommandResult = { ok: boolean; out: string; err: string; raw: string }
 
@@ -8,7 +8,7 @@ const PATCH_LINES = 160
 const PATCH_CHARS = 16_000
 
 /** Runs a host command; a command that cannot start fails like one that exits with an error. */
-export async function command(io: Io, cwd: string, argv: string[]): Promise<CommandResult> {
+export async function command(io: CodeHost, cwd: string, argv: string[]): Promise<CommandResult> {
   try {
     const ran = await io.run(argv, cwd)
     return { ok: ran.exitCode === 0, out: ran.stdout.trim(), err: ran.stderr.trim(), raw: ran.stdout }
@@ -17,16 +17,16 @@ export async function command(io: Io, cwd: string, argv: string[]): Promise<Comm
   }
 }
 
-export function git(io: Io, cwd: string, args: string[]): Promise<CommandResult> {
+export function git(io: CodeHost, cwd: string, args: string[]): Promise<CommandResult> {
   return command(io, cwd, ['git', ...args])
 }
 
-export async function repoRoot(io: Io, cwd: string): Promise<string | undefined> {
+export async function repoRoot(io: CodeHost, cwd: string): Promise<string | undefined> {
   const root = await git(io, cwd, ['rev-parse', '--show-toplevel'])
   return root.ok ? root.out : undefined
 }
 
-export async function headCommit(io: Io, repo: string): Promise<string> {
+export async function headCommit(io: CodeHost, repo: string): Promise<string> {
   return (await git(io, repo, ['rev-parse', 'HEAD'])).out
 }
 
@@ -37,7 +37,7 @@ export const GIT_MIN = '2.38'
  * The version of git as `git version` prints it, with no suffix of a vendor build: 2.39.5 of "git version 2.39.5 (Apple
  * Git-154)". Undefined when git does not answer or prints no version.
  */
-export async function gitVersion(io: Io, cwd: string): Promise<string | undefined> {
+export async function gitVersion(io: CodeHost, cwd: string): Promise<string | undefined> {
   const printed = await git(io, cwd, ['version'])
   return printed.ok ? /git version (\d+\.\d+(?:\.\d+)*)/.exec(printed.out)?.[1] : undefined
 }
@@ -49,19 +49,19 @@ export function isOldGit(version: string): boolean {
   return major < minMajor || (major === minMajor && minor < minMinor)
 }
 
-export async function isDirty(io: Io, cwd: string): Promise<boolean> {
+export async function isDirty(io: CodeHost, cwd: string): Promise<boolean> {
   const status = await git(io, cwd, ['status', '--porcelain'])
   return status.ok && status.out.length > 0
 }
 
-export async function mergeInto(io: Io, repo: string, commit: string, message: string): Promise<CommandResult> {
+export async function mergeInto(io: CodeHost, repo: string, commit: string, message: string): Promise<CommandResult> {
   const merged = await git(io, repo, ['merge', '--no-ff', '-m', message, commit])
   if (!merged.ok) await git(io, repo, ['merge', '--abort'])
   return merged
 }
 
 /** The change from `base` to `commit` in the git store `gitDir`: totals of every file, hunks of the first files. */
-export async function gitChange(io: Io, gitDir: string, base: string, commit: string): Promise<ResultFacts> {
+export async function gitChange(io: CodeHost, gitDir: string, base: string, commit: string): Promise<ResultFacts> {
   const stat = await git(io, gitDir, ['diff', '--no-renames', '--numstat', base, commit])
   const rows = stat.ok ? numstatRows(stat.out) : []
   const files: FileChange[] = []

@@ -1,7 +1,7 @@
 import type { CommitFact, LaneFacts, ResultFacts, Run, VcsKind, Worker, WorkerId } from '../types'
 import { command, git, gitChange, mergeInto } from './git'
 import type { CommandResult } from './git'
-import type { Io } from './io'
+import type { CodeHost } from './ports'
 
 export const MELD_ROOT = '/tmp/meld'
 export const JJ_RESOLVE_TEMPLATE = 'commit_id ++ " " ++ if(conflict, "conflict", "clean") ++ "\\n"'
@@ -35,20 +35,20 @@ export type LineMerge = { state: 'merged'; head: string } | { state: 'conflict';
 export type Vcs = {
   kind: VcsKind
   commitHint: string
-  prepare(io: Io, place: Place, ids: WorkerId[]): Promise<Prepared>
-  resolve(io: Io, run: Run, worker: Worker, revision: string): Promise<Resolved | undefined>
+  prepare(io: CodeHost, place: Place, ids: WorkerId[]): Promise<Prepared>
+  resolve(io: CodeHost, run: Run, worker: Worker, revision: string): Promise<Resolved | undefined>
   /**
    * The commits of each worker since the base, and its uncommitted edits. jj records the files of a workspace only when a
    * jj command runs there, so a lane shows them as of that command; with snapshot, jj first records them. git reads the
    * files, new files too. A lane that meld cannot read, or whose snapshot left out a new file, names the error.
    */
-  lanes(io: Io, run: LanePlace, read?: LaneRead): Promise<LaneFacts[]>
-  result(io: Io, run: Run, commit: string): Promise<ResultFacts>
+  lanes(io: CodeHost, run: LanePlace, read?: LaneRead): Promise<LaneFacts[]>
+  result(io: CodeHost, run: Run, commit: string): Promise<ResultFacts>
   /**
    * The commits of `commits` that `final` does not hold, as git merge-base --is-ancestor reads them: in the repository of
    * the person for git, in the store of the run for jj. A commit that git cannot read counts as missing.
    */
-  missing(io: Io, run: Run, final: string, commits: readonly string[]): Promise<string[]>
+  missing(io: CodeHost, run: Run, final: string, commits: readonly string[]): Promise<string[]>
   /** The integration line as a worker names it in its folder: a branch for git, a bookmark for jj. */
   lineName(run: Run): string
   /**
@@ -56,21 +56,21 @@ export type Vcs = {
    * part. The line starts at the base. A line that the commit holds moves forward to it. Run one merge at a time: the ref
    * moves only from the head that the merge read, so a merge that lost a race fails and changes nothing.
    */
-  mergeIntoLine(io: Io, run: Run, commit: string, message: string): Promise<LineMerge>
+  mergeIntoLine(io: CodeHost, run: Run, commit: string, message: string): Promise<LineMerge>
   /**
    * Moves the integration line to `commit`, from wherever it is, and makes it when the run has none. A steer of a ready run
    * moves it to the final commit, so the merges after the steer and the next final build on that commit.
    */
-  setLine(io: Io, run: Run, commit: string): Promise<CommandResult>
-  deliver(io: Io, run: Run, commit: string, message: string): Promise<CommandResult>
-  remove(io: Io, run: RunPlace): Promise<void>
+  setLine(io: CodeHost, run: Run, commit: string): Promise<CommandResult>
+  deliver(io: CodeHost, run: Run, commit: string, message: string): Promise<CommandResult>
+  remove(io: CodeHost, run: RunPlace): Promise<void>
   /** The workspace of a worker that joins a live run: from the head of the integration line, or from the base when the run has no line. */
-  addWorkspace(io: Io, run: Run, id: WorkerId): Promise<Workspace | { error: string }>
+  addWorkspace(io: CodeHost, run: Run, id: WorkerId): Promise<Workspace | { error: string }>
   /**
    * The commits that the lanes do not show. git: the commits on the HEAD of each worktree, as on a detached HEAD. jj: the
    * commits that no working copy holds, as the edits that an agent left before the next agent ran jj new.
    */
-  strayWork(io: Io, run: LanePlace): Promise<StrayWork>
+  strayWork(io: CodeHost, run: LanePlace): Promise<StrayWork>
 }
 
 /** What meld could not read of the work of a run: a worker or the jj repository of the run, and the error. */
@@ -96,7 +96,7 @@ function jjRepoOf(id: string): string {
 }
 
 /** jj when jj 0.40 or newer answers in the repository, else git. */
-export async function detectVcs(io: Io, repo: string): Promise<VcsKind> {
+export async function detectVcs(io: CodeHost, repo: string): Promise<VcsKind> {
   const version = await command(io, repo, ['jj', '--version'])
   return version.ok && isRecentJj(version.out) ? 'jj' : 'git'
 }
@@ -130,7 +130,7 @@ export function workspaceOf(kind: VcsKind, id: string, worker: WorkerId): Worksp
  * worker can stop after an edit and before its next jj command. The stray commits count too, after the lanes, so jj reads
  * the recorded files. A commit that two reads hold counts once.
  */
-export async function heldWork(io: Io, run: LanePlace & { vcs: VcsKind }): Promise<HeldWork> {
+export async function heldWork(io: CodeHost, run: LanePlace & { vcs: VcsKind }): Promise<HeldWork> {
   const vcs = vcsFor(run.vcs)
   const lanes = await vcs.lanes(io, run, { snapshot: true })
   const stray = await vcs.strayWork(io, run)
@@ -146,11 +146,11 @@ export async function heldWork(io: Io, run: LanePlace & { vcs: VcsKind }): Promi
  * Removes the folder of a run; an id with anything but lowercase letters and digits removes nothing. The rm runs in the
  * folder of meld, so that a run whose repository is gone still loses its folder.
  */
-export async function removeFolder(io: Io, id: string): Promise<void> {
+export async function removeFolder(io: CodeHost, id: string): Promise<void> {
   if (SAFE_ID.test(id)) await command(io, MELD_ROOT, ['rm', '-rf', '--', runHome(id)])
 }
 
-async function dropWorktree(io: Io, repo: string, workspace: Workspace): Promise<void> {
+async function dropWorktree(io: CodeHost, repo: string, workspace: Workspace): Promise<void> {
   await git(io, repo, ['worktree', 'remove', '--force', workspace.path])
   await git(io, repo, ['branch', '-D', workspace.ref])
 }
@@ -164,7 +164,7 @@ function gitLine(run: { id: string }): string {
  * Merges `commit` into the line at `ref` in the git store `gitDir`, with plumbing only: merge-tree makes the tree, commit-tree
  * the merge commit, and update-ref moves the line from the head it read. `config` gives git options, such as an identity.
  */
-async function mergeInGit(io: Io, gitDir: string, ref: string, base: string, commit: string, message: string, config: string[] = []): Promise<LineMerge> {
+async function mergeInGit(io: CodeHost, gitDir: string, ref: string, base: string, commit: string, message: string, config: string[] = []): Promise<LineMerge> {
   const found = await headOf(io, gitDir, ref)
   const head = found ?? base
   if ((await git(io, gitDir, ['merge-base', '--is-ancestor', commit, head])).ok) return { state: 'merged', head }
@@ -183,13 +183,13 @@ async function mergeInGit(io: Io, gitDir: string, ref: string, base: string, com
 }
 
 /** The commit of a ref in the git store `gitDir`, or undefined when the ref is not there yet. */
-async function headOf(io: Io, gitDir: string, ref: string): Promise<string | undefined> {
+async function headOf(io: CodeHost, gitDir: string, ref: string): Promise<string | undefined> {
   const found = await git(io, gitDir, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`])
   return found.ok && FULL_COMMIT.test(found.out) ? found.out : undefined
 }
 
 /** The identity of the repository of the person as git options, for a commit that meld makes in the store of jj. */
-async function identityOf(io: Io, repo: string): Promise<string[]> {
+async function identityOf(io: CodeHost, repo: string): Promise<string[]> {
   const name = await git(io, repo, ['config', 'user.name'])
   const email = await git(io, repo, ['config', 'user.email'])
   return [...(name.ok && name.out ? ['-c', `user.name=${name.out}`] : []), ...(email.ok && email.out ? ['-c', `user.email=${email.out}`] : [])]
@@ -206,7 +206,7 @@ function gitCommits(out: string): CommitFact[] {
 }
 
 /** The commits of `commits` that `final` does not hold in the git store `gitDir`, each one time, in their order. */
-async function missingIn(io: Io, gitDir: string, final: string, commits: readonly string[]): Promise<string[]> {
+async function missingIn(io: CodeHost, gitDir: string, final: string, commits: readonly string[]): Promise<string[]> {
   const missing: string[] = []
   for (const commit of new Set(commits)) if (!(await git(io, gitDir, ['merge-base', '--is-ancestor', commit, final])).ok) missing.push(commit)
   return missing
@@ -404,7 +404,7 @@ const JJ: Vcs = {
   },
 }
 
-async function makeJjRepo(io: Io, place: Place): Promise<{ ok: true } | { error: string }> {
+async function makeJjRepo(io: CodeHost, place: Place): Promise<{ ok: true } | { error: string }> {
   const store = storeOf(place.id)
   const common = await git(io, place.repo, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
   if (!common.ok) return { error: common.err || common.out }
@@ -448,7 +448,7 @@ function jjConfig(id: string, name: string, email: string): string {
 }
 
 /** Removes the repository config of jj, which jj keeps outside the run, then the folder; both run in the folder of meld, as removeFolder does. */
-async function removeJj(io: Io, id: string): Promise<void> {
+async function removeJj(io: CodeHost, id: string): Promise<void> {
   if (!SAFE_ID.test(id)) return
   const folder = await configFolderOf(io, id)
   if (folder) await command(io, MELD_ROOT, ['rm', '-rf', '--', folder])
@@ -460,7 +460,7 @@ async function removeJj(io: Io, id: string): Promise<void> {
  * jj folder of the run, and an agent can make a folder of the run, or that store, a link: jj then names the config of the
  * repository that the link points to. So meld gives the folder only when its config names the run.
  */
-async function configFolderOf(io: Io, id: string): Promise<string | undefined> {
+async function configFolderOf(io: CodeHost, id: string): Promise<string | undefined> {
   const path = await command(io, MELD_ROOT, ['jj', '-R', jjRepoOf(id), 'config', 'path', '--repo'])
   const folder = path.ok ? JJ_CONFIG_FOLDER.exec(path.out)?.[1] : undefined
   if (!folder) return undefined

@@ -1,8 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
-import { addWorker, deliver, markWorker, restartIdleWorkers, serveTool, startRun } from '../hooks/actions'
-import { addTasks, bindWorker, claimTask, declareFinal, isFailure, startRun as startBoard, takeIntegration } from '../hooks/board'
+import { addWorker, deliver, markWorker, restartIdleWorkers, serveTool, startRun } from '../core/actions'
+import { addTasks, bindWorker, claimTask, declareFinal, isFailure, startRun as startBoard, takeIntegration } from '../core/board'
 import type { Change, Run, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
 

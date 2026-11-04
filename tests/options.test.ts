@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { agentsOf, formatStart, parseStart, WORKER_TYPE } from '../hooks/options'
+import { agentsOf, formatStart, parseStart, WORKER_TYPE } from '../core/options'
 
 test('a task alone starts two meld workers and lets meld choose the version control', () => {
   expect(parseStart('Add a dark theme')).toEqual({

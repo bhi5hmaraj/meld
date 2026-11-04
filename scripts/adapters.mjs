@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * A check of the git and the jj adapter of hooks/vcs.ts with real processes. tsc compiles hooks/ into CommonJS in a
+ * A check of the git and the jj adapter of core/vcs.ts with real processes. tsc compiles core/ into CommonJS in a
  * temporary folder. Each adapter goes through a run in a temporary git repository: three workspaces, a commit in
  * each, the integration line, the integration, the commits that the final commit lacks, resolve, lanes (and the work that a
  * plain read hides), result, deliver and remove. A second run of one worker checks the work that no lane shows, and a
@@ -99,11 +99,11 @@ async function step(name, action) {
 async function compile() {
   const config = join(TEMP, 'tsconfig.json')
   const compilerOptions = { target: 'es2023', module: 'commonjs', jsx: 'react', jsxFactory: 'h', jsxFragmentFactory: 'Fragment', noCheck: true, rootDir: PLUGIN, outDir: OUT }
-  writeFileSync(config, JSON.stringify({ compilerOptions, include: [join(PLUGIN, 'hooks')] }))
+  writeFileSync(config, JSON.stringify({ compilerOptions, include: [join(PLUGIN, 'core')] }))
   sh(PLUGIN, ['tsc', '-p', config])
   writeFileSync(join(OUT, 'package.json'), '{ "type": "commonjs" }\n')
-  hooks = { vcs: require(join(OUT, 'hooks', 'vcs.js')), board: require(join(OUT, 'hooks', 'board.js')) }
-  return `hooks/ in ${OUT}`
+  hooks = { vcs: require(join(OUT, 'core', 'vcs.js')), board: require(join(OUT, 'core', 'board.js')) }
+  return `core/ in ${OUT}`
 }
 
 async function makeRepository(s) {

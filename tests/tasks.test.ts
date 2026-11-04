@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { childrenOf, claimable, isParent, isReady, waitsFor, waitsOn } from '../hooks/tasks'
+import { childrenOf, claimable, isParent, isReady, waitsFor, waitsOn } from '../core/tasks'
 import type { Task } from '../types'
 
 function task(id: number, fields: Partial<Task> = {}): Task {

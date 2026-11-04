@@ -23,7 +23,7 @@ import type {
   WorkerId,
   WorkerState,
 } from '../types'
-import type { AgentState } from './io'
+import type { AgentState } from './ports'
 import { childrenOf, isParent, isReady, taskOf, waitsFor, waitsOn } from './tasks'
 
 const LOG_LIMIT = 500

@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { addCheck, addTasks, bindWorker, boardFor, claimTask, declareFinal, finishTask, isFailure, refuseWorker, setActivity, shareEntry, splitTask, startRun, takeIntegration } from '../hooks/board'
+import { addCheck, addTasks, bindWorker, boardFor, claimTask, declareFinal, finishTask, isFailure, refuseWorker, setActivity, shareEntry, splitTask, startRun, takeIntegration } from '../core/board'
 import { agentColor } from '../hooks/drawing'
 import type { Change, ContextKind, Facts, Run, Task, WorkerId } from '../types'
 import { STORED_BY_0_6_0, STORED_BY_0_7_0 } from './stored-runs'

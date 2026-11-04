@@ -1,7 +1,7 @@
 import type { VcsKind, WorkerId } from '../types'
 import { LIVE_STATES } from './actions'
 import { command } from './git'
-import type { Files, Io } from './io'
+import type { Clock, CodeHost, Files, Store } from './ports'
 import { heldWork, MELD_ROOT, removeFolder, runHome, SAFE_ID, vcsFor, workspaceOf } from './vcs'
 import type { HeldWork, LanePlace } from './vcs'
 
@@ -38,7 +38,7 @@ type Kept = { id: string; why: string }
  * live, and whose workspaces hold no work; it keeps the others, and says why. The run of this session is never listed
  * nor removed: Discard in the pane removes it.
  */
-export async function cleanFolders(io: Io & Files, args: string): Promise<string> {
+export async function cleanFolders(io: Store & CodeHost & Clock & Files, args: string): Promise<string> {
   const words = args.split(/\s+/).filter(Boolean)
   const flag = words.find(word => word.startsWith('-') && word !== ALL)
   if (flag) return `/meld-clean takes run ids or ${ALL}, not ${flag}.`
@@ -49,7 +49,7 @@ export async function cleanFolders(io: Io & Files, args: string): Promise<string
   return removeChosen(io, folders, words, stored, now)
 }
 
-async function listing(io: Io, folders: Folder[], now: number): Promise<string> {
+async function listing(io: CodeHost, folders: Folder[], now: number): Promise<string> {
   const lines: string[] = []
   for (const folder of folders) lines.push(await lineOf(io, folder, now))
   return [
@@ -63,7 +63,7 @@ async function listing(io: Io, folders: Folder[], now: number): Promise<string> 
  * One folder: its id, the state of its board.json and when that changed, its size, and where its workspaces live. A
  * folder that is not maybe live ends with the work in its workspaces; meld reads no workspace that a run can use.
  */
-async function lineOf(io: Io, folder: Folder, now: number): Promise<string> {
+async function lineOf(io: CodeHost, folder: Folder, now: number): Promise<string> {
   const parts: string[] = []
   if (folder.changedAt === undefined) parts.push(NO_BOARD)
   else if (!folder.board) parts.push(BOARD_NOT_READABLE, `changed ${ageOf(now - folder.changedAt)} ago`)
@@ -76,7 +76,7 @@ async function lineOf(io: Io, folder: Folder, now: number): Promise<string> {
   return `${folder.id}: ${parts.join(', ')}`
 }
 
-async function removeChosen(io: Io & Files, folders: Folder[], words: string[], stored: string | undefined, now: number): Promise<string> {
+async function removeChosen(io: Store & CodeHost & Clock & Files, folders: Folder[], words: string[], stored: string | undefined, now: number): Promise<string> {
   const ids = [...new Set(words.filter(word => word !== ALL))]
   const notes: string[] = []
   const chosen: Folder[] = []
@@ -111,7 +111,7 @@ async function removeChosen(io: Io & Files, folders: Folder[], words: string[], 
  * Why --all keeps a folder that is not maybe live: no board.json that meld can read, so meld cannot read its
  * workspaces; workspaces that meld cannot read; or the work they hold. Undefined when they hold no work.
  */
-async function keptBecause(io: Io, folder: Folder): Promise<string | undefined> {
+async function keptBecause(io: CodeHost, folder: Folder): Promise<string | undefined> {
   if (folder.changedAt === undefined) return NO_BOARD
   if (!folder.board) return BOARD_NOT_READABLE
   const work = await heldWork(io, placeOf(folder.id, folder.board))
@@ -155,7 +155,7 @@ function placeOf(id: string, board: Board): LanePlace & { vcs: VcsKind } {
 }
 
 /** Removes a folder as Discard removes a run, in the place that its board.json gives. With no board of the folder, only the folder goes. */
-async function removeOne(io: Io, folder: Folder): Promise<void> {
+async function removeOne(io: CodeHost, folder: Folder): Promise<void> {
   const board = folder.board
   if (!board) return removeFolder(io, folder.id)
   await vcsFor(board.vcs).remove(io, placeOf(folder.id, board))
@@ -217,7 +217,7 @@ function isMaybeLive(folder: Folder, now: number): boolean {
 }
 
 /** The size of a folder as du counts it; undefined when du gives no number. */
-async function sizeOf(io: Io, id: string): Promise<string | undefined> {
+async function sizeOf(io: CodeHost, id: string): Promise<string | undefined> {
   const counted = await command(io, MELD_ROOT, ['du', '-sk', runHome(id)])
   const kb = /^\d+/.exec(counted.out)?.[0]
   return kb === undefined ? undefined : sizeText(Number(kb))

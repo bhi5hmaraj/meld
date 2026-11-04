@@ -3,7 +3,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { addCheck, addTasks, bindWorker, boardFor, claimTask, declareFinal, finishTask, isFailure, setActivity, setWorkerState, shareEntry, splitTask, startRun, takeIntegration } from '../hooks/board'
+import { addCheck, addTasks, bindWorker, boardFor, claimTask, declareFinal, finishTask, isFailure, setActivity, setWorkerState, shareEntry, splitTask, startRun, takeIntegration } from '../core/board'
 import type { Change, CommitFact, Facts, FileChange, PaneView, Run, WorkerId } from '../types'
 
 declare const console: { log: (line: string) => void }

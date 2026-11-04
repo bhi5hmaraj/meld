@@ -1,8 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 import type { TurnUsage } from 'claude-code'
 
-import { countStep, markWorker } from '../hooks/actions'
-import { bindWorker, isFailure, startRun } from '../hooks/board'
+import { countStep, markWorker } from '../core/actions'
+import { bindWorker, isFailure, startRun } from '../core/board'
 import type { Change, Run, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
 

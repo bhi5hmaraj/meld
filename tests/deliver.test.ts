@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
-import { deliver, deliveryMessage } from '../hooks/actions'
-import { bindWorker, declareFinal, isFailure, startRun, takeIntegration } from '../hooks/board'
+import { deliver, deliveryMessage } from '../core/actions'
+import { bindWorker, declareFinal, isFailure, startRun, takeIntegration } from '../core/board'
 import type { Change, Run } from '../types'
 import { FakeIo, HEAD } from './fake-io'
 

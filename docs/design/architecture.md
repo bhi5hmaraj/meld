@@ -1,6 +1,6 @@
 # Architecture: one meld, many hosts
 
-Status: draft. The rules below are proposals.
+Status: draft. The rules below are proposals. The ports and `core/` are built on the branch `next` (step 0a of [plan.md](plan.md)).
 
 ## The rule
 
@@ -28,18 +28,24 @@ The meld core runs in every host. A host gives it adapters for storage, code, ru
 
 ## The ports come from today's Io
 
-meld 0.8.0 sends all I/O through one `Io` interface with 15 methods. The ports split it by job:
+meld 0.8 sends all I/O through one `Io` interface with 15 methods. The ports of `core/ports.ts` split it by job, and `Io` is now the sum of the ports:
 
-| Port | `Io` methods today | Solo adapter | Team adapter |
+| Port | `Io` methods | Solo adapter | Team adapter |
 |---|---|---|---|
-| Store | `read`, `write`, `readFacts`, `writeFacts`, `writeFile` | SQLite | Postgres |
-| CodeHost | `run` (git, jj) | store.git | bare mirror |
+| Store | `read`, `write`, `readFacts`, `writeFacts` | SQLite | Postgres |
+| CodeHost | `run` (git, jj), `writeFile` (the jj config, the board mirror) | store.git | bare mirror |
 | Runner | `spawn`, `send`, `agents` | subagents, ACP | drivers, sessions that pull |
 | Clock | `now`, `sleep` | engine clock or system clock | system clock |
 | Surface | `toast`, `openPane`, `command` | pane | web page |
 | Ledger | `cost` | session cost | usage from each driver |
 
-With these ports, `actions.ts` (934 lines that start, claim, restart, merge and deliver) runs in every host. Without them, the hosted service needs a second copy of that code.
+With these ports, `core/actions.ts` (about 1000 lines that start, claim, restart, merge and deliver) runs in every host. Without them, the hosted service needs a second copy of that code.
+
+Each function of the core takes only the ports that it uses, so the type check shows what each step needs. Step 0a found these needs:
+
+- A board call of a worker needs the Runner as well as the Store: it sends nudges and wake texts to other agents. In `meld mcp`, those messages become actions that the plugin carries out.
+- Each write of the board needs the CodeHost, as it mirrors `board.json`. With SQLite in `~/.meld/`, the store outlives the session, and the mirror can go.
+- Only the start needs every port: the Ledger for the cost at the start, and the Surface to open the pane.
 
 ## Board addresses
 
