@@ -630,9 +630,13 @@ export async function steerRun(io: Io, instruction: string): Promise<string> {
   const live = run.workers.filter(worker => worker.state !== 'stopped')
   const running = live.filter(worker => worker.state === 'working')
   for (const worker of running) tell(io, worker, step)
-  if (running.length === live.length) return `All ${live.length} workers get revision ${revision}.`
-  if (running.length) return `Revision ${revision}: ${running.length} running workers get it; the others see it when meld starts them again.`
   if (!live.length) return `Revision ${revision}: no worker is left to take it.`
+  if (running.length === live.length) return live.length === 1 ? `The worker gets revision ${revision}.` : `All ${live.length} workers get revision ${revision}.`
+  if (running.length) {
+    const gets = running.length === 1 ? '1 running worker gets it' : `${running.length} running workers get it`
+    const others = live.length - running.length === 1 ? 'the other sees it when meld starts it again' : 'the others see it when meld starts them again'
+    return `Revision ${revision}: ${gets}; ${others}.`
+  }
   const started = await restartIdleWorkers(io)
   if (!started.length) return `Revision ${revision}: every worker has ended, and meld could not start one again.`
   return `Revision ${revision}: meld starts ${started.join(', ')} again with it.`
