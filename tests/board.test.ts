@@ -31,7 +31,7 @@ import {
   takeSplitNudge,
   workerOf,
 } from '../hooks/board'
-import type { Change, NewTask, Run, WorkerId } from '../types'
+import type { Change, NewTask, Run, TaskSize, WorkerId } from '../types'
 import { STORED_BY_0_6_0 } from './stored-runs'
 
 const NOW = 1_800_000_000_000
@@ -147,24 +147,51 @@ test('an open task counts no calls', () => {
   expect(countCall(withTask(), 'w2').tasks[0]?.calls).toBeUndefined()
 })
 
-test('a leaf with 40 calls of its owner earns one nudge', () => {
+/** The tool calls of its owner after which a leaf of this size earns its nudge, or 0 when none comes in 200 calls. */
+function callsToNudge(size?: TaskSize): number {
+  const added = runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Theme tokens', size }] }, NOW))
+  let run = runOf(claimTask(added, 'w2', 1, 1, NOW))
+  for (let calls = 1; calls <= 200; calls++) {
+    run = countCall(run, 'w2')
+    if (takeSplitNudge(run, 'w2').task) return calls
+  }
+  return 0
+}
+
+test('the nudge limit of a leaf goes by its size: S 30, M 60 and L 120 tool calls', () => {
+  expect(SPLIT_CALLS).toEqual({ S: 30, M: 60, L: 120 })
+  expect([callsToNudge('S'), callsToNudge('M'), callsToNudge('L')]).toEqual([30, 60, 120])
+})
+
+test('a leaf with no size has the nudge limit of an M task', () => {
+  expect(callsToNudge()).toBe(60)
+})
+
+test('a leaf with 60 calls of its owner and no size earns one nudge', () => {
   let run = runOf(claimTask(withTask(), 'w2', 1, 1, NOW))
-  for (let call = 0; call < SPLIT_CALLS; call++) run = countCall(run, 'w2')
+  for (let call = 0; call < SPLIT_CALLS.M; call++) run = countCall(run, 'w2')
   const nudge = takeSplitNudge(run, 'w2')
-  expect(nudge.task).toMatchObject({ id: 1, calls: 40, nudged: true })
+  expect(nudge.task).toMatchObject({ id: 1, calls: 60, nudged: true })
   expect(takeSplitNudge(nudge.run, 'w2').task).toBeUndefined()
 })
 
-test('a leaf with 39 calls of its owner earns no nudge', () => {
+test('a leaf with 59 calls of its owner and no size earns no nudge', () => {
   let run = runOf(claimTask(withTask(), 'w2', 1, 1, NOW))
-  for (let call = 1; call < SPLIT_CALLS; call++) run = countCall(run, 'w2')
+  for (let call = 1; call < SPLIT_CALLS.M; call++) run = countCall(run, 'w2')
   expect(takeSplitNudge(run, 'w2').task).toBeUndefined()
 })
 
 test('the nudge of a leaf goes to its owner and to no other worker', () => {
   let run = runOf(claimTask(withTask(), 'w2', 1, 1, NOW))
-  for (let call = 0; call < SPLIT_CALLS; call++) run = countCall(run, 'w2')
+  for (let call = 0; call < SPLIT_CALLS.M; call++) run = countCall(run, 'w2')
   expect(takeSplitNudge(run, 'w1').task).toBeUndefined()
+})
+
+test('a leaf of a run that meld 0.7.0 or older stored, with no size, earns its nudge at 60 calls of its owner', () => {
+  let run = STORED_BY_0_6_0
+  for (let call = 1; call < SPLIT_CALLS.M; call++) run = countCall(run, 'w1')
+  expect(takeSplitNudge(run, 'w1').task).toBeUndefined()
+  expect(takeSplitNudge(countCall(run, 'w1'), 'w1').task).toMatchObject({ id: 2, calls: 60, nudged: true })
 })
 
 test('a finished task counts no more calls', () => {
