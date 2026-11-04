@@ -521,13 +521,13 @@ test('a restart offers the tasks that a worker can claim, not a parent or a task
   expect(io.spawned[0]?.prompt).toContain('These tasks are open: #2 Tokens. Claim one and do it.')
 })
 
-test('a worker that ended starts again when a working peer adds tasks', async () => {
+test('a worker that ended starts again when a working peer adds tasks, one for each task that the peer, which claims nothing yet, leaves', async () => {
   const io = ioWith(working(3))
   await markWorker(io, 'agent-2', 'idle')
   await markWorker(io, 'agent-3', 'idle')
   await serveTool(io, call({ tool: 'mcp__meld__add_tasks', seen: 0, tasks: [{ title: 'Tokens' }, { title: 'Docs' }], agentId: 'agent-1' }))
   await restartIdleWorkers(io)
-  expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w2', 'meld w3'])
+  expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w2'])
   expect(io.spawned[0]?.prompt).toContain('These tasks are open: #1 Tokens; #2 Docs')
 })
 
