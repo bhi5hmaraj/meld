@@ -575,7 +575,7 @@ type Restart = { worker: Worker; step: string }
 /**
  * One beat of the clock. The run of an idle worker has ended (the engine drops a spawned agent at its hand-back, and an
  * agent hands back after each task), so meld starts a new agent for it when there is work for it: a task that it can
- * claim, one worker for each such task; news on the board that it has not read, for a task of its own; or, with every
+ * claim, one worker for each such task that no working worker with no claim will take; news on the board that it has not read, for a task of its own; or, with every
  * worker idle, the owners of unfinished tasks, then idle workers for open tasks, else the lead to plan, steer or integrate. Each beat that starts a worker counts; a finished task or a steer resets
  * the count, so after three beats that finish nothing meld stops and tells the person once. One beat runs at a time.
  *
@@ -613,13 +613,19 @@ async function settleEnded(io: Io): Promise<void> {
   await writeRun(io, current => board.settleEnded(current, agents, now - LIVENESS_GRACE_MS, now))
 }
 
+/**
+ * The restarts of one beat. A live worker that is not idle and claims nothing will take an open task: meld started it
+ * again for one, or it planned the tasks, and the task stays open until its claim. Such a worker is pending, so the idle
+ * workers start for the other open tasks only, and a ready task gets one agent.
+ */
 function restartsFor(run: Run): Restart[] {
   const live = run.workers.filter(worker => worker.state !== 'stopped')
   const idle = live.filter(worker => worker.state === 'idle')
   const everyoneIdle = idle.length === live.length
   const open = claimable(run.tasks)
   const owners = idle.filter(worker => claimsOf(run, worker).length && (everyoneIdle || hasNews(run, worker)))
-  const takers = idle.filter(worker => !claimsOf(run, worker).length).slice(0, open.length)
+  const pending = live.filter(worker => worker.state !== 'idle' && !claimsOf(run, worker).length).length
+  const takers = idle.filter(worker => !claimsOf(run, worker).length).slice(0, Math.max(0, open.length - pending))
   const restarts = [
     ...owners.map(worker => ({ worker, step: `Your task is not done: ${titles(claimsOf(run, worker))}. Go on with it, or release it with a note.` })),
     ...takers.map(worker => ({ worker, step: `These tasks are open: ${titles(open)}. Claim one and do it.` })),
