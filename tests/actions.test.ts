@@ -420,9 +420,10 @@ test('a worker that ended starts again when a working peer adds tasks', async ()
   expect(io.spawned[0]?.prompt).toContain('These tasks are open: #1 Tokens; #2 Docs')
 })
 
-test('a worker that ended after it read the board stays idle until there is news', async () => {
+test('an owner that ended after it read the board stays idle until there is news', async () => {
   const io = ioWith(working(3))
   await serveTool(io, call({ tool: 'mcp__meld__add_tasks', seen: 0, tasks: [{ title: 'Tokens' }, { title: 'Docs' }], agentId: 'agent-1' }))
+  await serveTool(io, call({ tool: 'mcp__meld__claim', task: 1, version: 1, agentId: 'agent-2' }))
   await serveTool(io, call({ tool: 'mcp__meld__board', agentId: 'agent-2' }))
   await markWorker(io, 'agent-2', 'idle')
   await restartIdleWorkers(io)
@@ -430,6 +431,7 @@ test('a worker that ended after it read the board stays idle until there is news
   await serveTool(io, call({ tool: 'mcp__meld__note', text: 'The tokens are in theme.css', agentId: 'agent-1' }))
   await restartIdleWorkers(io)
   expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w2'])
+  expect(io.spawned[0]?.prompt).toContain('Your task is not done: #1 Tokens')
 })
 
 test('with no tasks and every worker ended, the lead splits the request', async () => {
