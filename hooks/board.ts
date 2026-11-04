@@ -52,6 +52,9 @@ export type ShareInput = { kind: string; text: string; commit?: string; files?: 
 /** What a finished task leaves for the other tasks: the interfaces it made, and the part it did not do. */
 export type Handover = { interfaces?: string; unfinished?: string }
 
+/** A split: the task and its version, the version of the task list that the worker saw, and the parts. */
+export type SplitInput = { task: number; version: number; seen: number; tasks: NewTask[] }
+
 export function startRun(input: StartInput): Run {
   return {
     id: input.id,
@@ -143,9 +146,9 @@ export function addTokens(run: Run, id: WorkerId, tokens: number): Run {
   return replaceWorker(run, { ...worker, tokens: worker.tokens + tokens })
 }
 
-/** A new agent takes the place of a worker whose run ended: it works in the same folder and reads its rules again. */
+/** A new agent takes the place of a worker whose run ended: it works in the same folder, and reads its rules and the current context again. */
 export function restartWorker(run: Run, id: WorkerId, agentId: string, now: number): Run {
-  const worker = findWorker(run, id)
+  const { seenContext: _seen, ...worker } = findWorker(run, id)
   const restarted = replaceWorker(run, { ...worker, agentId, state: 'working', briefed: false, activity: 'started again', activityAt: now })
   return withEntry(restarted, { at: now, by: 'you', kind: 'event', text: `${id} starts again` })
 }
@@ -160,12 +163,11 @@ export function addTasks(
   const ended = endedFailure(run)
   if (ended) return ended
   if (input.seen !== run.taskList) {
-    return {
-      error: 'STALE_TASK_LIST',
-      message: `Tasks were added since your read: the task list is at ${run.taskList}, and you saw ${input.seen}. Compare these tasks with yours. Claim the ones that cover your work, and add only what is still missing, with seen ${run.taskList}.`,
-      taskList: run.taskList,
-      tasks: run.tasks,
-    }
+    return staleTasks(
+      run,
+      'STALE_TASK_LIST',
+      `Tasks were added since your read: the task list is at ${run.taskList}, and you saw ${input.seen}. Compare these tasks with yours. Claim the ones that cover your work, and add only what is still missing, with seen ${run.taskList}.`,
+    )
   }
   const added = newTasks(run.tasks, input.tasks, now)
   if (!Array.isArray(added)) return added
@@ -222,18 +224,22 @@ function newTask(known: readonly Task[], id: number, input: NewTask, now: number
 
 /**
  * Splits a task of the worker into parts in one change, so no peer takes a part between two calls. The task becomes
- * their parent, with no owner. The worker keeps the first part as its claim, and the other parts are open.
+ * their parent, with no owner. The worker keeps the first part as its claim, and the other parts are open. As with an
+ * add, the worker must have seen the current task list: the needs of a part name tasks by number, so a split from a
+ * stale read could make a part need the wrong task. It fails with STALE_VERSION and the current tasks.
  */
-export function splitTask(
-  run: Run,
-  by: WorkerId,
-  id: number,
-  version: number,
-  parts: NewTask[],
-  now: number,
-): Change<{ tasks: Task[]; taskList: number }> {
+export function splitTask(run: Run, by: WorkerId, input: SplitInput, now: number): Change<{ tasks: Task[]; taskList: number }> {
+  const { task: id, version, seen, tasks: parts } = input
   const checked = checkOwnedTask(run, by, id, version)
   if (isTaskFailure(checked)) return checked
+  if (seen !== run.taskList) {
+    const saw = Number.isFinite(seen) ? `and you saw ${seen}` : 'and you gave no seen version'
+    return staleTasks(
+      run,
+      'STALE_VERSION',
+      `The task list is at ${run.taskList}, ${saw}. Check the needs of your parts against these tasks, then split #${id} again with seen ${run.taskList}.`,
+    )
+  }
   const parent: Task = { ...checked, state: 'open', owner: undefined, claimedAt: undefined, calls: undefined, nudged: undefined, version: checked.version + 1 }
   const tasks = run.tasks.map(one => (one.id === id ? parent : one))
   const made = newTasks(tasks, parts.map(part => ({ ...part, parent: id })), now)
@@ -336,14 +342,27 @@ export function currentContext(run: Run, limit = CONTEXT_SHOWN): ContextEntry[] 
     .slice(0, limit)
 }
 
-/** The context that a board reply carries to a worker. Each entry that the reply shows counts the worker as a reader, unless the worker wrote it. */
+/**
+ * The context that a board reply carries to a worker, newest first. The first reply to a new agent carries the current
+ * entries, CONTEXT_SHOWN at most; each later reply carries only the current entries that are new since the last reply,
+ * other than the entries of the worker. Each entry that a reply carries counts the worker as a reader, unless the worker
+ * wrote it, so seenBy names the workers that got the entry.
+ */
 export function passContext(run: Run, by: WorkerId): { run: Run; context: ContextView[] } {
-  const shown = new Set(currentContext(run).map(entry => entry.id))
+  const you = findWorker(run, by)
+  const carried = new Set(newContextFor(run, you).map(entry => entry.id))
   const context = contextOf(run).map(entry =>
-    shown.has(entry.id) && entry.by !== by && !entry.seenBy.includes(by) ? { ...entry, seenBy: [...entry.seenBy, by] } : entry,
+    carried.has(entry.id) && entry.by !== by && !entry.seenBy.includes(by) ? { ...entry, seenBy: [...entry.seenBy, by] } : entry,
   )
-  const passed = { ...run, context }
-  return { run: passed, context: currentContext(passed).map(viewOf) }
+  const passed = replaceWorker({ ...run, context }, { ...you, seenContext: context.at(-1)?.id ?? 0 })
+  return { run: passed, context: context.filter(entry => carried.has(entry.id)).reverse().map(viewOf) }
+}
+
+/** The current entries that are new for the agent of a worker: all of them, CONTEXT_SHOWN at most, before its first reply. */
+function newContextFor(run: Run, worker: Worker): ContextEntry[] {
+  const seen = worker.seenContext
+  if (seen === undefined) return currentContext(run)
+  return currentContext(run, Infinity).filter(entry => entry.id > seen && entry.by !== worker.id)
 }
 
 export function addCheck(run: Run, by: WorkerId, check: CheckInput, now: number): Change<Entry> {
@@ -415,7 +434,7 @@ export function boardFor(run: Run, by: WorkerId): { run: Run; view: BoardView } 
     integrator: run.integrator,
     final: run.final,
   }
-  const seen: Worker = { ...you, seenRevision: run.revision, seenEntry: run.log.at(-1)?.id ?? 0 }
+  const seen: Worker = { ...findWorker(passed.run, by), seenRevision: run.revision, seenEntry: run.log.at(-1)?.id ?? 0 }
   return { run: replaceWorker(passed.run, seen), view }
 }
 
@@ -471,6 +490,11 @@ function unseenSteers(run: Run, worker: Worker): string[] {
 
 function failure(error: ErrorCode, message: string): Failure {
   return { error, message }
+}
+
+/** A refusal of a call that saw an old task list: it gives the current tasks and the version to use. */
+function staleTasks(run: Run, error: ErrorCode, message: string): Failure {
+  return { error, message, taskList: run.taskList, tasks: run.tasks }
 }
 
 function endedFailure(run: Run): Failure | undefined {

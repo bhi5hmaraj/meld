@@ -240,18 +240,40 @@ test('the meld tools refuse an agent that is not a worker', async () => {
   expect(parsed(replied.result)).toMatchObject({ error: 'NOT_WORKER' })
 })
 
-test('a share answers with its entry and the context, newest first', async () => {
+test('a share answers with its entry; the first reply to an agent carries the context, and a later reply no entry of its own', async () => {
   const io = ioWith(working())
-  await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'The tokens are in src/theme.css.', files: ['src/theme.css'], agentId: 'agent-1' }))
-  const replied = await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fail', text: 'jj split opens an editor, and the call hangs.', agentId: 'agent-1' }))
-  expect(parsed(replied.result)).toMatchObject({
+  const first = await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'The tokens are in src/theme.css.', files: ['src/theme.css'], agentId: 'agent-1' }))
+  expect(parsed(first.result)).toMatchObject({
     ok: true,
-    value: { kind: 'fail', by: 'w1' },
-    context: [
-      { kind: 'fail', by: 'w1', text: 'jj split opens an editor, and the call hangs.', files: [], seenBy: [] },
-      { kind: 'fact', by: 'w1', text: 'The tokens are in src/theme.css.', files: ['src/theme.css'], seenBy: [] },
-    ],
+    value: { kind: 'fact', by: 'w1' },
+    context: [{ kind: 'fact', by: 'w1', text: 'The tokens are in src/theme.css.', files: ['src/theme.css'], seenBy: [] }],
   })
+  const replied = await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fail', text: 'jj split opens an editor, and the call hangs.', agentId: 'agent-1' }))
+  expect(parsed(replied.result)).toMatchObject({ ok: true, value: { kind: 'fail', by: 'w1', text: 'jj split opens an editor, and the call hangs.', files: [], seenBy: [] }, context: [] })
+})
+
+test('the board tools carry each entry to a worker once, in the first reply after the share', async () => {
+  const io = ioWith(working())
+  await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'The tokens are in src/theme.css.', agentId: 'agent-1' }))
+  const read = parsed((await serveTool(io, call({ tool: 'mcp__meld__board', agentId: 'agent-2' }))).result)
+  expect(read).toMatchObject({ context: [{ kind: 'fact', text: 'The tokens are in src/theme.css.', seenBy: ['w2'] }] })
+  expect(parsed((await serveTool(io, call({ tool: 'mcp__meld__board', agentId: 'agent-2' }))).result)).toMatchObject({ context: [] })
+  await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fail', text: 'jj split opens an editor, and the call hangs.', agentId: 'agent-1' }))
+  const noted = parsed((await serveTool(io, call({ tool: 'mcp__meld__note', text: 'I take the toggle.', agentId: 'agent-2' }))).result) as { context: object[] }
+  expect(noted.context).toEqual([expect.objectContaining({ kind: 'fail', seenBy: ['w2'] })])
+})
+
+test('the first board read of a restarted worker carries the current entries again', async () => {
+  const io = ioWith(runOf(takeIntegration(working(), 'w2', NOW)))
+  await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'The tokens are in src/theme.css.', agentId: 'agent-1' }))
+  await serveTool(io, call({ tool: 'mcp__meld__board', agentId: 'agent-2' }))
+  await markWorker(io, 'agent-1', 'idle')
+  await markWorker(io, 'agent-2', 'idle')
+  await restartIdleWorkers(io)
+  const agent = io.current?.workers.find(worker => worker.id === 'w2')?.agentId
+  expect(agent).toBe('spawned-1')
+  const view = parsed((await serveTool(io, call({ tool: 'mcp__meld__board', agentId: agent }))).result)
+  expect(view).toMatchObject({ context: [{ kind: 'fact', text: 'The tokens are in src/theme.css.', seenBy: ['w2'] }] })
 })
 
 test('a share that replaces an older entry takes that entry out of the context', async () => {
@@ -654,7 +676,7 @@ test('add_tasks refuses a size other than S, M or L', async () => {
 test('a split through the board keeps the first part as the claim of the caller, and tells the working peers', async () => {
   const io = ioWith(claimedBy('w1'))
   const parts = [{ title: 'Light tokens' }, { title: 'Dark tokens', size: 'S' }]
-  const replied = await serveTool(io, call({ tool: 'mcp__meld__split', task: 1, version: 2, tasks: parts, agentId: 'agent-1' }))
+  const replied = await serveTool(io, call({ tool: 'mcp__meld__split', task: 1, version: 2, seen: 1, tasks: parts, agentId: 'agent-1' }))
   expect(parsed(replied.result)).toMatchObject({ ok: true })
   expect(io.current?.tasks.map(task => [task.id, task.parent, task.state, task.owner, task.size])).toEqual([
     [1, undefined, 'open', undefined, undefined],
@@ -664,11 +686,27 @@ test('a split through the board keeps the first part as the claim of the caller,
   expect(io.sent).toEqual(['agent-2: meld: There is open work on the board. Read the board with mcp__meld__board, then go on.'])
 })
 
+test('a split through the board with an old task list version fails with STALE_VERSION, gives the current tasks and changes nothing', async () => {
+  const io = ioWith(runOf(addTasks(claimedBy('w1'), 'w2', { seen: 1, tasks: [{ title: 'Contrast check' }] }, NOW)))
+  const parts = [{ title: 'Light tokens' }, { title: 'Dark tokens', needs: [2] }]
+  const replied = await serveTool(io, call({ tool: 'mcp__meld__split', task: 1, version: 2, seen: 1, tasks: parts, agentId: 'agent-1' }))
+  expect(parsed(replied.result)).toMatchObject({ error: 'STALE_VERSION', taskList: 2, tasks: [{ id: 1, title: 'Tokens' }, { id: 2, title: 'Contrast check' }] })
+  expect(io.current?.tasks).toHaveLength(2)
+  expect(io.current?.taskList).toBe(2)
+})
+
+test('a split through the board with no task list version is stale', async () => {
+  const io = ioWith(claimedBy('w1'))
+  const replied = await serveTool(io, call({ tool: 'mcp__meld__split', task: 1, version: 2, tasks: [{ title: 'Light tokens' }, { title: 'Dark tokens' }], agentId: 'agent-1' }))
+  expect(parsed(replied.result)).toMatchObject({ error: 'STALE_VERSION', taskList: 1 })
+  expect(io.current?.tasks).toHaveLength(1)
+})
+
 test('a split ends the count of the leaf, and its first part counts from zero', async () => {
   const io = ioWith(claimedBy('w2'))
   for (let calls = 2; calls < 40; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
   const parts = [{ title: 'Light tokens' }, { title: 'Dark tokens' }]
-  await serveTool(io, call({ tool: 'mcp__meld__split', task: 1, version: 2, tasks: parts, agentId: 'agent-2' }))
+  await serveTool(io, call({ tool: 'mcp__meld__split', task: 1, version: 2, seen: 1, tasks: parts, agentId: 'agent-2' }))
   for (let calls = 0; calls < 5; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
   expect(io.sent.filter(message => message.includes('Split #'))).toEqual([])
   expect(io.current?.tasks[1]).toMatchObject({ owner: 'w2', calls: 6 })

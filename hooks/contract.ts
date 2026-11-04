@@ -52,6 +52,8 @@ const TASK_VERSION = {
 
 const COMMIT = { type: 'string', description: 'A revision that names one commit in your folder: HEAD or a hash for git, @- or a commit id for jj.' }
 
+const SEEN = { type: 'number', description: 'The taskList version of your last board read, or of your last add_tasks or split reply.' }
+
 const PART = {
   title: { type: 'string', description: 'Plain words, 8 words at most, with no file paths.' },
   detail: { type: 'string' },
@@ -88,7 +90,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: 'board',
     description:
-      'Read the meld board: who you are, your folder, the other workers, the request and the steers of the person, the tasks, the news from the other workers since your last read, and the shared context. The first read also gives your rules.',
+      'Read the meld board: who you are, your folder, the other workers, the request and the steers of the person, the tasks, the news from the other workers since your last read, and the shared-context entries that are new for you. The first read also gives your rules.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -98,7 +100,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        seen: { type: 'number', description: 'The taskList version of your last board read, or of your last add_tasks reply.' },
+        seen: SEEN,
         tasks: {
           type: 'array',
           minItems: 1,
@@ -120,11 +122,12 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: 'split',
     description:
-      'Split a task that you claimed into smaller tasks, in one change. The task becomes their parent: it has no commit of its own, and it is done when all its parts are done. You keep the first part as your claim, and the other parts are open for the other workers.',
+      'Split a task that you claimed into smaller tasks, in one change, with the taskList version of your last board read. If tasks were added since that read, the split fails with STALE_VERSION and returns the current tasks: check the needs of your parts against them, and split again with the new version. The task becomes their parent: it has no commit of its own, and it is done when all its parts are done. You keep the first part as your claim, and the other parts are open for the other workers.',
     inputSchema: {
       type: 'object',
       properties: {
         ...TASK_VERSION,
+        seen: SEEN,
         tasks: {
           type: 'array',
           minItems: 2,
@@ -132,7 +135,7 @@ export const TOOL_SPECS: ToolSpec[] = [
           items: { type: 'object', properties: PART, required: ['title'] },
         },
       },
-      required: ['task', 'version', 'tasks'],
+      required: ['task', 'version', 'seen', 'tasks'],
     },
   },
   {
@@ -163,7 +166,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: 'share',
     description:
-      'Add an entry to the shared context. Each board reply gives the context to every worker. A fact is a finding with its evidence. A fail is an approach that did not work, with the reason, so that no worker tries it again. An interface is a contract between tasks: a name and its shape.',
+      'Add an entry to the shared context. The next board reply to each other worker carries it. A fact is a finding with its evidence. A fail is an approach that did not work, with the reason, so that no worker tries it again. An interface is a contract between tasks: a name and its shape.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -224,7 +227,7 @@ The rules for a meld worker:
 2. Read the board with ${TOOL.board}. Plan the request as a few small tasks that can go on at the same time, and add them all in one call with ${TOOL.addTasks}, with the taskList version of your read. If another worker added tasks since your read, the call fails and shows its tasks: claim the ones that cover your work, and add only what is still missing. Claim a task with ${TOOL.claim} before you start it.
 3. Give each task a title in plain words, 8 words at most, with no file paths. Give needs when a task needs the result of another task. Until those tasks are done, a claim of that task fails with WAITING. Split a task that has more than one deliverable with ${TOOL.split}: you keep the first part, and the other parts are open. A task with parts has no commit of its own. It is done when all its parts are done.
 4. Commit after each step. When a task is done, call ${TOOL.finishTask} with the commit and a one-line summary. Give the contracts that other tasks use in interfaces, and the work that you did not do in unfinished. Tell the other workers about each decision with ${TOOL.note}.
-5. Each board reply carries the shared context: the current entries, newest first. Read it before you start a task, and do not try the approach of a fail. Share with ${TOOL.share}: a fact when a peer can use it, a fail when an approach did not work, and an interface before a peer depends on it. Give a fact with its evidence, a fail with its reason, and an interface as a name and its shape. To correct an entry, share a new entry with replaces and the id of the old entry.
+5. Each board reply carries the shared context, newest first: the first reply to you carries the current entries, 20 at most, and each later reply only the entries that are new since your last reply. Read it before you start a task, and do not try the approach of a fail. Share with ${TOOL.share}: a fact when a peer can use it, a fail when an approach did not work, and an interface before a peer depends on it. Give a fact with its evidence, a fail with its reason, and an interface as a name and its shape. To correct an entry, share a new entry with replaces and the id of the old entry.
 6. Use the work of the other workers through version control, as below. Do not do again what another worker did.
 7. Record each test or build you run with ${TOOL.check}, with the commit it ran on.
 8. When every task is done, one worker integrates: it calls ${TOOL.integrate}, merges the work of every worker into its own, runs the checks, then calls ${TOOL.finish} with the final commit and a summary. While another worker integrates, review its commits, add tests, or fix what the checks show.

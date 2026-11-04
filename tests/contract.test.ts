@@ -70,6 +70,12 @@ test('the rules tell a worker to read the shared context before it starts a task
   expect(workerRules(runOn('git'), 'w2')).toContain('Read it before you start a task')
 })
 
+test('the rules and the board and share tools say that a reply carries only the entries that are new for the worker', () => {
+  expect(workerRules(runOn('git'), 'w2')).toContain('the first reply to you carries the current entries, 20 at most, and each later reply only the entries that are new since your last reply')
+  expect(TOOL_SPECS.find(spec => spec.name === 'board')?.description).toContain('the shared-context entries that are new for you')
+  expect(TOOL_SPECS.find(spec => spec.name === 'share')?.description).toContain('The next board reply to each other worker carries it.')
+})
+
 test('the rules send the contracts and the work left of a task to finish_task', () => {
   const rules = workerRules(runOn('git'), 'w1')
   expect(rules).toContain(`call ${TOOL.finishTask} with the commit and a one-line summary`)
@@ -82,12 +88,13 @@ test('the note tool sends a fact, a fail and an interface to share', () => {
   expect(note?.description).not.toContain('need: an interface')
 })
 
-test('the split tool takes a task, its version and two or more new tasks', () => {
+test('the split tool takes a task, its version, the task list version that the worker saw and two or more new tasks', () => {
   const split = TOOL_SPECS.find(spec => spec.name === 'split')
   expect(split?.inputSchema).toMatchObject({
-    properties: { task: { type: 'number' }, version: { type: 'number' }, tasks: { type: 'array', minItems: 2 } },
-    required: ['task', 'version', 'tasks'],
+    properties: { task: { type: 'number' }, version: { type: 'number' }, seen: { type: 'number' }, tasks: { type: 'array', minItems: 2 } },
+    required: ['task', 'version', 'seen', 'tasks'],
   })
+  expect(split?.description).toContain('fails with STALE_VERSION and returns the current tasks')
 })
 
 test('a new task takes a parent, a size of S, M or L, and the tasks it needs', () => {
