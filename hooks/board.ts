@@ -158,7 +158,7 @@ export function addTasks(
   input: { seen: number; tasks: NewTask[] },
   now: number,
 ): Change<{ tasks: Task[]; taskList: number }> {
-  const ended = endedFailure(run)
+  const ended = actingFailure(run, by)
   if (ended) return ended
   if (input.seen !== run.taskList) {
     return staleTasks(
@@ -261,7 +261,7 @@ function ancestorsOf(tasks: readonly Task[], id: number | undefined): number[] {
 }
 
 export function claimTask(run: Run, by: WorkerId, id: number, version: number, now: number): Change<Task> {
-  const checked = checkTask(run, id, version)
+  const checked = checkTask(run, by, id, version)
   if (isTaskFailure(checked)) return checked
   if (checked.state !== 'open') return failure('TAKEN', `#${id} is ${describeTask(checked)}.`)
   if (isParent(run.tasks, id)) return failure('INVALID', `#${id} has parts, and no worker claims a task with parts. ${openPartsOf(run.tasks, id)}`)
@@ -287,7 +287,7 @@ export function finishTask(
   now: number,
   handover: Handover = {},
 ): Change<Task> {
-  const found = checkTask(run, id, version)
+  const found = checkTask(run, by, id, version)
   if (isTaskFailure(found)) return found
   if (isParent(run.tasks, id)) return failure('INVALID', `#${id} has parts: it has no commit of its own, and it is done when all its parts are done. ${openPartsOf(run.tasks, id)}`)
   const checked = checkOwnedTask(run, by, id, version)
@@ -373,7 +373,7 @@ function taskView({ handover: _handover, ...task }: Task): Task {
 }
 
 export function addNote(run: Run, by: WorkerId, text: string, commit: string | undefined, now: number): Change<Entry> {
-  const ended = endedFailure(run)
+  const ended = actingFailure(run, by)
   if (ended) return ended
   const next = withEntry(run, { at: now, by, kind: 'note', text, commit })
   return { run: next, value: lastEntry(next) }
@@ -381,7 +381,7 @@ export function addNote(run: Run, by: WorkerId, text: string, commit: string | u
 
 /** Adds an entry to the shared context. An entry that names an older entry in `replaces` takes the place of that entry. */
 export function shareEntry(run: Run, by: WorkerId, input: ShareInput, now: number): Change<ContextEntry> {
-  const ended = endedFailure(run)
+  const ended = actingFailure(run, by)
   if (ended) return ended
   const kind = CONTEXT_KINDS.find(one => one === input.kind)
   if (!kind) return failure('INVALID', `The kind is fact, fail or interface, not "${input.kind}".`)
@@ -432,7 +432,7 @@ function newContextFor(run: Run, worker: Worker): ContextEntry[] {
 }
 
 export function addCheck(run: Run, by: WorkerId, check: CheckInput, now: number): Change<Entry> {
-  const ended = endedFailure(run)
+  const ended = actingFailure(run, by)
   if (ended) return ended
   const entry = { at: now, by, kind: 'check' as const, text: check.command, detail: check.output.slice(-800), commit: check.commit, passed: check.passed }
   const next = withEntry(run, entry)
@@ -440,7 +440,7 @@ export function addCheck(run: Run, by: WorkerId, check: CheckInput, now: number)
 }
 
 export function takeIntegration(run: Run, by: WorkerId, now: number): Change<WorkerId> {
-  const ended = endedFailure(run)
+  const ended = actingFailure(run, by)
   if (ended) return ended
   if (run.integrator && run.integrator !== by) {
     return failure('INTEGRATION_TAKEN', `${run.integrator} integrates. Do other useful work, or end your turn.`)
@@ -457,7 +457,7 @@ export function doneWork(run: Run): Task[] {
 }
 
 export function declareFinal(run: Run, by: WorkerId, commit: string, summary: string, now: number): Change<Final> {
-  const ended = endedFailure(run)
+  const ended = actingFailure(run, by)
   if (ended) return ended
   if (run.integrator !== by) {
     return failure('NOT_INTEGRATOR', run.integrator ? `${run.integrator} integrates, not you.` : 'Take the integration first.')
@@ -592,6 +592,12 @@ function staleTasks(run: Run, error: ErrorCode, message: string): Failure {
   return { error, message, taskList: run.taskList, tasks: run.tasks }
 }
 
+/** Why a worker changes nothing on the board: the run ended, or the person stopped the worker, whose agent can still call. */
+function actingFailure(run: Run, by: WorkerId): Failure | undefined {
+  const stopped = run.workers.find(worker => worker.id === by)?.state === 'stopped'
+  return endedFailure(run) ?? (stopped ? failure('WORKER_STOPPED', `The person stopped ${by}. End your turn now with a one-line summary.`) : undefined)
+}
+
 function endedFailure(run: Run): Failure | undefined {
   return ACTIVE.has(run.state) ? undefined : failure('RUN_ENDED', `The run is ${run.state}. End your turn.`)
 }
@@ -656,8 +662,8 @@ function isTaskFailure(value: Task | Failure): value is Failure {
   return 'error' in value
 }
 
-function checkTask(run: Run, id: number, version: number): Task | Failure {
-  const ended = endedFailure(run)
+function checkTask(run: Run, by: WorkerId, id: number, version: number): Task | Failure {
+  const ended = actingFailure(run, by)
   if (ended) return ended
   const task = run.tasks.find(one => one.id === id)
   if (!task) return failure('NOT_FOUND', `There is no task #${id}.`)
@@ -672,7 +678,7 @@ function isClaimedBy(task: Task, by: WorkerId): boolean {
 }
 
 function checkOwnedTask(run: Run, by: WorkerId, id: number, version: number): Task | Failure {
-  const task = checkTask(run, id, version)
+  const task = checkTask(run, by, id, version)
   if (isTaskFailure(task)) return task
   if (task.state !== 'claimed' || task.owner !== by) return failure('NOT_OWNER', `#${id} is ${describeTask(task)}, not claimed by you.`)
   return task

@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
 import { deliver, discard, freshTokens, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, SPAWN_APPROVAL, spawnVerdict, startFromView, startRun, steerRun, stopOne } from '../hooks/actions'
-import { addTasks, bindWorker, claimTask, declareFinal, isFailure, setActivity, startRun as startBoard, steer, stopRun, takeIntegration } from '../hooks/board'
+import { addTasks, bindWorker, claimTask, declareFinal, isFailure, setActivity, startRun as startBoard, steer, stopRun, stopWorker, takeIntegration } from '../hooks/board'
 import { JJ_LANE_TEMPLATE, JJ_RESOLVE_TEMPLATE } from '../hooks/vcs'
 import type { AgentSpec, Change, Run, VcsKind, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
@@ -1008,4 +1008,11 @@ test('a start while another start makes its workspaces, as a second click on Sta
   expect((await first).text).toBe(`Run ${ID}: 2 workers on git, from commit ${HEAD.slice(0, 7)}.`)
   expect(io.commands.filter(command => command.startsWith('git worktree add'))).toHaveLength(2)
   expect(io.spawned).toHaveLength(2)
+})
+
+test('the claim of a stopped worker through the board tool fails, and the task stays open for another worker', async () => {
+  const io = ioWith(stopWorker(runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }] }, NOW)), 'w2', NOW))
+  const replied = await serveTool(io, call({ tool: 'mcp__meld__claim', task: 1, version: 1, agentId: 'agent-2' }))
+  expect(JSON.parse(String(replied.result))).toMatchObject({ error: 'WORKER_STOPPED' })
+  expect(io.current?.tasks[0]).toMatchObject({ state: 'open', version: 1 })
 })

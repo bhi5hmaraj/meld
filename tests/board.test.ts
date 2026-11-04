@@ -465,6 +465,16 @@ test('the first reply to an agent carries the current entries, 20 at most, its o
   expect(passContext(first.run, 'w1').context).toEqual([])
 })
 
+test('a stopped worker changes nothing on the board, as its agent can still call: each change fails with WORKER_STOPPED', () => {
+  const stopped = stopWorker(withTask(), 'w2', NOW)
+  expect(claimTask(stopped, 'w2', 1, 1, NOW)).toMatchObject({ error: 'WORKER_STOPPED' })
+  expect(addTasks(stopped, 'w2', { seen: stopped.taskList, tasks: [{ title: 'Docs' }] }, NOW)).toMatchObject({ error: 'WORKER_STOPPED' })
+  expect(shareEntry(stopped, 'w2', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW)).toMatchObject({ error: 'WORKER_STOPPED' })
+  expect(addNote(stopped, 'w2', 'A note', undefined, NOW)).toMatchObject({ error: 'WORKER_STOPPED' })
+  expect(takeIntegration(stopped, 'w2', NOW)).toMatchObject({ error: 'WORKER_STOPPED' })
+  expect(claimTask(stopped, 'w1', 1, 1, NOW)).not.toMatchObject({ error: 'WORKER_STOPPED' })
+})
+
 test('a worker that the person stopped, or a worker of a run that does not work, takes no new agent', () => {
   expect(restartWorker(stopWorker(working(), 'w1', NOW), 'w1', 'agent-9', NOW)).toMatchObject({ error: 'WORKER_STOPPED' })
   expect(restartWorker(stopRun(working(), NOW), 'w2', 'agent-9', NOW)).toMatchObject({ error: 'RUN_ENDED' })
