@@ -39,7 +39,7 @@ export type Vcs = {
    * The commits of each worker since the base, and its uncommitted edits. jj records the files of a workspace only when a
    * jj command runs there, so a lane shows them as of that command; with snapshot, jj first records them. git reads the files.
    */
-  lanes(io: Io, run: Run, read?: LaneRead): Promise<LaneFacts[]>
+  lanes(io: Io, run: LanePlace, read?: LaneRead): Promise<LaneFacts[]>
   result(io: Io, run: Run, commit: string): Promise<ResultFacts>
   /** The integration line as a worker names it in its folder: a branch for git, a bookmark for jj. */
   lineName(run: Run): string
@@ -90,9 +90,28 @@ export function vcsFor(kind: VcsKind): Vcs {
 /** What a removal needs of a run: its id, the repository of the person, and the workspace of each worker. */
 export type RunPlace = { id: string; repo: string; workers: readonly Workspace[] }
 
+/** What a read of the lanes needs of a run: its id, the repository of the person, the base, and each worker with its workspace. */
+export type LanePlace = { id: string; repo: string; base: string; workers: readonly (Workspace & { id: WorkerId })[] }
+
+/** The work in the workspaces of a run: its commits since the base, the workers with uncommitted edits, and the lanes that meld cannot read. */
+export type HeldWork = { commits: number; edits: WorkerId[]; unread: LaneFacts[] }
+
 /** The workspace of a worker of the run `id`: the folder and the ref that prepare makes for it. */
 export function workspaceOf(kind: VcsKind, id: string, worker: WorkerId): Workspace {
   return { path: workspacePath(id, worker), ref: kind === 'jj' ? `${worker}@` : `meld/${id}/${worker}` }
+}
+
+/**
+ * Reads the work in the workspaces of a run that no agent works in. jj first records the files of each workspace, as a
+ * worker can stop after an edit and before its next jj command. A commit that two lanes hold counts once.
+ */
+export async function heldWork(io: Io, run: LanePlace & { vcs: VcsKind }): Promise<HeldWork> {
+  const lanes = await vcsFor(run.vcs).lanes(io, run, { snapshot: true })
+  return {
+    commits: new Set(lanes.flatMap(lane => lane.commits.map(fact => fact.commit))).size,
+    edits: lanes.filter(lane => lane.edits).map(lane => lane.id),
+    unread: lanes.filter(lane => lane.error !== undefined),
+  }
 }
 
 /**

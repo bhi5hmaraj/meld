@@ -53,8 +53,8 @@ Or fill in the start form of the pane, which `/meld-status` opens. Or ask Claude
 | `/meld-steer <instruction>` | Sends a new instruction to every agent. |
 | `/meld-status` | Opens the pane. |
 | `/meld-stop` | Stops every agent. The workspaces stay for review. |
-| `/meld-clean` | Lists the folders that other runs left under `/tmp/meld/`: the id, the state, the age and the size of each. |
-| `/meld-clean <id> ...` | Removes those folders with their workspaces, as Discard does. `--all` removes each folder that is not maybe live. |
+| `/meld-clean` | Lists the folders that other runs left under `/tmp/meld/`: the id, the state, the age and the size of each, and the work in its workspaces. |
+| `/meld-clean <id> ...` | Removes those folders with their workspaces and any work in them, as Discard does. `--all` removes only the folders that hold no work, and keeps the others. |
 
 The options come before the request, in any order. Each agent starts as the hidden agent type `meld:worker`, in its own folder. With no `--model`, an agent uses the model of its agent type, and `meld:worker` uses the model of your session.
 
@@ -106,9 +106,11 @@ The result card shows the final commit, the changed files, the lines added and r
 
 **Old runs.** A stopped run keeps its workspaces until you deliver or discard it. A new start removes them when they hold no work, as after a start that started no agent. When they hold commits or uncommitted edits, or meld cannot read them, the start refuses. The reply names the run, its folder and its count of commits.
 
-`/meld-clean` lists the folders under `/tmp/meld/` that are not the run of your session. `/meld-clean <id>` removes a folder as Discard does, with the version control and the repository that its `board.json` names. meld takes the workspaces from the id of the folder, not from the paths in the file, so a removal touches only what meld made. With no `board.json` that meld can read, meld removes only the folder. `/meld-clean` never removes the run of your session: Discard or `/meld-discard` removes it.
+`/meld-clean` lists the folders under `/tmp/meld/` that are not the run of your session. When a folder is not maybe live and meld can read its `board.json`, meld reads its workspaces as a new start does. The line of the folder then ends with `no work`, with `holds work: 2 commits` and the agents that have uncommitted edits, or with `workspaces not readable`. `/meld-clean <id>` removes a folder as Discard does, with the version control and the repository that its `board.json` names, and with any work in it. meld takes the workspaces from the id of the folder, and the base from the file, not the paths in the file. So a read or a removal touches only what meld made. With no `board.json` that meld can read, meld removes only the folder. `/meld-clean` never removes the run of your session: Discard or `/meld-discard` removes it.
 
-A folder is maybe live when its `board.json` changed in the last 24 hours, and says starting, working or ready, or cannot be read. A run of another session on this computer can use such a folder, so `--all` skips it, and its id removes it. The state alone shows nothing: a run that no session stores keeps the last state that it wrote.
+`--all` removes a folder only when meld can read its `board.json`, the folder is not maybe live, and its workspaces hold no work. It keeps each other folder, and the reply tells why: the folder holds work, meld cannot read its workspaces, the folder has no `board.json`, or meld cannot read its `board.json`. To remove a kept folder, give its id.
+
+A folder is maybe live when its `board.json` changed in the last 24 hours, and says starting, working or ready, or cannot be read. A run of another session on this computer can use such a folder, so meld does not read its workspaces, `--all` skips it, and its id removes it. The state alone shows nothing: a run that no session stores keeps the last state that it wrote.
 
 ## How it works
 

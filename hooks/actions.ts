@@ -9,7 +9,7 @@ import type { Io, Spawned } from './io'
 import { agentSpecOf, agentsOf, MAX_AGENTS, parseStart, WORKER_TYPE } from './options'
 import type { StartOptions } from './options'
 import { claimable } from './tasks'
-import { detectVcs, runHome, vcsFor } from './vcs'
+import { detectVcs, heldWork, runHome, vcsFor } from './vcs'
 import type { Prepared } from './vcs'
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
@@ -114,19 +114,15 @@ export async function startRun(io: Io, cwd: string, options: StartOptions): Prom
 
 /**
  * Why a new start cannot take the place of a stopped run: its workspaces hold commits or uncommitted edits, or meld
- * cannot read them. Undefined when they hold no work, as after a start that started no worker. jj records the files
- * of each workspace first, as a worker can stop after an edit and before its next jj command.
+ * cannot read them. Undefined when they hold no work, as after a start that started no worker.
  */
 async function keptWork(io: Io, run: Run): Promise<string | undefined> {
-  const lanes = await vcsFor(run.vcs).lanes(io, run, { snapshot: true })
+  const { commits, edits, unread } = await heldWork(io, run)
   const home = runHome(run.id)
-  const unread = lanes.filter(lane => lane.error !== undefined)
   if (unread.length) {
     const errors = unread.map(lane => `${lane.id}: ${lane.error?.split('\n')[0]}`).join('; ')
     return `Run ${run.id} stopped, and meld cannot read its workspaces in ${home} (${errors}), so they can hold work. /meld-discard or Discard in the meld pane removes them, then you can start again.`
   }
-  const commits = new Set(lanes.flatMap(lane => lane.commits.map(fact => fact.commit))).size
-  const edits = lanes.filter(lane => lane.edits).map(lane => lane.id)
   if (!commits && !edits.length) return undefined
   const edited = edits.length ? `, and uncommitted edits in ${listed(edits)}` : ''
   return `Run ${run.id} stopped with work in ${home}: ${commits} commit${commits === 1 ? '' : 's'}${edited}. /meld-discard or Discard in the meld pane removes its workspaces, then you can start again.`
