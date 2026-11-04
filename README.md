@@ -54,7 +54,7 @@ Or fill in the start form of the pane, which `/meld-status` opens. Or ask Claude
 | `/meld-status` | Opens the pane. |
 | `/meld-stop` | Stops every agent. The workspaces stay for review. |
 | `/meld-clean` | Lists the folders that other runs left under `/tmp/meld/`: the id, the state, the age and the size of each, and the work in its workspaces. |
-| `/meld-clean <id> ...` | Removes those folders with their workspaces and any work in them, as Discard does. `--all` removes only the folders that hold no work, and keeps the others. |
+| `/meld-clean <id> ...` | Removes those folders with their workspaces and any work in them, as Discard does. `--all` removes only the folders that hold no work and that no run can use. It keeps the others and tells why. |
 
 The options come before the request, in any order. Each agent starts as the hidden agent type `meld:worker`, in its own folder. With no `--model`, an agent uses the model of its agent type, and `meld:worker` uses the model of your session.
 
@@ -101,7 +101,7 @@ The result card shows the final commit, the changed files, the lines added and r
 
 - **Deliver** (`d`) merges the final commit into your branch with a merge commit, and removes the workspaces. Your checkout must have no uncommitted changes. If the merge stops, meld aborts it, and nothing changes. Deliver refuses a final commit that lacks the commit of a task that is done on the board: the reply names the tasks, and you steer the run so that an agent merges them. The subject of the merge commit is `meld: ` and the summary of the final commit, cut at a space to 72 characters at most. With no summary, it is the first line of the request. The body holds the full request.
 - **Show diff** (`v`) opens the diff of the first eight files.
-- **Ask for changes** gives the agents your instruction, and they change the result.
+- **Ask for changes** gives the agents your instruction, and they change the result. meld first moves the integration line to the final commit, so that the next final commit keeps its work.
 - **Discard** removes the workspaces with no merge. **Clear** removes a delivered run from the pane.
 
 **Old runs.** A stopped run keeps its workspaces until you deliver or discard it. A new start removes them when they hold no work, as after a start that started no agent. When they hold commits or uncommitted edits, or meld cannot read them, the start refuses. The reply names the run, its folder and its count of commits.
@@ -143,7 +143,7 @@ The first board reply to a new agent carries the 20 newest current entries. Each
 
 **Commits.** `finish_task`, `check`, `finish` and `share` keep the full id of the commit that the revision names in the folder of the agent. `HEAD` or `@-` names the commit of the agent that calls the tool. meld refuses a final commit with a conflict. `finish` also refuses a final commit that lacks the commit of a done task, with `MISSING_WORK`: `git merge-base --is-ancestor` reads each commit, and the error names the tasks, their commits and the steps that merge them.
 
-**Board file.** After each change, meld writes the board to `/tmp/meld/<run>/board.json`: the tasks, the log and the shared context. The file stays when your session ends. Deliver and Discard remove it, and `/meld-clean` removes the folders of runs that your session does not store.
+**Board file.** After each change, meld writes the board to `/tmp/meld/<run>/board.json`: the tasks, the log and the shared context. The file stays when your session ends. Deliver and Discard remove it. Deliver marks the run delivered, and Discard drops it, before the removal, so an agent that ends its turn during the removal does not write the file again. `/meld-clean` removes the folders of runs that your session does not store.
 
 **Edit guard.** meld refuses an edit that an agent makes outside its own workspace.
 
@@ -154,7 +154,7 @@ The first board reply to a new agent carries the 20 newest current entries. Each
 
 **Restarts.** Claude Code ends an agent when the agent returns its result. At the end of each turn of your session, meld restarts an idle agent in the same folder when there is work for it:
 
-- A task is ready, and the agent claims no task. meld restarts one agent for each ready task at most.
+- A task is ready, and the agent claims no task. meld restarts one agent for each ready task at most. An agent that works and claims no task counts for one of them: meld started it for a task, or it planned the tasks, and it claims a task next.
 - The board has news that the agent did not read, and the agent claims a task that is not done. A note, a share, a claim, a finished task or a check of another agent is news.
 - Every live agent is idle. meld restarts the owners of unfinished tasks, and idle agents for the open tasks. With no open task, meld restarts the lead, the integrator or the first live agent, to plan, to take your new instruction, or to integrate.
 
@@ -180,6 +180,8 @@ A restarted agent reads its rules at its first board read. meld reads the agent 
 **Why.** In meld 0.7.0, one agent merged the work of every agent at the end. In a run of 22 tasks, that integration was slow, it came last, and a conflict showed long after the change that made it. Now each task goes into the line when it finishes. A conflict shows while its change is new and small, and the end needs one build.
 
 **The line.** The line starts at the base. With git, it is the branch `meld/<run>/integration` of your repository. With jj, it is a ref of the private store of the run, which jj imports as the bookmark `meld_integration`, so each workspace sees it. Deliver and Discard remove it with the run. The rules tell the agents not to move or rewrite it.
+
+**A steer from ready.** Before a steer of a ready run, meld moves the line to the final commit, which holds the done tasks. With git, `git update-ref` moves the branch. With jj, meld moves the ref in the store and runs `jj git import`. The merges after the steer and the next final commit then keep the work of that commit. When the line cannot move, the steer changes nothing, and the run stays ready.
 
 **The merge.** After each `finish_task`, and before its reply, meld merges the commit of that task into the line. When the commit holds the line, the line moves forward to the commit. Else git makes the merge with no working copy: `git merge-tree --write-tree` makes the tree, `git commit-tree` makes the merge commit, and `git update-ref` moves the line only from the head that the merge read. No agent and no workspace take part, and one merge runs at a time. meld does not merge a commit with a jj conflict, because its tree holds the sides of the conflict.
 
@@ -213,6 +215,16 @@ Seven changes come from [issue 3](https://github.com/bhi5hmaraj/meld/issues/3):
 - **One line for each turn.** An agent ends each turn with one line, for example `finished #4, commit 4a0bde04`. Your session gets the last message of each turn of an agent, and a new agent for each task makes more such messages. Two reports of one run had 450 and 500 words. The system prompt of `meld:worker` and the end of the spawn prompt ask for the line too: with the ask in the rules alone, two agents of a later run ended with about 300 words.
 - **Control a run without the pane.** `/meld-deliver`, `/meld-discard` and `/meld-add`, and a tool for each, do what the pane does. So Claude can deliver, discard and add an agent where no pane shows. Before, only the pane delivered or discarded a run, and a run kept the agents of its start.
 - **A steer reply in the singular.** For one agent, the reply says `1 running worker gets it`, not `1 running workers get it`. With no agent left, it says so, and not `All 0 workers`.
+
+Seven fixes come from an independent review of 0.8.0, before its release:
+
+- **`/meld-clean --all` keeps work.** meld reads the workspaces of each folder that is not maybe live, as a new start reads a stopped run. `--all` removes a folder only when meld can read its `board.json` and its workspaces hold no work. The reply tells why it keeps each other folder. Before, `--all` removed each folder that was not maybe live: a stopped run of another session at any age, any board older than 24 hours, and a folder with no `board.json`. It did not look for work, and it removed the worktrees with `git worktree remove --force`, the branches with `git branch -D`, or the jj store, with the commits and edits in them.
+- **One agent for each ready task.** An agent that meld starts for an open task works with no claim until it claims the task. A restart now counts such an agent for one open task, so it does not start a second agent for that task. Before, a restart counted the open tasks alone, and two agents could start for one task.
+- **The final commit holds every done task.** `finish` refuses a final commit that lacks the commit of a done task, with `MISSING_WORK`, and names the tasks. Deliver refuses it too, in the pane, with `/meld-deliver` and with the `deliver` tool: the reply names the tasks and tells you to steer the run. Before, nothing checked it. A task could finish after the lead started from the line, or while the run was ready, and a ready run merges nothing into the line. Such a task was done on the board but not in the final commit, and Deliver merged the final commit without its work.
+- **A steer from ready keeps the final work.** Before a steer of a ready run, meld moves the integration line to the final commit, so the merges after the steer and the next final commit keep its work. When the line cannot move, the steer changes nothing. Before, a steer cleared the final commit, and with jj the next final commit started from the line alone, without the fixes of the previous final commit. A run that meld 0.7.0 stored in ready had no line, so its later merges built a line from old task commits, and the conflicts that its integration fixed came back.
+- **A finish merges its own task.** Each `finish_task` merges only the commit of its own task into the line, and the merges still run one at a time. The lead merges the done tasks that the line lacks, and `finish` refuses a final commit that lacks one. Before, a finish merged every done task that the line lacked, and a second finish waited for those merges. A board tool runs in a hook with a time limit, and the wait counted toward it, so on a run with many unmerged tasks a finish could time out after it saved its change.
+- **git 2.38 or newer.** A start reads the version of git. Under 2.38, it refuses, and the reply names the version and the need: the line merges with `git merge-tree --write-tree`, which came in git 2.38, for git and jj runs. When meld cannot read the version, the start goes on. Before, a run started with an older git, and each merge that needed a merge commit failed and became a task `integrate #N`.
+- **Deliver and Discard clear the run first.** Deliver marks the run delivered, and Discard drops it, before they remove its folder. A start over a stopped run with no work drops that run first too. Before, they removed the folder first. An agent that ended its turn during the removal then wrote `board.json` for the run, and made `/tmp/meld/<id>/` again.
 
 ## What meld changes from DeLM
 
@@ -265,7 +277,7 @@ A hooks module spells `$` at its call sites and does not give it to other functi
 
 The tests use a fake `Io` and mount the pane on each surface. A test holds each block of the pane to 100 words at most.
 
-`scripts/adapters.mjs` checks the jj and git adapters with real processes. It compiles `hooks/` with `tsc` into a temporary folder. For each adapter, a temporary git repository goes through a run: three workspaces, a commit in each, the integration line (a move forward, two merge commits, a commit that the line holds, and a conflict), the integration, the commits that the final commit lacks, the lanes (with an edit that no jj command recorded), the result, deliver and remove. HOME is a temporary folder, so the check does not read or change your git or jj config. The script prints PASS or FAIL for each step, and it exits with code 1 when a step fails. It needs `tsc` 5.6 or newer, git, and jj 0.40 or newer.
+`scripts/adapters.mjs` checks the jj and git adapters with real processes. It compiles `hooks/` with `tsc` into a temporary folder. For each adapter, a temporary git repository goes through a run: three workspaces, a commit in each, the integration line (a move forward, two merge commits, a commit that the line holds, and a conflict), the integration, the commits that the final commit lacks, the lanes (with an edit that no jj command recorded), the result, deliver, two new workspaces (one from the line, one from the base), the move of the line to the final commit, and remove. HOME is a temporary folder, so the check does not read or change your git or jj config. The script prints PASS or FAIL for each step, and it exits with code 1 when a step fails. It needs `tsc` 5.6 or newer, git, and jj 0.40 or newer.
 
 `scripts/shots.mjs` draws the pictures of this README. `scripts/scenes.tsx` builds sample runs with the board functions and prints the tree that the pane draws for each run. The script makes an HTML page of each tree, and takes a picture in a light and a dark theme with Playwright. The lanes, the bars and the texts are the ones that meld draws. The fonts and the spacing stand in for the app.
 
