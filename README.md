@@ -2,7 +2,7 @@
 
 Give one request to several Claude Code agents. Watch their real commits in a pane. Get one commit that passed your checks.
 
-Each agent works in its own jj workspace or git worktree. The agents plan the request as tasks on a shared board, share what they learn, and one agent merges the work into a final commit. You steer with one press, and nothing touches your branch until you deliver.
+Each agent works in its own jj workspace or git worktree. The agents plan the request as tasks on a shared board and share what they learn. meld merges each finished task into one integration line, and one agent checks the line and declares the final commit. You steer with one press, and nothing touches your branch until you deliver.
 
 <p align="center">
 <picture>
@@ -72,7 +72,7 @@ What you type in the chat goes to Claude, not to the agents. To steer the agents
 
 ## Deliver the result
 
-When one agent has merged the work of all agents and run the checks, it declares the final commit, and the run is ready.
+When the integration line holds every task, one agent runs one final build and the checks on it, and declares the final commit. Then the run is ready.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/ready-dark.png">
@@ -90,9 +90,9 @@ The result card shows the final commit, the changed files, the lines added and r
 
 1. **Workspaces.** meld makes one workspace for each agent from `HEAD`, under `/tmp/meld/<run>/`: a jj workspace, or a git worktree on a branch such as `meld/<run>/w1`.
 2. **Plan.** The agents plan the request as small tasks on the board. When two agents plan at the same time, the first plan wins, and the other agent claims tasks from it. A task can name a parent, a size (S, M or L) and the tasks that it needs.
-3. **Work.** Each agent claims a task, commits in its own workspace, and takes the commits of other agents with `jj new`, `git merge` or `git cherry-pick`. An agent splits a large task with `split`: it keeps the first part, and the other parts open for the other agents. After `finish_task`, the agent hands back, and meld starts a new agent for the next task.
+3. **Work.** Each agent claims a task and commits in its own workspace. It takes the commits of another agent, with `jj new`, `git merge` or `git cherry-pick`, only when its own task needs that code. An agent splits a large task with `split`: it keeps the first part, and the other parts open for the other agents. After `finish_task`, the agent hands back, and meld starts a new agent for the next task.
 4. **Share.** The agents share facts, fails and interfaces. Each board reply carries the entries that are new for the agent, and the rules tell an agent not to try an approach that failed.
-5. **Integrate.** One agent merges the work of every agent, runs the checks, and declares the final commit.
+5. **Integrate as you go.** At each `finish_task`, meld merges the commit of the task into the integration line of the run, with no agent. When a merge conflicts, meld adds a task `integrate #N` of size S, and an agent merges it in its workspace. When every task is done, one agent starts from the line, runs one final build and the checks, and declares the final commit.
 
 The agents use eleven board tools: `board`, `add_tasks`, `claim`, `split`, `release`, `finish_task`, `note`, `share`, `check`, `integrate` and `finish`. The main session has three more: `start`, `steer` and `stop`. These three refuse a call from an agent or another subagent.
 
@@ -146,6 +146,36 @@ A restarted agent reads its rules at its first board read. meld reads the agent 
 
 </details>
 
+<details>
+<summary><b>The integration line</b>: a merge at each finish, and integrate #N</summary>
+
+**Why.** In meld 0.7.0, one agent merged the work of every agent at the end. In a run of 22 tasks, that integration was slow, it came last, and a conflict showed long after the change that made it. Now each task goes into the line when it finishes. A conflict shows while its change is new and small, and the end needs one build.
+
+**The line.** The line starts at the base. With git, it is the branch `meld/<run>/integration` of your repository. With jj, it is a ref of the private store of the run, which jj imports as the bookmark `meld_integration`, so each workspace sees it. Deliver and Discard remove it with the run. The rules tell the agents not to move or rewrite it.
+
+**The merge.** After each `finish_task`, and before its reply, meld merges the commits of the finished tasks that the line does not hold, oldest first. When the commit holds the line, the line moves forward to the commit. Else git makes the merge with no working copy: `git merge-tree --write-tree` makes the tree, `git commit-tree` makes the merge commit, and `git update-ref` moves the line only from the head that the merge read. No agent and no workspace take part, and one merge runs at a time. meld does not merge a commit with a jj conflict, because its tree holds the sides of the conflict.
+
+**integrate #N.** When a merge conflicts or fails, the line stays where it was, and meld adds the task `integrate #N` of size S. Its detail names the files in conflict and the steps: `jj new meld_integration <commit>`, or `git merge meld/<run>/integration` and then `git merge <commit>`, a fix, the checks, a commit and `finish_task`. meld merges that commit as it merges any other, and then the line holds #N.
+
+**The end.** When every task is done, meld asks the lead to start from the line, merge the commits that the line does not hold, run one final build and the checks, and call `finish`.
+
+**The proposal and the code.** The proposal was a merge through the vcs adapters, with no agent. meld does that with git plumbing for both adapters, because jj keeps its commits in a git store. So one merge serves jj and git, and no merge needs a working copy, as `jj new` in a workspace does. meld also merges every finished task that the line does not hold, not only the task that finishes. So a task that a failed merge or a restart of your session skipped goes in at the next finish, and so do the finished tasks of a run that meld 0.7.0 stored.
+
+**Peers.** The rules tell an agent to merge the branch of another agent only when its own task needs that code. The line gathers the finished tasks, so a merge to stay current only adds conflicts and context.
+
+</details>
+
+## What changed in 0.8.0
+
+The changes come from a review of one run: 22 tasks, 5 agents, 45 minutes, about 280,000 tokens read again on each turn, 3 restarts, and a slow integration at the end.
+
+- **Only the new context.** The first board reply to a new agent carries the 20 newest current entries. Each later reply carries only the entries that are new for that agent. Before, each reply carried the 20 newest entries, and each turn read them again.
+- **A new agent for each task.** After `finish_task`, an agent hands back, and meld starts a new agent for the next ready task. The new agent starts from the board and the handovers of the tasks that its task needs. An agent that did task after task read its whole history again on each turn.
+- **Integration as you go.** meld merges each finished task into the integration line, and a conflict becomes a task `integrate #N` of size S. The end needs one final build, not a merge of all the work.
+- **A nudge by size.** The nudge comes after 30 tool calls for S, 60 for M and 120 for L. One limit of 40 fired on 11 of 22 tasks.
+- **A split with the task list version.** A stale split fails with `STALE_VERSION` and shows the current tasks, so that a part cannot need the wrong task.
+- **Runs that meld 0.7.0 stored keep working.** Their first board reply to each agent carries the current entries. A task with no size is M. A done task with no handover gives its commit. The finished tasks go into a new line at the next finish.
+
 ## What meld changes from DeLM
 
 meld takes its idea from [DeLM](https://github.com/Decentralized-LM/delm-agent-plugin) (Decentralized Language Models, by Yuzhen Mao and Azalia Mirhoseini, MIT license). It is a new tool, not a port.
@@ -196,7 +226,7 @@ A hooks module spells `$` at its call sites and does not give it to other functi
 
 The tests use a fake `Io` and mount the pane on each surface. A test holds each block of the pane to 100 words at most.
 
-`scripts/adapters.mjs` checks the jj and git adapters with real processes. It compiles `hooks/` with `tsc` into a temporary folder. For each adapter, a temporary git repository goes through a run: three workspaces, a commit in each, the integration, the result, deliver and remove. HOME is a temporary folder, so the check does not read or change your git or jj config. The script prints PASS or FAIL for each step, and it exits with code 1 when a step fails. It needs `tsc` 5.6 or newer, git, and jj 0.40 or newer.
+`scripts/adapters.mjs` checks the jj and git adapters with real processes. It compiles `hooks/` with `tsc` into a temporary folder. For each adapter, a temporary git repository goes through a run: three workspaces, a commit in each, the integration line (a move forward, two merge commits, a commit that the line holds, and a conflict), the integration, the result, deliver and remove. HOME is a temporary folder, so the check does not read or change your git or jj config. The script prints PASS or FAIL for each step, and it exits with code 1 when a step fails. It needs `tsc` 5.6 or newer, git, and jj 0.40 or newer.
 
 `scripts/shots.mjs` draws the pictures of this README. `scripts/scenes.tsx` builds sample runs with the board functions and prints the tree that the pane draws for each run. The script makes an HTML page of each tree, and takes a picture in a light and a dark theme with Playwright. The lanes, the bars and the texts are the ones that meld draws. The fonts and the spacing stand in for the app.
 

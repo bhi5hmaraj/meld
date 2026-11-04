@@ -1,6 +1,6 @@
 {
   "name": "meld",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Several Claude Code agents work on one task, each in its own jj or git workspace, share a task board, and meld their work into one commit. A pane shows real commits, checks and the diff, with one button for each decision.",
   "author": {
     "name": "Bhishmaraj"
