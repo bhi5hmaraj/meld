@@ -14,7 +14,7 @@ export type ServerInfo = { name: string; version: string }
 type Message = { id?: unknown; method?: unknown; params?: unknown }
 
 /** The versions of the protocol that meld mcp speaks, the newest first. */
-const VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05']
+const VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']
 const PARSE_ERROR = -32700
 const INVALID_REQUEST = -32600
 const NO_METHOD = -32601

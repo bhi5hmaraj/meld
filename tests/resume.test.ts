@@ -66,9 +66,11 @@ function session(runs: Record<string, Run> = { old: oldRun() }): { io: FakeIo; b
   return { io, boards: new FakeBoards(io, runs) }
 }
 
-test('without meld mcp, /meld-resume says that it needs Bun, and changes nothing', async () => {
+test('without meld mcp, /meld-resume says that it needs Bun and why meld mcp did not connect, and changes nothing', async () => {
   const { io } = session()
-  expect(await resumeRun(io, undefined, '')).toContain('needs Bun')
+  const text = await resumeRun(io, 'bun: not found', '')
+  expect(text).toContain('needs Bun')
+  expect(text).toContain('meld mcp did not connect: bun: not found')
   expect(io.current).toBeNull()
 })
 

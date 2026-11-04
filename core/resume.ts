@@ -7,17 +7,18 @@ import type { Boards, BoardSummary } from './remote-store'
 import { MELD_ROOT, runHome } from './vcs'
 import { ageOf, listed } from './words'
 
-const NEEDS_BUN = 'A resume needs Bun: meld keeps runs for a resume in ~/.meld/meld.db through meld mcp, which runs on Bun (https://bun.sh). This session keeps its run in its own state.'
+const NEEDS_BUN = 'A resume needs Bun: meld keeps runs for a resume in ~/.meld/meld.db through meld mcp, which runs on Bun (https://bun.sh). This session keeps its run in its own state'
 const RESUMABLE = new Set(['starting', 'working', 'ready', 'stopped'])
 const LIVE = new Set(['starting', 'working', 'ready'])
 const REQUEST_CHARACTERS = 60
 
 /**
  * /meld-resume: with no board, the runs of other sessions on this machine; with a board, this session takes that run,
- * once its owner wrote nothing for the time of a lease, and starts its idle workers again.
+ * once its owner wrote nothing for the time of a lease, and starts its idle workers again. `boards` is a text when meld
+ * mcp did not connect: why not.
  */
-export async function resumeRun(io: Io, boards: Boards | undefined, choice: string): Promise<string> {
-  if (!boards) return NEEDS_BUN
+export async function resumeRun(io: Io, boards: Boards | string, choice: string): Promise<string> {
+  if (typeof boards === 'string') return `${NEEDS_BUN}. meld mcp did not connect: ${boards}`
   const now = await io.now()
   if (!choice) return listing(await boards.list(), boards.current(), now)
   if (choice === boards.current()) return 'This session works on that board already.'

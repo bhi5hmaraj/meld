@@ -5,10 +5,10 @@ import { controlRun, countStep, guardCall, markWorker, refreshFacts, restartIdle
 import { cleanFolders } from '../core/clean'
 import type { BoardRead, Boards, BoardSummary, Committed } from '../core/remote-store'
 import { resumeRun } from '../core/resume'
-import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL_SPECS, WORKER_SYSTEM } from '../core/contract'
+import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL, TOOL_SPECS, WORKER_SYSTEM } from '../core/contract'
 import type { AgentState, Files, Io } from '../core/ports'
 import { parseStart, WORKER_TYPE } from '../core/options'
-import { adoptedOf, boardToolPrefix, sessionStore, valueOf } from './board-store'
+import { adoptedOf, refusesBoardCall, sessionStore, storeNote, valueOf, withNote } from './board-store'
 import type { SessionBoard } from './board-store'
 import { DEFAULT_VIEW, paneTree } from './pane'
 
@@ -26,7 +26,7 @@ const PRESS_KEYS = [START_KEY, ...STEER_PRESETS.map(preset => `preset-${preset.k
 
 let sessionCwd = ''
 /** The board of this session in meld mcp. With no board server, each hook keeps the run in the session state, as meld 0.8 does. */
-const board: SessionBoard = { server: '', id: '', owner: '' }
+const board: SessionBoard = { server: '', id: '', owner: '', problem: '' }
 let refreshing = false
 
 function stateOf(status: AgentStatus): AgentState {
@@ -48,8 +48,9 @@ function stateOf(status: AgentStatus): AgentState {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     sessionCwd = e.cwd
-    const connected = await $.mcp.connect('board').catch(() => undefined)
-    board.server = connected?.isConnected ? connected.server : ''
+    const connected = await $.mcp.connect('board').catch((error: unknown) => ({ isConnected: false as const, message: String(error) }))
+    board.server = connected.isConnected ? connected.server : ''
+    board.problem = connected.isConnected ? '' : connected.message
     board.owner = await $.session.id()
     board.id = (await read($, boardRef)) ?? board.owner
     const io: Io = {
@@ -167,7 +168,7 @@ export const register: Register = on => {
             },
           }
         : undefined
-      return { text: await resumeRun(io, boards, args) }
+      return { text: await resumeRun(io, boards ?? board.problem, args) }
     }
     await io.openPane(true)
     return { text: 'The pane is open.' }
@@ -243,12 +244,13 @@ export const register: Register = on => {
         toast: text => $.ui.toast(text),
         openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
       }
-      return serveTool(io, e)
+      const replied = await serveTool(io, e)
+      return e.agentId === undefined && String(e.tool) === TOOL.board ? withNote(replied, storeNote(board)) : replied
     },
   ).catch(($, e, next) => (next.called ? next(e) : { deny: 'meld: the board failed. Try the call again.' }))
 
   on('tool.call', async ($, e, next) => {
-    if (board.server && String(e.tool).startsWith(boardToolPrefix(board.server))) return { deny: 'Only meld calls the board store of meld mcp.' }
+    if (refusesBoardCall(String(e.tool), board.server, next.origin.plugin)) return { deny: 'Only meld calls the board store of meld mcp.' }
     if (String(e.tool).startsWith(MELD_TOOL)) return next(e)
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),

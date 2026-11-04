@@ -92,6 +92,13 @@ test('meld mcp answers initialize with its name and the tools capability, and li
   expect(await client.end()).toBe(0)
 })
 
+test('meld mcp speaks the version of the protocol that Claude Code 2.1.318 asks for, and its newest version for an unknown one', async () => {
+  const client = new Client(tempDb())
+  expect((await client.request('initialize', { protocolVersion: '2025-11-25' })).result?.protocolVersion).toBe('2025-11-25')
+  expect((await client.request('initialize', { protocolVersion: '2099-01-01' })).result?.protocolVersion).toBe('2025-11-25')
+  await client.end()
+})
+
 test('a commit through the tools keeps the run in the file for the next process', async () => {
   const db = tempDb()
   const first = new Client(db)
