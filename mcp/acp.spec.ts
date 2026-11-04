@@ -26,6 +26,11 @@ async function until(check: () => boolean): Promise<void> {
   if (!check()) throw new Error('the update did not come')
 }
 
+async function allowLater(): Promise<'allow'> {
+  await Bun.sleep(20)
+  return 'allow'
+}
+
 async function started(folder: string, updates: AcpUpdate[], asks: PermissionAsk[] = []): Promise<AcpAgent> {
   const agent = await AcpAgent.start({
     command: STUB,
@@ -74,6 +79,15 @@ test('a permission request gets the verdict of the runner: an edit outside the f
   expect(await agent.prompt('Edit [outside]')).toBe('end_turn')
   expect(asks).toEqual([{ title: 'Edit /etc/stub-agent.txt', kind: 'edit', paths: ['/etc/stub-agent.txt'] }])
   expect(updates).toContainEqual({ kind: 'tool_call_update', text: '', status: 'failed', toolCallId: 't1' })
+})
+
+test('a verdict that comes later still answers the permission request', async () => {
+  const folder = newFolder()
+  const updates: AcpUpdate[] = []
+  const agent = await AcpAgent.start({ command: STUB, cwd: folder, mcpServers: [MELD_SERVER], onUpdate: update => updates.push(update), decide: allowLater })
+  agents.push(agent)
+  expect(await agent.prompt('Add a file')).toBe('end_turn')
+  expect(updates).toContainEqual({ kind: 'tool_call_update', text: '', status: 'completed', toolCallId: 't1' })
 })
 
 test('a second prompt continues the same session', async () => {

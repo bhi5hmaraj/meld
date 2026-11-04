@@ -28,10 +28,11 @@ export type AcpOptions = {
   env?: Record<string, string>
   mcpServers: McpServerSpec[]
   onUpdate(update: AcpUpdate): void
-  decide(ask: PermissionAsk): 'allow' | 'reject'
+  decide(ask: PermissionAsk): Verdict | Promise<Verdict>
 }
 
 type PermissionOption = { optionId: string; kind: string }
+type Verdict = 'allow' | 'reject'
 
 /** An ACP agent process with one session. meld runs one prompt at a time, and a new prompt continues the session. */
 export class AcpAgent {
@@ -58,7 +59,7 @@ export class AcpAgent {
     const child = Bun.spawn(options.command, { cwd: options.cwd, env: { ...process.env, ...options.env }, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' })
     const peer = new Peer(line => writeLine(child, line), {
       request: async (method, params) => {
-        if (method === 'session/request_permission') return outcomeOf(params, options.decide(askOf(params)))
+        if (method === 'session/request_permission') return outcomeOf(params, await options.decide(askOf(params)))
         throw new Error(`meld gives no ${method}`)
       },
       notify: (method, params) => {
@@ -146,7 +147,7 @@ function askOf(params: Record<string, unknown>): PermissionAsk {
 }
 
 /** The answer to a permission request: the option of the verdict that holds for this call only, else for every call. */
-function outcomeOf(params: Record<string, unknown>, verdict: 'allow' | 'reject'): object {
+function outcomeOf(params: Record<string, unknown>, verdict: Verdict): object {
   const options = (Array.isArray(params.options) ? params.options : []).filter(isRecord) as PermissionOption[]
   const option = options.find(one => one.kind === `${verdict}_once`) ?? options.find(one => one.kind === `${verdict}_always`)
   return { outcome: option ? { outcome: 'selected', optionId: option.optionId } : { outcome: 'cancelled' } }
