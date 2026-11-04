@@ -143,9 +143,9 @@ export function addTokens(run: Run, id: WorkerId, tokens: number): Run {
   return replaceWorker(run, { ...worker, tokens: worker.tokens + tokens })
 }
 
-/** A new agent takes the place of a worker whose run ended: it works in the same folder and reads its rules again. */
+/** A new agent takes the place of a worker whose run ended: it works in the same folder, and reads its rules and the current context again. */
 export function restartWorker(run: Run, id: WorkerId, agentId: string, now: number): Run {
-  const worker = findWorker(run, id)
+  const { seenContext: _seen, ...worker } = findWorker(run, id)
   const restarted = replaceWorker(run, { ...worker, agentId, state: 'working', briefed: false, activity: 'started again', activityAt: now })
   return withEntry(restarted, { at: now, by: 'you', kind: 'event', text: `${id} starts again` })
 }
@@ -336,14 +336,27 @@ export function currentContext(run: Run, limit = CONTEXT_SHOWN): ContextEntry[] 
     .slice(0, limit)
 }
 
-/** The context that a board reply carries to a worker. Each entry that the reply shows counts the worker as a reader, unless the worker wrote it. */
+/**
+ * The context that a board reply carries to a worker, newest first. The first reply to a new agent carries the current
+ * entries, CONTEXT_SHOWN at most; each later reply carries only the current entries that are new since the last reply,
+ * other than the entries of the worker. Each entry that a reply carries counts the worker as a reader, unless the worker
+ * wrote it, so seenBy names the workers that got the entry.
+ */
 export function passContext(run: Run, by: WorkerId): { run: Run; context: ContextView[] } {
-  const shown = new Set(currentContext(run).map(entry => entry.id))
+  const you = findWorker(run, by)
+  const carried = new Set(newContextFor(run, you).map(entry => entry.id))
   const context = contextOf(run).map(entry =>
-    shown.has(entry.id) && entry.by !== by && !entry.seenBy.includes(by) ? { ...entry, seenBy: [...entry.seenBy, by] } : entry,
+    carried.has(entry.id) && entry.by !== by && !entry.seenBy.includes(by) ? { ...entry, seenBy: [...entry.seenBy, by] } : entry,
   )
-  const passed = { ...run, context }
-  return { run: passed, context: currentContext(passed).map(viewOf) }
+  const passed = replaceWorker({ ...run, context }, { ...you, seenContext: context.at(-1)?.id ?? 0 })
+  return { run: passed, context: context.filter(entry => carried.has(entry.id)).reverse().map(viewOf) }
+}
+
+/** The current entries that are new for the agent of a worker: all of them, CONTEXT_SHOWN at most, before its first reply. */
+function newContextFor(run: Run, worker: Worker): ContextEntry[] {
+  const seen = worker.seenContext
+  if (seen === undefined) return currentContext(run)
+  return currentContext(run, Infinity).filter(entry => entry.id > seen && entry.by !== worker.id)
 }
 
 export function addCheck(run: Run, by: WorkerId, check: CheckInput, now: number): Change<Entry> {
@@ -415,7 +428,7 @@ export function boardFor(run: Run, by: WorkerId): { run: Run; view: BoardView } 
     integrator: run.integrator,
     final: run.final,
   }
-  const seen: Worker = { ...you, seenRevision: run.revision, seenEntry: run.log.at(-1)?.id ?? 0 }
+  const seen: Worker = { ...findWorker(passed.run, by), seenRevision: run.revision, seenEntry: run.log.at(-1)?.id ?? 0 }
   return { run: replaceWorker(passed.run, seen), view }
 }
 
