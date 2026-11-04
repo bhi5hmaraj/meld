@@ -1,8 +1,8 @@
 import type { CommandRunResult, ToolCallInput, ToolCallResult, TurnUsage } from 'claude-code'
 
-import type { BoardView, Change, Facts, NewTask, PaneView, Run, Task, TaskSize, VcsKind, Worker, WorkerId, WorkerState } from '../types'
+import type { BoardView, Change, Facts, Failure, NewTask, PaneView, Run, Task, TaskSize, VcsKind, Worker, WorkerId, WorkerState } from '../types'
 import * as board from './board'
-import { splitNudge, TOOL, wakeText, workerPrompt, workerRules } from './contract'
+import { HAND_BACK, integrateDetail, integrateStep, splitNudge, TOOL, wakeText, workerPrompt, workerRules } from './contract'
 import { headCommit, isDirty, repoRoot } from './git'
 import type { Io, Spawned } from './io'
 import { agentsOf, parseStart } from './options'
@@ -16,7 +16,9 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 const HANDBACK_TOOL = 'SubagentHandback'
 const COMMIT_TOOLS = new Set<string>([TOOL.finishTask, TOOL.check, TOOL.finish])
 const OPEN_WORK_TOOLS = new Set<string>([TOOL.addTasks, TOOL.split, TOOL.release])
-const LIVE_STATES = new Set(['starting', 'working', 'ready'])
+/** The states of a run whose agents can still work. */
+export const LIVE_STATES: ReadonlySet<string> = new Set(['starting', 'working', 'ready'])
+const ACTIVE_RUN = new Set(['starting', 'working'])
 const BIND_POLL_MS = 200
 const BIND_POLLS = 100
 const NUDGE_LIMIT = 3
@@ -27,10 +29,13 @@ export const LEADING_CD = /^(?:\s*cd\s+\S+\s*(?:&&|;)\s*)+/
 
 type Args = Record<string, unknown>
 type Refused = { error: string; message: string }
+/** The change of a tool call, with what its reply gives beside the value. */
+type Made = { run: Run; value: unknown; extra?: object } | Failure
 
 let pendingSpawns = 0
 let restarting = false
 let mirroring: Promise<void> = Promise.resolve()
+let merging: Promise<void> = Promise.resolve()
 
 export async function readRun(io: Io): Promise<Run | null> {
   return (await io.read()) ?? null
@@ -68,6 +73,11 @@ function mirrorBoard(io: Io): Promise<void> {
 export async function startRun(io: Io, cwd: string, options: StartOptions): Promise<CommandRunResult> {
   const current = await readRun(io)
   if (current && LIVE_STATES.has(current.state)) return { text: 'A run is active. Deliver, discard or stop it in the meld pane first.' }
+  if (current?.state === 'stopped') {
+    const kept = await keptWork(io, current)
+    if (kept) return { text: kept }
+    await dropRun(io, current)
+  }
   const named = await namedRepo(io, options.request)
   const repo = named?.repo ?? (await repoRoot(io, cwd))
   if (!repo) return { text: 'meld needs a git repository in the working directory.' }
@@ -99,6 +109,31 @@ export async function startRun(io: Io, cwd: string, options: StartOptions): Prom
   const notStarted = refused.length ? ` ${refused.length} did not start: ${refused[0]}.` : ''
   const dirty = (await isDirty(io, repo)) ? ' Your uncommitted changes are not in their workspaces.' : ''
   return { text: `Run ${id}: ${workers.length} workers on ${kind}, from commit ${base.slice(0, 7)}.${fallback}${notStarted}${dirty}` }
+}
+
+/**
+ * Why a new start cannot take the place of a stopped run: its workspaces hold commits or uncommitted edits, or meld
+ * cannot read them. Undefined when they hold no work, as after a start that started no worker. jj records the files
+ * of each workspace first, as a worker can stop after an edit and before its next jj command.
+ */
+async function keptWork(io: Io, run: Run): Promise<string | undefined> {
+  const lanes = await vcsFor(run.vcs).lanes(io, run, { snapshot: true })
+  const home = runHome(run.id)
+  const unread = lanes.filter(lane => lane.error !== undefined)
+  if (unread.length) {
+    const errors = unread.map(lane => `${lane.id}: ${lane.error?.split('\n')[0]}`).join('; ')
+    return `Run ${run.id} stopped, and meld cannot read its workspaces in ${home} (${errors}), so they can hold work. Discard in the meld pane removes them, then you can start again.`
+  }
+  const commits = new Set(lanes.flatMap(lane => lane.commits.map(fact => fact.commit))).size
+  const edits = lanes.filter(lane => lane.edits).map(lane => lane.id)
+  if (!commits && !edits.length) return undefined
+  const edited = edits.length ? `, and uncommitted edits in ${listed(edits)}` : ''
+  return `Run ${run.id} stopped with work in ${home}: ${commits} commit${commits === 1 ? '' : 's'}${edited}. Discard in the meld pane removes its workspaces, then you can start again.`
+}
+
+/** Names as a list in words: "w1", "w1 and w2", "w1, w2 and w3". */
+function listed(names: string[]): string {
+  return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : (names[0] ?? '')
 }
 
 /** The start form of the pane: its task, number of agents, model and version control. */
@@ -193,8 +228,37 @@ export async function serveTool(io: Io, e: ToolCallInput, cwd = ''): Promise<Too
     return counted.run
   })
   await afterChange(io, worker.id, tool)
+  if (tool === TOOL.finishTask) await mergeFinished(io, worker.id)
   await sendNudge(io, worker.id, nudge)
   return reply(answer)
+}
+
+/**
+ * Merges the commit of each finished task that the integration line does not hold into the line, oldest first, with no
+ * agent. A merge that conflicts or fails adds a task "integrate #N", and the working peers of the finisher hear of it.
+ * One merge runs at a time, as the line moves only from the head that a merge read.
+ */
+function mergeFinished(io: Io, by: WorkerId): Promise<void> {
+  merging = merging.then(() => mergeUnmerged(io, by)).catch(() => undefined)
+  return merging
+}
+
+async function mergeUnmerged(io: Io, by: WorkerId): Promise<void> {
+  const run = await readRun(io)
+  if (!run || !ACTIVE_RUN.has(run.state)) return
+  const vcs = vcsFor(run.vcs)
+  let added = false
+  for (const task of board.unmergedTasks(run)) {
+    const merged = await vcs.mergeIntoLine(io, run, task.commit ?? '', `meld: integrate #${task.id} ${task.title}`)
+    const now = await io.now()
+    await writeRun(io, current => {
+      if (merged.state === 'merged') return board.lineMerged(current, task.id, merged.head, now)
+      return runOf(board.addIntegrateTask(current, task.id, integrateDetail(current, task, merged), now), current)
+    })
+    added ||= merged.state !== 'merged'
+  }
+  const after = added ? await readRun(io) : null
+  for (const peer of after?.workers ?? []) if (peer.id !== by && peer.state === 'working') tell(io, peer, wakeText('There is open work on the board.'))
 }
 
 /** A tool call of a worker: the worker works, and the call counts. A call can bring a leaf of the worker to its nudge. */
@@ -208,10 +272,10 @@ async function sendNudge(io: Io, by: WorkerId, task: Task | undefined): Promise<
 }
 
 /** A refusal leaves the run as it was; a change answers with its value and the steers that the worker has not seen. */
-function answered(run: Run, by: WorkerId, change: Change<unknown> | Refused): { run: Run; answer: object } {
+function answered(run: Run, by: WorkerId, change: Made | Refused): { run: Run; answer: object } {
   if ('error' in change) return { run, answer: change }
   const taken = board.takeNotice(change.run, by)
-  return { run: taken.run, answer: { ok: true, value: change.value, notice: taken.notice } }
+  return { run: taken.run, answer: { ok: true, value: change.value, ...change.extra, notice: taken.notice } }
 }
 
 /** The start tool reads its fields as /meld reads its options, so both refuse the same input. */
@@ -244,19 +308,19 @@ async function withResolvedCommit(io: Io, tool: string, args: Args, worker: Work
   return { args: { ...args, commit: found.commit } }
 }
 
-function mutate(run: Run, by: WorkerId, tool: string, args: Args, now: number): Change<unknown> {
+function mutate(run: Run, by: WorkerId, tool: string, args: Args, now: number): Made {
   switch (tool) {
     case TOOL.addTasks:
       return board.addTasks(run, by, { seen: Number(args.seen), tasks: newTasks(args.tasks) }, now)
     case TOOL.claim:
-      return board.claimTask(run, by, Number(args.task), Number(args.version), now)
+      return withHandovers(board.claimTask(run, by, Number(args.task), Number(args.version), now))
     case TOOL.split:
-      return board.splitTask(run, by, Number(args.task), Number(args.version), newTasks(args.tasks), now)
+      return board.splitTask(run, by, { task: Number(args.task), version: Number(args.version), seen: Number(args.seen), tasks: newTasks(args.tasks) }, now)
     case TOOL.release:
       return board.releaseTask(run, by, Number(args.task), Number(args.version), text(args.note), now)
     case TOOL.finishTask: {
       const shared = { interfaces: optionalText(args.interfaces), unfinished: optionalText(args.unfinished) }
-      return board.finishTask(run, by, Number(args.task), Number(args.version), text(args.commit), text(args.summary), now, shared)
+      return withHandBack(board.finishTask(run, by, Number(args.task), Number(args.version), text(args.commit), text(args.summary), now, shared), by)
     }
     case TOOL.note:
       return board.addNote(run, by, text(args.text), args.commit === undefined ? undefined : text(args.commit), now)
@@ -273,6 +337,17 @@ function mutate(run: Run, by: WorkerId, tool: string, args: Args, now: number): 
     default:
       return { error: 'NOT_FOUND', message: `meld has no tool ${tool}.` }
   }
+}
+
+/** A claim answers with the handovers of the done tasks that the claimed task needs, for an agent that starts fresh. */
+function withHandovers(change: Change<Task>): Made {
+  return board.isFailure(change) ? change : { ...change, extra: board.nonEmpty('handovers', board.handoversFor(change.run, change.value.id)) }
+}
+
+/** A finish tells a worker that claims no other task to hand back: meld starts a new agent for the next task. */
+function withHandBack(change: Change<Task>, by: WorkerId): Made {
+  if (board.isFailure(change) || change.run.tasks.some(task => task.state === 'claimed' && task.owner === by)) return change
+  return { ...change, extra: { next: HAND_BACK } }
 }
 
 function newTasks(value: unknown): NewTask[] {
@@ -473,7 +548,20 @@ export function freshTokens(usage: TurnUsage | undefined): number {
   return usage.input_tokens + usage.cache_creation_input_tokens + usage.output_tokens
 }
 
-/** A worker's turn ended: it is idle and its tokens add up. The clock of meld starts workers again (see restartIdleWorkers). */
+/**
+ * One model call of an agent: its fresh tokens add up on its worker at once. A worker does a task in one long turn, so
+ * a count at the end of the turn showed 0 tokens while it worked. The main session and agents that are no worker count nothing.
+ */
+export async function countStep(io: Io, agentId: string | undefined, usage: TurnUsage | null | undefined): Promise<void> {
+  const tokens = freshTokens(usage ?? undefined)
+  if (agentId === undefined || !tokens) return
+  const run = await readRun(io)
+  const worker = run ? board.workerOf(run, agentId) : undefined
+  if (!worker) return
+  await writeRun(io, current => board.addTokens(current, worker.id, tokens))
+}
+
+/** A worker's turn ended: it is idle. Its tokens added up at each model call (countStep). The clock of meld starts workers again (see restartIdleWorkers). */
 export async function markWorker(io: Io, agentId: string | undefined, state: WorkerState, tokens = 0): Promise<void> {
   if (agentId === undefined) return
   const run = await readRun(io)
@@ -486,10 +574,10 @@ export async function markWorker(io: Io, agentId: string | undefined, state: Wor
 type Restart = { worker: Worker; step: string }
 
 /**
- * One beat of the clock. The run of an idle worker has ended (the engine drops a spawned agent at its hand-back), so
- * meld starts a new agent for it when there is work for it: news on the board that it has not read, with an open task
- * or a task of its own; or, with every worker idle, the owners of unfinished tasks, then idle workers for open tasks,
- * else the lead to plan, steer or integrate. Each beat that starts a worker counts; a finished task or a steer resets
+ * One beat of the clock. The run of an idle worker has ended (the engine drops a spawned agent at its hand-back, and an
+ * agent hands back after each task), so meld starts a new agent for it when there is work for it: a task that it can
+ * claim, one worker for each such task; news on the board that it has not read, for a task of its own; or, with every
+ * worker idle, the owners of unfinished tasks, then idle workers for open tasks, else the lead to plan, steer or integrate. Each beat that starts a worker counts; a finished task or a steer resets
  * the count, so after three beats that finish nothing meld stops and tells the person once. One beat runs at a time.
  *
  * Only hooks that no worker needs call it: an agent skips the hook that started it, and an agent that a clock or a
@@ -530,10 +618,9 @@ function restartsFor(run: Run): Restart[] {
   const live = run.workers.filter(worker => worker.state !== 'stopped')
   const idle = live.filter(worker => worker.state === 'idle')
   const everyoneIdle = idle.length === live.length
-  const ready = everyoneIdle ? idle : idle.filter(worker => hasNews(run, worker))
   const open = claimable(run.tasks)
-  const owners = ready.filter(worker => claimsOf(run, worker).length)
-  const takers = ready.filter(worker => !claimsOf(run, worker).length).slice(0, open.length)
+  const owners = idle.filter(worker => claimsOf(run, worker).length && (everyoneIdle || hasNews(run, worker)))
+  const takers = idle.filter(worker => !claimsOf(run, worker).length).slice(0, open.length)
   const restarts = [
     ...owners.map(worker => ({ worker, step: `Your task is not done: ${titles(claimsOf(run, worker))}. Go on with it, or release it with a note.` })),
     ...takers.map(worker => ({ worker, step: `These tasks are open: ${titles(open)}. Claim one and do it.` })),
@@ -561,7 +648,7 @@ function leadStep(run: Run, lead: Worker): string {
   const steer = lead.seenRevision < run.revision ? board.steersOf(run).at(-1) : undefined
   if (steer !== undefined) return `The person changed the request (revision ${run.revision}): ${steer}`
   if (!run.tasks.length && !run.integrator) return `There are no tasks yet. Split the request into tasks with ${TOOL.addTasks}, then claim one.`
-  return `All tasks are done. Integrate: call ${TOOL.integrate}, merge the work of every worker into yours, run the checks, then call ${TOOL.finish}.`
+  return integrateStep(run, board.lackingTasks(run))
 }
 
 export async function steerRun(io: Io, instruction: string): Promise<string> {
@@ -587,9 +674,13 @@ export async function steerRun(io: Io, instruction: string): Promise<string> {
   const live = run.workers.filter(worker => worker.state !== 'stopped')
   const running = live.filter(worker => worker.state === 'working')
   for (const worker of running) tell(io, worker, step)
-  if (running.length === live.length) return `All ${live.length} workers get revision ${revision}.`
-  if (running.length) return `Revision ${revision}: ${running.length} running workers get it; the others see it when meld starts them again.`
   if (!live.length) return `Revision ${revision}: no worker is left to take it.`
+  if (running.length === live.length) return live.length === 1 ? `The worker gets revision ${revision}.` : `All ${live.length} workers get revision ${revision}.`
+  if (running.length) {
+    const gets = running.length === 1 ? '1 running worker gets it' : `${running.length} running workers get it`
+    const others = live.length - running.length === 1 ? 'the other sees it when meld starts it again' : 'the others see it when meld starts them again'
+    return `Revision ${revision}: ${gets}; ${others}.`
+  }
   const started = await restartIdleWorkers(io)
   if (!started.length) return `Revision ${revision}: every worker has ended, and meld could not start one again.`
   return `Revision ${revision}: meld starts ${started.join(', ')} again with it.`
@@ -615,12 +706,32 @@ export async function stopOne(io: Io, id: WorkerId): Promise<string> {
   return `Stopped ${id}.`
 }
 
+/** The longest subject of the merge commit of a delivery, with its 'meld: '. */
+const SUBJECT_CHARS = 72
+const SUBJECT_PREFIX = 'meld: '
+
+/**
+ * The message of the merge commit of a delivery. Its subject is 'meld: ' and the summary of the final commit, or the first
+ * line of the request when the summary is empty, cut at its last space to 72 characters. Its body holds the full request.
+ */
+export function deliveryMessage(run: Run): string {
+  const summary = run.final?.summary.split('\n')[0]?.trim() || run.request.split('\n')[0]?.trim() || ''
+  return `${cutAtSpace(`${SUBJECT_PREFIX}${summary}`, SUBJECT_CHARS)}\n\n${run.request.trim()}`
+}
+
+/** The text cut at its last space within the limit; a text with no such space after the prefix is cut at the limit. */
+function cutAtSpace(text: string, limit: number): string {
+  if (text.length <= limit) return text
+  const space = text.slice(0, limit + 1).lastIndexOf(' ')
+  return space > SUBJECT_PREFIX.length ? text.slice(0, space).trimEnd() : text.slice(0, limit)
+}
+
 export async function deliver(io: Io): Promise<string> {
   const run = await readRun(io)
   if (!run || run.state !== 'ready' || !run.final) return 'There is no final commit to deliver.'
   if (await isDirty(io, run.repo)) return 'Commit or stash the changes in your checkout first, then deliver.'
   const vcs = vcsFor(run.vcs)
-  const merged = await vcs.deliver(io, run, run.final.commit, `meld: ${run.request.split('\n')[0]?.slice(0, 72)}`)
+  const merged = await vcs.deliver(io, run, run.final.commit, deliveryMessage(run))
   if (!merged.ok) return `The merge stopped, and nothing changed: ${merged.err || merged.out}`
   await vcs.remove(io, run)
   const now = await io.now()
@@ -632,10 +743,15 @@ export async function discard(io: Io): Promise<string> {
   const run = await readRun(io)
   if (!run) return 'There is no run.'
   if (LIVE_STATES.has(run.state)) await stopAll(io)
+  await dropRun(io, run)
+  return 'The run and its workspaces are gone.'
+}
+
+/** Removes the workspaces of a run that meld did not deliver, then the run and its facts. */
+async function dropRun(io: Io, run: Run): Promise<void> {
   if (run.state !== 'delivered') await vcsFor(run.vcs).remove(io, run)
   await save(io, () => null)
   await io.writeFacts(null)
-  return 'The run and its workspaces are gone.'
 }
 
 /** Reads what the version control shows of the run, for the pane: the commits of each worker, and the change of the final commit. */

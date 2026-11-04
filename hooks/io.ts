@@ -8,6 +8,18 @@ export type Spawned = { agentId?: string; deny?: string }
 
 export type AgentState = 'live' | 'ended'
 
+/** One entry of a folder as the engine lists it: its name, its kind, and for a file when it last changed (ms since the epoch). */
+export type FolderEntry = { name: string; kind: 'file' | 'dir' | 'other'; mtimeMs: number }
+
+/**
+ * What /meld-clean reads of the file system beside the Io: the entries of a folder, and the text of a file. Each call
+ * rejects when the path is missing. Only the hook of the commands gives it, so the Io of every other hook stays as it is.
+ */
+export type Files = {
+  list(path: string): Promise<FolderEntry[]>
+  readText(path: string): Promise<string>
+}
+
 /**
  * What the logic of meld needs from the engine. A hooks module spells `$` only at its call sites, so each hook
  * builds an Io of closures over its own `$`, and the logic takes the Io. A test gives a fake one.

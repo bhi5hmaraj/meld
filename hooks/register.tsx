@@ -1,9 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentStatus, Register } from 'claude-code'
 
-import { freshTokens, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll } from './actions'
+import { countStep, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll } from './actions'
+import { cleanFolders } from './clean'
 import { BOARD_TOOLS, STEER_PRESETS, TOOL_SPECS, WORKER_SYSTEM } from './contract'
-import type { AgentState, Io } from './io'
+import type { AgentState, Files, Io } from './io'
 import { parseStart, WORKER_TYPE } from './options'
 import { DEFAULT_VIEW, paneTree } from './pane'
 
@@ -68,6 +69,7 @@ export const register: Register = on => {
     await $.command.register({ name: 'meld-steer', description: 'Give every meld worker a new instruction', argumentHint: '<instruction>', immediate: true })
     await $.command.register({ name: 'meld-status', description: 'Open the meld pane', immediate: true })
     await $.command.register({ name: 'meld-stop', description: 'Stop the meld workers; their workspaces stay', immediate: true })
+    await $.command.register({ name: 'meld-clean', description: 'List the folders of old meld runs, or remove them', argumentHint: '[<id>...] [--all]', immediate: true })
     $.clock.every(FACTS_MS, () => {
       if (refreshing) return
       refreshing = true
@@ -87,8 +89,8 @@ export const register: Register = on => {
     ($, e, next) => next(e),
   )
 
-  on('command.run', { command: ['meld', 'meld-steer', 'meld-status', 'meld-stop'] }, async ($, e) => {
-    const io: Io = {
+  on('command.run', { command: ['meld', 'meld-steer', 'meld-status', 'meld-stop', 'meld-clean'] }, async ($, e) => {
+    const io: Io & Files = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
       cost: async () => (await $.session.usage()).cost?.usd,
@@ -107,6 +109,8 @@ export const register: Register = on => {
       send: (agentId, text) => $.session.send({ to: { agentId }, text }),
       toast: text => $.ui.toast(text),
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
+      list: path => $.fs.list(path),
+      readText: path => $.fs.read(path),
     }
     const args = e.args.trim()
     if (e.command === 'meld') {
@@ -115,6 +119,7 @@ export const register: Register = on => {
     }
     if (e.command === 'meld-steer') return { text: await steerRun(io, args) }
     if (e.command === 'meld-stop') return { text: await stopAll(io) }
+    if (e.command === 'meld-clean') return { text: await cleanFolders(io, args) }
     await io.openPane(true)
     return { text: 'The pane is open.' }
   })
@@ -200,6 +205,35 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
 
+  /** Each model call of a worker adds its tokens at once: a worker does a task in one long turn. */
+  on('turn.step', async function* ($, e, next) {
+    const response = yield* next(e)
+    if (e.agentId === undefined) return response
+    const io: Io = {
+      run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
+      now: () => $.clock.now(),
+      cost: async () => (await $.session.usage()).cost?.usd,
+      agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
+      sleep: ms => $.clock.sleep(ms),
+      read: () => read($, runRef),
+      write: change => update($, runRef, change),
+      readFacts: () => read($, factsRef),
+      writeFacts: facts => update($, factsRef, () => facts),
+      writeFile: (path, text) => $.fs.write(path, text),
+      spawn: async args => {
+        const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
+        return { agentId: spawned.agentId, deny: spawned.deny }
+      },
+      command: (name, args) => $.command.run({ command: name, args }),
+      send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+      toast: text => $.ui.toast(text),
+      openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
+    }
+    await countStep(io, e.agentId, response.usage).catch(() => undefined)
+    return response
+  })
+
+
   on('turn.complete', async ($, e, next) => {
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
@@ -222,7 +256,7 @@ export const register: Register = on => {
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
     }
     const completed = await next(e)
-    await markWorker(io, e.agentId, 'idle', freshTokens(e.usage))
+    await markWorker(io, e.agentId, 'idle')
     if (e.agentId === undefined) await restartIdleWorkers(io)
     return completed
   })

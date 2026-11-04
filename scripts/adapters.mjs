@@ -2,7 +2,7 @@
 /**
  * A check of the git and the jj adapter of hooks/vcs.ts with real processes. tsc compiles hooks/ into CommonJS in a
  * temporary folder. Each adapter goes through a run in a temporary git repository: three workspaces, a commit in
- * each, the integration, resolve, lanes, result, deliver and remove. HOME is a temporary folder, so the check reads and
+ * each, the integration line, the integration, resolve, lanes, result, deliver and remove. HOME is a temporary folder, so the check reads and
  * changes no git or jj config of the person. Run: node scripts/adapters.mjs
  */
 import { spawnSync } from 'node:child_process'
@@ -27,6 +27,7 @@ const STEPS = [
   ['repository', makeRepository],
   ['prepare', prepare],
   ['commit', commit],
+  ['line', line],
   ['integrate', integrate],
   ['resolve', resolve],
   ['lanes', lanes],
@@ -137,6 +138,51 @@ function commitIn(kind, path, message) {
   return sh(path, ['git', 'rev-parse', 'HEAD'])
 }
 
+/**
+ * meld merges the commit of each finished task into the integration line, with no working copy: the first commit moves
+ * the line forward, the others make merge commits, a commit that the line holds changes nothing, and a conflict leaves
+ * the line where it was. A workspace sees the line under its name.
+ */
+async function line(s) {
+  const name = s.vcs.lineName(s.run)
+  let head = s.base
+  for (const [index, id] of IDS.entries()) {
+    const merged = await s.vcs.mergeIntoLine(io, s.run, s.commits[id], `meld: integrate #${index + 1}`)
+    if (merged.state !== 'merged') throw new Error(`the merge of ${id} is ${JSON.stringify(merged)}`)
+    if (index === 0) same(merged.head, s.commits.w1, 'the line after the first merge')
+    head = merged.head
+  }
+  same(sh(s.repo, ['git', '--git-dir', gitDirOf(s), 'log', '-1', '--format=%P', head]).split(' ').length, 2, 'the parents of the head of the line')
+  const files = sh(s.repo, ['git', '--git-dir', gitDirOf(s), 'ls-tree', '--name-only', head]).split('\n')
+  same(files.filter(file => file.startsWith('w')), IDS.map(id => `${id}.txt`), 'the files of the line')
+  same(await s.vcs.mergeIntoLine(io, s.run, s.commits.w2, 'meld: integrate #2 again'), { state: 'merged', head }, 'a second merge of w2')
+  const seen = s.kind === 'jj' ? sh(s.run.workers[2].path, ['jj', 'log', '--no-graph', '-r', name, '-T', 'commit_id']) : sh(s.run.workers[2].path, ['git', 'rev-parse', name])
+  same(seen, head, `${name} in the folder of w3`)
+  const other = otherW1(s)
+  same(await s.vcs.mergeIntoLine(io, s.run, other, 'meld: integrate #4'), { state: 'conflict', head, files: ['w1.txt'] }, 'a merge with a conflict')
+  s.line = head
+  return `${name} moves to ${short(s.commits.w1)}, then merges w2 and w3 into ${short(head)}; a conflict in w1.txt leaves it there`
+}
+
+function gitDirOf(s) {
+  return s.kind === 'jj' ? join(s.home, 'store.git') : join(s.repo, '.git')
+}
+
+/** A commit on the base with another w1.txt, which no lane shows: in the default workspace of jj, or a detached commit of git. */
+function otherW1(s) {
+  const path = s.kind === 'jj' ? join(s.home, 'jj') : s.run.workers[2].path
+  if (s.kind === 'jj') {
+    sh(path, ['jj', 'new', 'meld_base', '-m', 'another w1.txt'])
+    writeFileSync(join(path, 'w1.txt'), 'made by another\n')
+    return sh(path, ['jj', 'log', '--no-graph', '-r', '@', '-T', 'commit_id'])
+  }
+  sh(path, ['git', 'checkout', '-q', '--detach', s.base])
+  writeFileSync(join(path, 'w1.txt'), 'made by another\n')
+  const made = commitIn('git', path, 'another w1.txt')
+  sh(path, ['git', 'checkout', '-q', s.run.workers[2].ref])
+  return made
+}
+
 async function integrate(s) {
   const [first, ...peers] = s.run.workers
   if (s.kind === 'jj') {
@@ -160,7 +206,8 @@ async function resolve(s) {
   same(await s.vcs.resolve(io, s.run, s.run.workers[0], 'all()'), undefined, 'a revision that names many commits')
   const conflicted = conflictIn(join(s.home, 'jj'))
   same(await s.vcs.resolve(io, s.run, s.run.workers[0], conflicted), { commit: conflicted, conflict: true }, 'a commit with a conflict')
-  return `${revision} of each worker; nothing for a bad revision; the conflict of ${short(conflicted)}`
+  same(await s.vcs.mergeIntoLine(io, s.run, conflicted, 'meld: integrate #5'), { state: 'conflict', head: s.line, files: [] }, 'a merge of a commit with a conflict')
+  return `${revision} of each worker; nothing for a bad revision; the conflict of ${short(conflicted)}, which the line does not take`
 }
 
 /** Makes a commit with a conflict in the default workspace of the jj repository, where no worker sees it in its lane. */
@@ -185,7 +232,11 @@ async function lanes(s) {
   for (const [index, id] of ['w2', 'w3'].entries()) {
     same(found[index + 1].commits, [{ commit: s.commits[id], subject: `${id}: add ${id}.txt`, parents: 1, conflict: false }], `the commits of ${id}`)
   }
-  return 'w1 has the merge and the three commits; w2 and w3 have one commit; w2 has edits'
+  writeFileSync(join(s.run.workers[2].path, 'late.txt'), 'edited after the last jj command\n')
+  const read = await s.vcs.lanes(io, s.run, { snapshot: true })
+  same(read.map(lane => [lane.id, lane.edits, lane.error]), [['w1', false, undefined], ['w2', true, undefined], ['w3', true, undefined]], 'the lanes and their edits with a snapshot')
+  same(read[2].commits, found[2].commits, 'the commits of w3 with a snapshot')
+  return 'w1 has the merge and the three commits; w2 and w3 have one commit; w2 has edits; with a snapshot, w3 has its new edit'
 }
 
 async function result(s) {

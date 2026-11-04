@@ -2,11 +2,11 @@ import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
 import { deliver, discard, freshTokens, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, SPAWN_APPROVAL, spawnVerdict, startFromView, startRun, steerRun, stopOne } from '../hooks/actions'
-import { addTasks, bindWorker, claimTask, declareFinal, isFailure, setActivity, startRun as startBoard, steer, takeIntegration } from '../hooks/board'
-import { JJ_RESOLVE_TEMPLATE } from '../hooks/vcs'
+import { addTasks, bindWorker, claimTask, declareFinal, isFailure, setActivity, startRun as startBoard, steer, stopRun, takeIntegration } from '../hooks/board'
+import { JJ_LANE_TEMPLATE, JJ_RESOLVE_TEMPLATE } from '../hooks/vcs'
 import type { AgentSpec, Change, Run, VcsKind, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
-import { STORED_BY_0_6_0 } from './stored-runs'
+import { STORED_BY_0_6_0, STORED_BY_0_7_0 } from './stored-runs'
 
 const NOW = 1_800_000_000_000
 const ID = NOW.toString(36)
@@ -184,6 +184,95 @@ test('a second run waits until the first one ends', async () => {
   )
 })
 
+/** The jj log of the lane of a worker, read in its folder, so jj first records the files there. */
+function jjFreshLog(run: string, worker: WorkerId): string {
+  return `jj -R /tmp/meld/${run}/${worker} log --no-graph --limit 40 -r meld_base..${worker}@ -T ${JJ_LANE_TEMPLATE}`
+}
+
+test('a start over a stopped run with no work removes its workspaces as Discard does, then starts', async () => {
+  const io = ioWith(stopRun(working(), NOW))
+  const result = await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'git' })
+  expect(io.commands).toContain('git worktree remove --force /tmp/meld/r1/w1')
+  expect(io.commands).toContain('git branch -D meld/r1/w2')
+  expect(io.commands).toContain('git branch -D meld/r1/integration')
+  expect(io.commands.indexOf('rm -rf -- /tmp/meld/r1')).toBeLessThan(io.commands.indexOf(`git worktree add -b meld/${ID}/w1 /tmp/meld/${ID}/w1 ${HEAD}`))
+  expect(io.current?.id).toBe(ID)
+  expect(result.text).toBe(`Run ${ID}: 2 workers on git, from commit ${HEAD.slice(0, 7)}.`)
+})
+
+test('a start after a start that started no worker removes the workspaces of the failed start', async () => {
+  const io = ioWith(null)
+  io.spawnDeny = 'the host limit'
+  await startRun(io, '/repo', { request: 'Add a dark theme', agents: TWO, vcs: 'git' })
+  io.spawnDeny = undefined
+  io.now = async () => NOW + 60_000
+  const result = await startRun(io, '/repo', { request: 'Add a dark theme', agents: TWO, vcs: 'git' })
+  expect(io.commands).toContain(`git worktree remove --force /tmp/meld/${ID}/w2`)
+  expect(io.commands).toContain(`rm -rf -- /tmp/meld/${ID}`)
+  expect(io.current?.id).toBe((NOW + 60_000).toString(36))
+  expect(result.text).toBe(`Run ${(NOW + 60_000).toString(36)}: 2 workers on git, from commit ${HEAD.slice(0, 7)}.`)
+})
+
+test('a start over a stopped run with commits refuses, and names the run, its folder and its count of commits', async () => {
+  const io = ioWith(stopRun(working(), NOW))
+  const other = 'e'.repeat(40)
+  io.answers[`git log --format=%H%x09%P%x09%s -n 40 ${HEAD}..meld/r1/w1`] = `${FULL}\t${other} ${HEAD}\tMerge w2\n${other}\t${HEAD}\tAdd add()`
+  io.answers[`git log --format=%H%x09%P%x09%s -n 40 ${HEAD}..meld/r1/w2`] = `${other}\t${HEAD}\tAdd add()`
+  const result = await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'git' })
+  expect(result.text).toBe('Run r1 stopped with work in /tmp/meld/r1: 2 commits. Discard in the meld pane removes its workspaces, then you can start again.')
+  expect(io.ran('git worktree')).toBe(false)
+  expect(io.ran('rm')).toBe(false)
+  expect(io.spawned).toHaveLength(0)
+  expect(io.current).toMatchObject({ id: 'r1', state: 'stopped' })
+})
+
+test('a start over a stopped run with uncommitted edits refuses, and names the workers that made them', async () => {
+  const io = ioWith(stopRun(working(), NOW))
+  io.dirty = true
+  const result = await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'git' })
+  expect(result.text).toBe(
+    'Run r1 stopped with work in /tmp/meld/r1: 0 commits, and uncommitted edits in w1 and w2. Discard in the meld pane removes its workspaces, then you can start again.',
+  )
+  expect(io.ran('rm')).toBe(false)
+})
+
+test('a start over a stopped jj run reads each workspace in its folder, so edits that no jj command recorded count', async () => {
+  const io = ioWith(stopRun(working(3, 'jj'), NOW))
+  io.answers[jjFreshLog('r1', 'w2')] = `${FULL}\t1\t--\tw2@\t\n`
+  const result = await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'auto' })
+  expect(result.text).toBe('Run r1 stopped with work in /tmp/meld/r1: 0 commits, and uncommitted edits in w2. Discard in the meld pane removes its workspaces, then you can start again.')
+  expect(io.commands.filter(command => command.includes(' log '))).toEqual(['w1', 'w2', 'w3'].map(id => jjFreshLog('r1', id as WorkerId)))
+  expect(io.ran('rm')).toBe(false)
+})
+
+test('a start over a stopped run whose workspaces meld cannot read refuses, and removes nothing', async () => {
+  const io = ioWith(stopRun(working(), NOW))
+  io.failing = [`git log --format=%H%x09%P%x09%s -n 40 ${HEAD}..meld/r1/w2`]
+  const result = await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'git' })
+  expect(result.text).toBe(
+    'Run r1 stopped, and meld cannot read its workspaces in /tmp/meld/r1 (w2: git: failed), so they can hold work. Discard in the meld pane removes them, then you can start again.',
+  )
+  expect(io.ran('rm')).toBe(false)
+  expect(io.current?.id).toBe('r1')
+})
+
+test('a start over a stopped run that meld 0.7.0 stored counts the commit of its done task as work', async () => {
+  const io = ioWith(stopRun(STORED_BY_0_7_0, NOW))
+  const toggle = STORED_BY_0_7_0.tasks[1]?.commit ?? ''
+  io.answers[jjFreshLog('r070', 'w3')] = `${FULL}\t1\t-e\tw3@\t\n${toggle}\t1\t--\t\tDark toggle\n`
+  const result = await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'git' })
+  expect(result.text).toBe('Run r070 stopped with work in /tmp/meld/r070: 1 commit. Discard in the meld pane removes its workspaces, then you can start again.')
+})
+
+test('a start over a stopped run that meld 0.7.0 stored, with no work, removes its workspaces and starts', async () => {
+  const io = ioWith(stopRun(STORED_BY_0_7_0, NOW))
+  const result = await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'git' })
+  expect(io.commands).toContain('jj -R /tmp/meld/r070/jj config path --repo')
+  expect(io.commands).toContain('rm -rf -- /tmp/meld/r070')
+  expect(io.current?.id).toBe(ID)
+  expect(result.text).toBe(`Run ${ID}: 2 workers on git, from commit ${HEAD.slice(0, 7)}.`)
+})
+
 test('an edit of a worker outside its worktree is refused with the path inside it', async () => {
   const io = ioWith(working())
   const deny = await guardCall(io, call({ tool: 'Edit', file_path: '/repo/src/a.ts', agentId: 'agent-1' }))
@@ -240,18 +329,40 @@ test('the meld tools refuse an agent that is not a worker', async () => {
   expect(parsed(replied.result)).toMatchObject({ error: 'NOT_WORKER' })
 })
 
-test('a share answers with its entry and the context, newest first', async () => {
+test('a share answers with its entry; the first reply to an agent carries the context, and a later reply no entry of its own', async () => {
   const io = ioWith(working())
-  await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'The tokens are in src/theme.css.', files: ['src/theme.css'], agentId: 'agent-1' }))
-  const replied = await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fail', text: 'jj split opens an editor, and the call hangs.', agentId: 'agent-1' }))
-  expect(parsed(replied.result)).toMatchObject({
+  const first = await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'The tokens are in src/theme.css.', files: ['src/theme.css'], agentId: 'agent-1' }))
+  expect(parsed(first.result)).toMatchObject({
     ok: true,
-    value: { kind: 'fail', by: 'w1' },
-    context: [
-      { kind: 'fail', by: 'w1', text: 'jj split opens an editor, and the call hangs.', files: [], seenBy: [] },
-      { kind: 'fact', by: 'w1', text: 'The tokens are in src/theme.css.', files: ['src/theme.css'], seenBy: [] },
-    ],
+    value: { kind: 'fact', by: 'w1' },
+    context: [{ kind: 'fact', by: 'w1', text: 'The tokens are in src/theme.css.', files: ['src/theme.css'], seenBy: [] }],
   })
+  const replied = await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fail', text: 'jj split opens an editor, and the call hangs.', agentId: 'agent-1' }))
+  expect(parsed(replied.result)).toMatchObject({ ok: true, value: { kind: 'fail', by: 'w1', text: 'jj split opens an editor, and the call hangs.', files: [], seenBy: [] }, context: [] })
+})
+
+test('the board tools carry each entry to a worker once, in the first reply after the share', async () => {
+  const io = ioWith(working())
+  await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'The tokens are in src/theme.css.', agentId: 'agent-1' }))
+  const read = parsed((await serveTool(io, call({ tool: 'mcp__meld__board', agentId: 'agent-2' }))).result)
+  expect(read).toMatchObject({ context: [{ kind: 'fact', text: 'The tokens are in src/theme.css.', seenBy: ['w2'] }] })
+  expect(parsed((await serveTool(io, call({ tool: 'mcp__meld__board', agentId: 'agent-2' }))).result)).toMatchObject({ context: [] })
+  await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fail', text: 'jj split opens an editor, and the call hangs.', agentId: 'agent-1' }))
+  const noted = parsed((await serveTool(io, call({ tool: 'mcp__meld__note', text: 'I take the toggle.', agentId: 'agent-2' }))).result) as { context: object[] }
+  expect(noted.context).toEqual([expect.objectContaining({ kind: 'fail', seenBy: ['w2'] })])
+})
+
+test('the first board read of a restarted worker carries the current entries again', async () => {
+  const io = ioWith(runOf(takeIntegration(working(), 'w2', NOW)))
+  await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'The tokens are in src/theme.css.', agentId: 'agent-1' }))
+  await serveTool(io, call({ tool: 'mcp__meld__board', agentId: 'agent-2' }))
+  await markWorker(io, 'agent-1', 'idle')
+  await markWorker(io, 'agent-2', 'idle')
+  await restartIdleWorkers(io)
+  const agent = io.current?.workers.find(worker => worker.id === 'w2')?.agentId
+  expect(agent).toBe('spawned-1')
+  const view = parsed((await serveTool(io, call({ tool: 'mcp__meld__board', agentId: agent }))).result)
+  expect(view).toMatchObject({ context: [{ kind: 'fact', text: 'The tokens are in src/theme.css.', seenBy: ['w2'] }] })
 })
 
 test('a share that replaces an older entry takes that entry out of the context', async () => {
@@ -420,9 +531,10 @@ test('a worker that ended starts again when a working peer adds tasks', async ()
   expect(io.spawned[0]?.prompt).toContain('These tasks are open: #1 Tokens; #2 Docs')
 })
 
-test('a worker that ended after it read the board stays idle until there is news', async () => {
+test('an owner that ended after it read the board stays idle until there is news', async () => {
   const io = ioWith(working(3))
   await serveTool(io, call({ tool: 'mcp__meld__add_tasks', seen: 0, tasks: [{ title: 'Tokens' }, { title: 'Docs' }], agentId: 'agent-1' }))
+  await serveTool(io, call({ tool: 'mcp__meld__claim', task: 1, version: 1, agentId: 'agent-2' }))
   await serveTool(io, call({ tool: 'mcp__meld__board', agentId: 'agent-2' }))
   await markWorker(io, 'agent-2', 'idle')
   await restartIdleWorkers(io)
@@ -430,6 +542,7 @@ test('a worker that ended after it read the board stays idle until there is news
   await serveTool(io, call({ tool: 'mcp__meld__note', text: 'The tokens are in theme.css', agentId: 'agent-1' }))
   await restartIdleWorkers(io)
   expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w2'])
+  expect(io.spawned[0]?.prompt).toContain('Your task is not done: #1 Tokens')
 })
 
 test('with no tasks and every worker ended, the lead splits the request', async () => {
@@ -549,7 +662,7 @@ test('a steer of a ready run starts the integrator again with the steer', async 
 test('a steer goes as a message to the running workers, and waits for the ended ones', async () => {
   const io = ioWith(working(3))
   await markWorker(io, 'agent-2', 'idle')
-  expect(await steerRun(io, 'Use the brand colours')).toBe('Revision 2: 2 running workers get it; the others see it when meld starts them again.')
+  expect(await steerRun(io, 'Use the brand colours')).toBe('Revision 2: 2 running workers get it; the other sees it when meld starts it again.')
   expect(io.sent.map(message => message.split(':')[0])).toEqual(['agent-1', 'agent-3'])
   expect(io.spawned).toHaveLength(0)
 })
@@ -609,7 +722,7 @@ test('deliver refuses a checkout with uncommitted changes', async () => {
 test('deliver merges the final commit, then removes the workspaces', async () => {
   const io = ioWith(runOf(declareFinal(runOf(takeIntegration(working(), 'w2', NOW)), 'w2', FULL, 'Done', NOW)))
   expect(await deliver(io)).toBe(`Merged ${FULL.slice(0, 7)} into your branch.`)
-  expect(io.commands).toContain(`git merge --no-ff -m meld: Add a dark theme ${FULL}`)
+  expect(io.commands).toContain(`git merge --no-ff -m meld: Done\n\nAdd a dark theme ${FULL}`)
   expect(io.commands).toContain('git worktree remove --force /tmp/meld/r1/w2')
   expect(io.current?.state).toBe('delivered')
 })
@@ -654,7 +767,7 @@ test('add_tasks refuses a size other than S, M or L', async () => {
 test('a split through the board keeps the first part as the claim of the caller, and tells the working peers', async () => {
   const io = ioWith(claimedBy('w1'))
   const parts = [{ title: 'Light tokens' }, { title: 'Dark tokens', size: 'S' }]
-  const replied = await serveTool(io, call({ tool: 'mcp__meld__split', task: 1, version: 2, tasks: parts, agentId: 'agent-1' }))
+  const replied = await serveTool(io, call({ tool: 'mcp__meld__split', task: 1, version: 2, seen: 1, tasks: parts, agentId: 'agent-1' }))
   expect(parsed(replied.result)).toMatchObject({ ok: true })
   expect(io.current?.tasks.map(task => [task.id, task.parent, task.state, task.owner, task.size])).toEqual([
     [1, undefined, 'open', undefined, undefined],
@@ -664,11 +777,27 @@ test('a split through the board keeps the first part as the claim of the caller,
   expect(io.sent).toEqual(['agent-2: meld: There is open work on the board. Read the board with mcp__meld__board, then go on.'])
 })
 
+test('a split through the board with an old task list version fails with STALE_VERSION, gives the current tasks and changes nothing', async () => {
+  const io = ioWith(runOf(addTasks(claimedBy('w1'), 'w2', { seen: 1, tasks: [{ title: 'Contrast check' }] }, NOW)))
+  const parts = [{ title: 'Light tokens' }, { title: 'Dark tokens', needs: [2] }]
+  const replied = await serveTool(io, call({ tool: 'mcp__meld__split', task: 1, version: 2, seen: 1, tasks: parts, agentId: 'agent-1' }))
+  expect(parsed(replied.result)).toMatchObject({ error: 'STALE_VERSION', taskList: 2, tasks: [{ id: 1, title: 'Tokens' }, { id: 2, title: 'Contrast check' }] })
+  expect(io.current?.tasks).toHaveLength(2)
+  expect(io.current?.taskList).toBe(2)
+})
+
+test('a split through the board with no task list version is stale', async () => {
+  const io = ioWith(claimedBy('w1'))
+  const replied = await serveTool(io, call({ tool: 'mcp__meld__split', task: 1, version: 2, tasks: [{ title: 'Light tokens' }, { title: 'Dark tokens' }], agentId: 'agent-1' }))
+  expect(parsed(replied.result)).toMatchObject({ error: 'STALE_VERSION', taskList: 1 })
+  expect(io.current?.tasks).toHaveLength(1)
+})
+
 test('a split ends the count of the leaf, and its first part counts from zero', async () => {
   const io = ioWith(claimedBy('w2'))
-  for (let calls = 2; calls < 40; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
+  for (let calls = 2; calls < 60; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
   const parts = [{ title: 'Light tokens' }, { title: 'Dark tokens' }]
-  await serveTool(io, call({ tool: 'mcp__meld__split', task: 1, version: 2, tasks: parts, agentId: 'agent-2' }))
+  await serveTool(io, call({ tool: 'mcp__meld__split', task: 1, version: 2, seen: 1, tasks: parts, agentId: 'agent-2' }))
   for (let calls = 0; calls < 5; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
   expect(io.sent.filter(message => message.includes('Split #'))).toEqual([])
   expect(io.current?.tasks[1]).toMatchObject({ owner: 'w2', calls: 6 })
@@ -750,16 +879,29 @@ function claimedBy(id: WorkerId): Run {
   return runOf(claimTask(runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }] }, NOW)), id, 1, 1, NOW))
 }
 
-test('a worker with 40 tool calls on one leaf is told one time to split it or finish it', async () => {
+test('a worker with 60 tool calls on one leaf with no size is told one time to split it or finish it', async () => {
   const io = ioWith(claimedBy('w2'))
-  for (let calls = 0; calls <= 40; calls++) await guardCall(io, call({ tool: 'Bash', command: 'pnpm test', agentId: 'agent-2' }))
+  for (let calls = 0; calls <= 60; calls++) await guardCall(io, call({ tool: 'Bash', command: 'pnpm test', agentId: 'agent-2' }))
   expect(io.sent).toEqual(['agent-2: Split #1 into smaller tasks, or finish it.'])
-  expect(io.current?.tasks[0]).toMatchObject({ calls: 41, nudged: true })
+  expect(io.current?.tasks[0]).toMatchObject({ calls: 61, nudged: true })
+})
+
+test('the owner of an S leaf is told to split it after 30 tool calls, and of an L leaf after 120', async () => {
+  const sized = runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Tokens', size: 'S' }, { title: 'Toggle', size: 'L' }] }, NOW))
+  const io = ioWith(runOf(claimTask(runOf(claimTask(sized, 'w1', 1, 1, NOW)), 'w2', 2, 1, NOW)))
+  for (let calls = 1; calls < 30; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-1' }))
+  expect(io.sent).toEqual([])
+  await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-1' }))
+  expect(io.sent).toEqual(['agent-1: Split #1 into smaller tasks, or finish it.'])
+  for (let calls = 1; calls < 120; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
+  expect(io.sent).toHaveLength(1)
+  await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
+  expect(io.sent).toEqual(['agent-1: Split #1 into smaller tasks, or finish it.', 'agent-2: Split #2 into smaller tasks, or finish it.'])
 })
 
 test('a board read counts toward the nudge of a leaf', async () => {
   const io = ioWith(claimedBy('w2'))
-  for (let calls = 1; calls < 40; calls++) await guardCall(io, call({ tool: 'Read', file_path: '/tmp/meld/r1/w2/a.ts', agentId: 'agent-2' }))
+  for (let calls = 1; calls < 60; calls++) await guardCall(io, call({ tool: 'Read', file_path: '/tmp/meld/r1/w2/a.ts', agentId: 'agent-2' }))
   expect(io.sent).toEqual([])
   await serveTool(io, call({ tool: 'mcp__meld__board', agentId: 'agent-2' }))
   expect(io.sent).toEqual(['agent-2: Split #1 into smaller tasks, or finish it.'])
@@ -767,14 +909,16 @@ test('a board read counts toward the nudge of a leaf', async () => {
 
 test('a board tool call counts toward the nudge of a leaf', async () => {
   const io = ioWith(claimedBy('w1'))
-  for (let calls = 1; calls < 40; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-1' }))
+  for (let calls = 1; calls < 60; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-1' }))
   await serveTool(io, call({ tool: 'mcp__meld__note', text: 'The tokens are in theme.css', agentId: 'agent-1' }))
   expect(io.sent).toContain('agent-1: Split #1 into smaller tasks, or finish it.')
 })
 
-test('the owner of a leaf in a run that meld 0.6.0 stored is told to split it after 40 tool calls', async () => {
+test('the owner of a leaf with no size in a run that meld 0.6.0 stored is told to split it after 60 tool calls', async () => {
   const io = ioWith(STORED_BY_0_6_0)
-  for (let calls = 0; calls < 40; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-1' }))
+  for (let calls = 1; calls < 60; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-1' }))
+  expect(io.sent).toEqual([])
+  await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-1' }))
   expect(io.sent).toEqual(['agent-1: Split #2 into smaller tasks, or finish it.'])
 })
 
@@ -787,10 +931,10 @@ test('a restart of a run that meld 0.6.0 stored offers its open task and the tas
   expect(io.spawned[1]?.prompt).toContain('These tasks are open: #3 Docs')
 })
 
-test('a worker that finishes its leaf before 40 tool calls is not told to split it', async () => {
+test('a worker that finishes its leaf before 60 tool calls is not told to split it', async () => {
   const io = ioWith(claimedBy('w2'))
   io.answers['git rev-parse --verify --quiet HEAD^{commit}'] = FULL
-  for (let calls = 2; calls < 40; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
+  for (let calls = 2; calls < 60; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
   await serveTool(io, call({ tool: 'mcp__meld__finish_task', task: 1, version: 2, commit: 'HEAD', summary: 'Tokens', agentId: 'agent-2' }))
   for (let calls = 0; calls < 5; calls++) await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
   expect(io.sent).toEqual([])
