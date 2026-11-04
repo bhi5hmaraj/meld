@@ -49,6 +49,11 @@ export type Vcs = {
    * moves only from the head that the merge read, so a merge that lost a race fails and changes nothing.
    */
   mergeIntoLine(io: Io, run: Run, commit: string, message: string): Promise<LineMerge>
+  /**
+   * Moves the integration line to `commit`, from wherever it is, and makes it when the run has none. A steer of a ready run
+   * moves it to the final commit, so the merges after the steer and the next final build on that commit.
+   */
+  setLine(io: Io, run: Run, commit: string): Promise<CommandResult>
   deliver(io: Io, run: Run, commit: string, message: string): Promise<CommandResult>
   remove(io: Io, run: RunPlace): Promise<void>
   /** The workspace of a worker that joins a live run: from the head of the integration line, or from the base when the run has no line. */
@@ -224,6 +229,8 @@ const GIT: Vcs = {
 
   mergeIntoLine: (io, run, commit, message) => mergeInGit(io, run.repo, `refs/heads/${gitLine(run)}`, run.base, commit, message),
 
+  setLine: (io, run, commit) => git(io, run.repo, ['update-ref', `refs/heads/${gitLine(run)}`, commit]),
+
   deliver: (io, run, commit, message) => mergeInto(io, run.repo, commit, message),
 
   async remove(io, run) {
@@ -304,6 +311,13 @@ const JJ: Vcs = {
     if (merged.state !== 'merged') return merged
     const imported = await command(io, run.repo, ['jj', '-R', jjRepoOf(run.id), '--ignore-working-copy', 'git', 'import'])
     return imported.ok ? merged : { state: 'failed', error: `the line moved to ${merged.head}, but jj did not import it: ${imported.err || imported.out}` }
+  },
+
+  /** The ref of the line in the store moves, and jj imports it, so each workspace sees the bookmark at `commit`. */
+  async setLine(io, run, commit) {
+    const moved = await git(io, storeOf(run.id), ['update-ref', `refs/heads/${LINE_BOOKMARK}`, commit])
+    if (!moved.ok) return moved
+    return command(io, run.repo, ['jj', '-R', jjRepoOf(run.id), '--ignore-working-copy', 'git', 'import'])
   },
 
   async deliver(io, run, commit, message) {

@@ -652,12 +652,14 @@ function leadStep(run: Run, lead: Worker): string {
 
 export async function steerRun(io: Io, instruction: string): Promise<string> {
   if (!instruction) return 'Write the instruction after /meld-steer.'
+  const line = await lineToFinal(io)
+  if ('error' in line) return line.error
   const now = await io.now()
   let outcome = 'There is no run to steer.'
   let revision = 0
   await save(io, run => {
     if (!run) return run
-    const change = board.steer(run, instruction, now)
+    const change = board.steer(run, instruction, now, line.moved)
     if (board.isFailure(change)) {
       outcome = change.message
       return run
@@ -683,6 +685,27 @@ export async function steerRun(io: Io, instruction: string): Promise<string> {
   const started = await restartIdleWorkers(io)
   if (!started.length) return `Revision ${revision}: every worker has ended, and meld could not start one again.`
   return `Revision ${revision}: meld starts ${started.join(', ')} again with it.`
+}
+
+/**
+ * Before a steer of a ready run, meld moves the integration line to the final commit, so that the steer keeps the work of
+ * that commit: the merges after the steer and the next final build on it. The move runs in the chain of merges, as it
+ * moves the line too. It gives the commit that the line moved to, nothing for a run that is not ready, or why the line
+ * could not move: then the steer changes nothing.
+ */
+function lineToFinal(io: Io): Promise<{ moved?: string } | { error: string }> {
+  const moved = merging.then(async () => {
+    const run = await readRun(io)
+    if (run?.state !== 'ready' || !run.final) return {}
+    const set = await vcsFor(run.vcs).setLine(io, run, run.final.commit)
+    if (set.ok) return { moved: run.final.commit }
+    const why = (set.err || set.out).split('\n')[0]
+    return {
+      error: `meld could not move the integration line to the final commit ${run.final.commit.slice(0, 7)} (${why}), and a steer without it would lose the work of that commit. The run stays ready: steer again, or deliver or discard the run.`,
+    }
+  })
+  merging = moved.then(() => undefined).catch(() => undefined)
+  return moved
 }
 
 export async function stopAll(io: Io): Promise<string> {
