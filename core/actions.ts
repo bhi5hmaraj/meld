@@ -9,6 +9,7 @@ import type { StartOptions } from './options'
 import { claimable } from './tasks'
 import { detectVcs, heldWork, runHome, vcsFor } from './vcs'
 import type { Prepared } from './vcs'
+import { listed } from './words'
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 /** The tool that ends the run of an agent that meld starts: the guard never refuses it, or the agent cannot end. */
@@ -56,7 +57,7 @@ export async function readRun(io: Store): Promise<Run | null> {
   return (await io.read()) ?? null
 }
 
-async function writeRun(io: Board, change: (run: Run) => Run): Promise<Run | null> {
+export async function writeRun(io: Board, change: (run: Run) => Run): Promise<Run | null> {
   let written: Run | null = null
   await save(io, run => {
     written = run ? change(run) : null
@@ -173,11 +174,6 @@ async function keptWork(io: CodeHost, run: Run): Promise<string | undefined> {
   if (!commits && !edits.length) return undefined
   const edited = edits.length ? `, and uncommitted edits in ${listed(edits)}` : ''
   return `Run ${run.id} stopped with work in ${home}: ${commits} commit${commits === 1 ? '' : 's'}${edited}. /meld-discard or Discard in the meld pane removes its workspaces, then you can start again.`
-}
-
-/** Names as a list in words: "w1", "w1 and w2", "w1, w2 and w3". */
-function listed(names: string[]): string {
-  return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : (names[0] ?? '')
 }
 
 /** The start form of the pane: its task, number of agents, model and version control. */

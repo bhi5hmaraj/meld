@@ -53,6 +53,10 @@ Search is the one part that differs: SQLite uses FTS5, and Postgres uses `pg_trg
 4. **One schema.** Both stores hold the same Run JSON and the same rows.
 5. **An outbox.** A context entry made in solo mode has an "uploaded" mark. It goes up when the user shares the local party with a hosted party.
 
+## The board file as built in 0.9 step 0b
+
+One table holds the 0.8 board shape: `boards (id, run, facts, version, owner, owner_at)`. Each session writes its run to its own board, with the Run JSON in `run`. A commit names the version that it read, and stores the run only when the board is still at that version. A commit of another session while the owner wrote in the last 60 s is refused, and an adopt (a resume) moves the version, so a commit of the old owner from its last read is stale. `PRAGMA user_version` holds the schema version: a meld that knows only an older one reads the file and writes nothing. The tables of 0c (parties, members, events and context) come next to this one.
+
 ## Several sessions on one machine
 
 - All runs live in `~/.meld/meld.db`, in WAL mode. Each editor session starts its own `meld mcp` process, and all the processes open the same file. There is no daemon.

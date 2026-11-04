@@ -219,6 +219,8 @@ declare module 'claude-code' {
       run: Shaped<Run | null>
       facts: Shaped<Facts | null>
       view: Shaped<PaneView | null>
+      /** The board of meld mcp that this session works on: absent until a resume takes the board of another session. */
+      board: Shaped<string | null>
     }
   }
 }

@@ -3,9 +3,13 @@ import type { AgentStatus, Register } from 'claude-code'
 
 import { controlRun, countStep, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll } from '../core/actions'
 import { cleanFolders } from '../core/clean'
+import type { BoardRead, Boards, BoardSummary, Committed } from '../core/remote-store'
+import { resumeRun } from '../core/resume'
 import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL_SPECS, WORKER_SYSTEM } from '../core/contract'
 import type { AgentState, Files, Io } from '../core/ports'
 import { parseStart, WORKER_TYPE } from '../core/options'
+import { adoptedOf, boardToolPrefix, sessionStore, valueOf } from './board-store'
+import type { SessionBoard } from './board-store'
 import { DEFAULT_VIEW, paneTree } from './pane'
 
 const MELD_TOOL = 'mcp__meld__'
@@ -13,6 +17,7 @@ const MELD_TOOL = 'mcp__meld__'
 const runRef = atom({ plugin: 'meld', key: 'run' } as const, null, { shape: 'run-4' })
 const factsRef = atom({ plugin: 'meld', key: 'facts' } as const, null, { shape: 'facts-1' })
 const viewRef = atom({ plugin: 'meld', key: 'view' } as const, null, { shape: 'view-1' })
+const boardRef = atom({ plugin: 'meld', key: 'board' } as const, null, { shape: 'board-1' })
 const PROCESS_TIMEOUT_MS = 120_000
 const FACTS_MS = 3000
 const ENDED_AGENT = new Set<AgentStatus>(['completed', 'failed', 'killed'])
@@ -20,6 +25,8 @@ const START_KEY = 'start'
 const PRESS_KEYS = [START_KEY, ...STEER_PRESETS.map(preset => `preset-${preset.key}`)]
 
 let sessionCwd = ''
+/** The board of this session in meld mcp. With no board server, each hook keeps the run in the session state, as meld 0.8 does. */
+const board: SessionBoard = { server: '', id: '', owner: '' }
 let refreshing = false
 
 function stateOf(status: AgentStatus): AgentState {
@@ -41,16 +48,30 @@ function stateOf(status: AgentStatus): AgentState {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     sessionCwd = e.cwd
+    const connected = await $.mcp.connect('board').catch(() => undefined)
+    board.server = connected?.isConnected ? connected.server : ''
+    board.owner = await $.session.id()
+    board.id = (await read($, boardRef)) ?? board.owner
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
       cost: async () => (await $.session.usage()).cost?.usd,
       agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
-      read: () => read($, runRef),
-      write: change => update($, runRef, change),
-      readFacts: () => read($, factsRef),
-      writeFacts: facts => update($, factsRef, () => facts),
+      ...sessionStore(
+        board,
+        {
+          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
+          writeFacts: async facts => void valueOf(await $.mcp.call(board.server, 'write_facts', { board: board.id, facts })),
+        },
+        {
+          read: () => read($, runRef),
+          write: change => update($, runRef, change),
+          readFacts: () => read($, factsRef),
+          writeFacts: facts => update($, factsRef, () => facts),
+        },
+      ),
       writeFile: (path, text) => $.fs.write(path, text),
       spawn: async args => {
         const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
@@ -73,6 +94,7 @@ export const register: Register = on => {
     await $.command.register({ name: 'meld-deliver', description: 'Merge the final commit of the meld run into your branch', immediate: true })
     await $.command.register({ name: 'meld-discard', description: 'Stop the meld run and remove its workspaces', immediate: true })
     await $.command.register({ name: 'meld-add', description: 'Add a worker to the meld run', argumentHint: '[model | agent type | type@model]', immediate: true })
+    await $.command.register({ name: 'meld-resume', description: 'List the meld runs of other sessions, or resume one', argumentHint: '[<board>]', immediate: true })
     $.clock.every(FACTS_MS, () => {
       if (refreshing) return
       refreshing = true
@@ -92,17 +114,27 @@ export const register: Register = on => {
     ($, e, next) => next(e),
   )
 
-  on('command.run', { command: ['meld', 'meld-steer', 'meld-status', 'meld-stop', 'meld-clean', 'meld-deliver', 'meld-discard', 'meld-add'] }, async ($, e) => {
+  on('command.run', { command: ['meld', 'meld-steer', 'meld-status', 'meld-stop', 'meld-clean', 'meld-deliver', 'meld-discard', 'meld-add', 'meld-resume'] }, async ($, e) => {
     const io: Io & Files = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
       cost: async () => (await $.session.usage()).cost?.usd,
       agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
-      read: () => read($, runRef),
-      write: change => update($, runRef, change),
-      readFacts: () => read($, factsRef),
-      writeFacts: facts => update($, factsRef, () => facts),
+      ...sessionStore(
+        board,
+        {
+          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
+          writeFacts: async facts => void valueOf(await $.mcp.call(board.server, 'write_facts', { board: board.id, facts })),
+        },
+        {
+          read: () => read($, runRef),
+          write: change => update($, runRef, change),
+          readFacts: () => read($, factsRef),
+          writeFacts: facts => update($, factsRef, () => facts),
+        },
+      ),
       writeFile: (path, text) => $.fs.write(path, text),
       spawn: async args => {
         const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
@@ -123,6 +155,20 @@ export const register: Register = on => {
     const control = COMMAND_CONTROLS[e.command as keyof typeof COMMAND_CONTROLS]
     if (control) return { text: await controlRun(io, control, args) }
     if (e.command === 'meld-clean') return { text: await cleanFolders(io, args) }
+    if (e.command === 'meld-resume') {
+      const boards: Boards | undefined = board.server
+        ? {
+            current: () => board.id,
+            list: async () => valueOf<{ boards: BoardSummary[] }>(await $.mcp.call(board.server, 'list_boards', {})).boards,
+            adopt: async id => adoptedOf(valueOf(await $.mcp.call(board.server, 'adopt_board', { board: id, owner: board.owner }))),
+            use: async id => {
+              board.id = id
+              await update($, boardRef, () => id)
+            },
+          }
+        : undefined
+      return { text: await resumeRun(io, boards, args) }
+    }
     await io.openPane(true)
     return { text: 'The pane is open.' }
   })
@@ -134,10 +180,20 @@ export const register: Register = on => {
       cost: async () => (await $.session.usage()).cost?.usd,
       agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
-      read: () => read($, runRef),
-      write: change => update($, runRef, change),
-      readFacts: () => read($, factsRef),
-      writeFacts: facts => update($, factsRef, () => facts),
+      ...sessionStore(
+        board,
+        {
+          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
+          writeFacts: async facts => void valueOf(await $.mcp.call(board.server, 'write_facts', { board: board.id, facts })),
+        },
+        {
+          read: () => read($, runRef),
+          write: change => update($, runRef, change),
+          readFacts: () => read($, factsRef),
+          writeFacts: facts => update($, factsRef, () => facts),
+        },
+      ),
       writeFile: (path, text) => $.fs.write(path, text),
       spawn: async args => {
         const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
@@ -163,10 +219,20 @@ export const register: Register = on => {
         cost: async () => (await $.session.usage()).cost?.usd,
         agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
         sleep: ms => $.clock.sleep(ms),
-        read: () => read($, runRef),
-        write: change => update($, runRef, change),
-        readFacts: () => read($, factsRef),
-        writeFacts: facts => update($, factsRef, () => facts),
+        ...sessionStore(
+          board,
+          {
+            read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+            commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
+            writeFacts: async facts => void valueOf(await $.mcp.call(board.server, 'write_facts', { board: board.id, facts })),
+          },
+          {
+            read: () => read($, runRef),
+            write: change => update($, runRef, change),
+            readFacts: () => read($, factsRef),
+            writeFacts: facts => update($, factsRef, () => facts),
+          },
+        ),
         writeFile: (path, text) => $.fs.write(path, text),
         spawn: async args => {
           const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
@@ -182,6 +248,7 @@ export const register: Register = on => {
   ).catch(($, e, next) => (next.called ? next(e) : { deny: 'meld: the board failed. Try the call again.' }))
 
   on('tool.call', async ($, e, next) => {
+    if (board.server && String(e.tool).startsWith(boardToolPrefix(board.server))) return { deny: 'Only meld calls the board store of meld mcp.' }
     if (String(e.tool).startsWith(MELD_TOOL)) return next(e)
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
@@ -189,10 +256,20 @@ export const register: Register = on => {
       cost: async () => (await $.session.usage()).cost?.usd,
       agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
-      read: () => read($, runRef),
-      write: change => update($, runRef, change),
-      readFacts: () => read($, factsRef),
-      writeFacts: facts => update($, factsRef, () => facts),
+      ...sessionStore(
+        board,
+        {
+          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
+          writeFacts: async facts => void valueOf(await $.mcp.call(board.server, 'write_facts', { board: board.id, facts })),
+        },
+        {
+          read: () => read($, runRef),
+          write: change => update($, runRef, change),
+          readFacts: () => read($, factsRef),
+          writeFacts: facts => update($, factsRef, () => facts),
+        },
+      ),
       writeFile: (path, text) => $.fs.write(path, text),
       spawn: async args => {
         const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
@@ -218,10 +295,20 @@ export const register: Register = on => {
       cost: async () => (await $.session.usage()).cost?.usd,
       agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
-      read: () => read($, runRef),
-      write: change => update($, runRef, change),
-      readFacts: () => read($, factsRef),
-      writeFacts: facts => update($, factsRef, () => facts),
+      ...sessionStore(
+        board,
+        {
+          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
+          writeFacts: async facts => void valueOf(await $.mcp.call(board.server, 'write_facts', { board: board.id, facts })),
+        },
+        {
+          read: () => read($, runRef),
+          write: change => update($, runRef, change),
+          readFacts: () => read($, factsRef),
+          writeFacts: facts => update($, factsRef, () => facts),
+        },
+      ),
       writeFile: (path, text) => $.fs.write(path, text),
       spawn: async args => {
         const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
@@ -244,10 +331,20 @@ export const register: Register = on => {
       cost: async () => (await $.session.usage()).cost?.usd,
       agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
-      read: () => read($, runRef),
-      write: change => update($, runRef, change),
-      readFacts: () => read($, factsRef),
-      writeFacts: facts => update($, factsRef, () => facts),
+      ...sessionStore(
+        board,
+        {
+          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
+          writeFacts: async facts => void valueOf(await $.mcp.call(board.server, 'write_facts', { board: board.id, facts })),
+        },
+        {
+          read: () => read($, runRef),
+          write: change => update($, runRef, change),
+          readFacts: () => read($, factsRef),
+          writeFacts: facts => update($, factsRef, () => facts),
+        },
+      ),
       writeFile: (path, text) => $.fs.write(path, text),
       spawn: async args => {
         const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
@@ -272,10 +369,20 @@ export const register: Register = on => {
       cost: async () => (await $.session.usage()).cost?.usd,
       agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
-      read: () => read($, runRef),
-      write: change => update($, runRef, change),
-      readFacts: () => read($, factsRef),
-      writeFacts: facts => update($, factsRef, () => facts),
+      ...sessionStore(
+        board,
+        {
+          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
+          writeFacts: async facts => void valueOf(await $.mcp.call(board.server, 'write_facts', { board: board.id, facts })),
+        },
+        {
+          read: () => read($, runRef),
+          write: change => update($, runRef, change),
+          readFacts: () => read($, factsRef),
+          writeFacts: facts => update($, factsRef, () => facts),
+        },
+      ),
       writeFile: (path, text) => $.fs.write(path, text),
       spawn: async args => {
         const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
@@ -306,10 +413,20 @@ export const register: Register = on => {
       cost: async () => (await $.session.usage()).cost?.usd,
       agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
-      read: () => read($, runRef),
-      write: change => update($, runRef, change),
-      readFacts: () => read($, factsRef),
-      writeFacts: facts => update($, factsRef, () => facts),
+      ...sessionStore(
+        board,
+        {
+          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
+          writeFacts: async facts => void valueOf(await $.mcp.call(board.server, 'write_facts', { board: board.id, facts })),
+        },
+        {
+          read: () => read($, runRef),
+          write: change => update($, runRef, change),
+          readFacts: () => read($, factsRef),
+          writeFacts: facts => update($, factsRef, () => facts),
+        },
+      ),
       writeFile: (path, text) => $.fs.write(path, text),
       spawn: async args => {
         const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
@@ -335,10 +452,20 @@ export const register: Register = on => {
       cost: async () => (await $.session.usage()).cost?.usd,
       agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
-      read: () => read($, runRef),
-      write: change => update($, runRef, change),
-      readFacts: () => read($, factsRef),
-      writeFacts: facts => update($, factsRef, () => facts),
+      ...sessionStore(
+        board,
+        {
+          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
+          writeFacts: async facts => void valueOf(await $.mcp.call(board.server, 'write_facts', { board: board.id, facts })),
+        },
+        {
+          read: () => read($, runRef),
+          write: change => update($, runRef, change),
+          readFacts: () => read($, factsRef),
+          writeFacts: facts => update($, factsRef, () => facts),
+        },
+      ),
       writeFile: (path, text) => $.fs.write(path, text),
       spawn: async args => {
         const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })

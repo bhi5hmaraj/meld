@@ -4,6 +4,7 @@ import { command } from './git'
 import type { Clock, CodeHost, Files, Store } from './ports'
 import { heldWork, MELD_ROOT, removeFolder, runHome, SAFE_ID, vcsFor, workspaceOf } from './vcs'
 import type { HeldWork, LanePlace } from './vcs'
+import { ageOf, listed } from './words'
 
 /** A board.json that changed in the last 24 hours can be the board of a live run of another session on this computer. */
 export const MAYBE_LIVE_MS = 24 * 60 * 60 * 1000
@@ -227,19 +228,6 @@ function sizeText(kb: number): string {
   if (kb < 1024) return `${kb} KB`
   if (kb < 1024 * 1024) return `${Math.round(kb / 1024)} MB`
   return `${(kb / (1024 * 1024)).toFixed(1)} GB`
-}
-
-/** An age in words that a person reads at a glance: minutes, hours up to two days, then days. */
-function ageOf(ms: number): string {
-  const minutes = Math.max(0, Math.round(ms / 60_000))
-  if (minutes < 60) return `${minutes} min`
-  const hours = Math.round(minutes / 60)
-  return hours < 48 ? `${hours} h` : `${Math.round(hours / 24)} d`
-}
-
-/** Names as a list in words: "a", "a and b", "a, b and c". */
-function listed(names: string[]): string {
-  return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : (names[0] ?? '')
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

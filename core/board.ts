@@ -570,6 +570,11 @@ export function stopRun(run: Run, now: number): Run {
   return withEntry({ ...run, state: 'stopped', endedAt: now, workers }, { at: now, by: 'you', kind: 'event', text: 'stopped the run' })
 }
 
+/** A new session takes the run, as a resume does: the cost of the run counts from the cost of that session now. */
+export function adoptRun(run: Run, costAtStart: number | undefined, now: number): Run {
+  return withEntry({ ...run, costAtStart }, { at: now, by: 'you', kind: 'event', text: 'resumed in a new session' })
+}
+
 export function markDelivered(run: Run, now: number): Run {
   return withEntry({ ...run, state: 'delivered', endedAt: now }, { at: now, by: 'you', kind: 'event', text: 'delivered the final commit' })
 }

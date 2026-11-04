@@ -27,6 +27,8 @@ In the desktop app, click **+** next to the prompt box, and click **Plugins**. C
 
 meld needs git 2.38 or newer, because the integration line merges with `git merge-tree --write-tree`, also for jj. With an older git, meld refuses to start a run and names the version of your git. meld uses jj 0.40 or newer when jj is installed. It was tested with Claude Code 2.1.317, jj 0.46 and git 2.43 on Linux.
 
+With [Bun](https://bun.sh) installed, meld keeps each run in the SQLite file `~/.meld/meld.db`, through `meld mcp`, an MCP server that the plugin starts with the session. All sessions on the machine use that file, and `/meld-resume` takes a run of a session that ended. Without Bun, `meld mcp` does not start, and a run lives in the state of its session, as in meld 0.8. It was tested with Bun 1.4.4.
+
 ## Start a run
 
 Type the request after `/meld`:
@@ -55,6 +57,8 @@ Or fill in the start form of the pane, which `/meld-status` opens. Or ask Claude
 | `/meld-stop` | Stops every agent. The workspaces stay for review. |
 | `/meld-clean` | Lists the folders that other runs left under `/tmp/meld/`: the id, the state, the age and the size of each, and the work in its workspaces. |
 | `/meld-clean <id> ...` | Removes those folders with their workspaces and any work in them, as Discard does. `--all` removes only the folders that hold no work and that no run can use. It keeps the others and tells why. |
+| `/meld-resume` | Lists the runs of other sessions on this machine, from `~/.meld/meld.db`. Needs Bun. |
+| `/meld-resume <board>` | This session takes that run, 60 s or more after the last write of its session, and starts its idle agents again. |
 
 The options come before the request, in any order. Each agent starts as the hidden agent type `meld:worker`, in its own folder. With no `--model`, an agent uses the model of its agent type, and `meld:worker` uses the model of your session.
 
@@ -144,6 +148,8 @@ The first board reply to a new agent carries the 20 newest current entries. Each
 **Commits.** `finish_task`, `check`, `finish` and `share` keep the full id of the commit that the revision names in the folder of the agent. `HEAD` or `@-` names the commit of the agent that calls the tool. meld refuses a final commit with a conflict. `finish` also refuses a final commit that lacks the commit of a done task, with `MISSING_WORK`: `git merge-base --is-ancestor` reads each commit, and the error names the tasks, their commits and the steps that merge them.
 
 **Board file.** After each change, meld writes the board to `/tmp/meld/<run>/board.json`: the tasks, the log and the shared context. The file stays when your session ends. Deliver and Discard remove it. Deliver marks the run delivered, and Discard drops it, before the removal, so an agent that ends its turn during the removal does not write the file again. `/meld-clean` removes the folders of runs that your session does not store.
+
+**Board store.** With Bun, the run lives on a board in `~/.meld/meld.db`, in WAL mode, and each session has its own board. The plugin reads the board, runs the rules of meld, and commits the run at the version that it read, through the tools of `meld mcp`. When another write came first, it reads and tries again. The session that writes a board owns it for 60 s from its last write, and another session can adopt the board only after that time, so two sessions do not drive one run. The session state keeps a copy of the run for the pane. Only meld calls the tools of `meld mcp`: a call of an agent or of the main session is refused.
 
 **Edit guard.** meld refuses an edit that an agent makes outside its own workspace. It refuses each tool call of an agent that you stopped, of an agent of a stopped or discarded run, and of a new agent that took no place on the board, and tells that agent to end its turn.
 
@@ -272,6 +278,7 @@ meld takes its idea from [DeLM](https://github.com/Decentralized-LM/delm-agent-p
 ```
 claude plugin validate .
 claude plugin test .
+bun test mcp/
 tsc -p tsconfig.core.json
 node scripts/adapters.mjs
 node scripts/shots.mjs
@@ -286,7 +293,10 @@ node scripts/shots.mjs
 - `core/contract.ts` holds the tools, the rules and the prompts of the agents.
 - `core/options.ts` reads the options of `/meld`.
 - `core/clean.ts` lists and removes the folders of other runs for `/meld-clean`.
-- `core/memory-store.ts` is a `Store` in memory.
+- `core/memory-store.ts` is a `Store` in memory, and `core/remote-store.ts` a `Store` over a board server that compares versions.
+- `core/resume.ts` lists and takes the runs of other sessions for `/meld-resume`.
+- `mcp/` holds `meld mcp`, which runs on Bun: `main.ts` starts it, `protocol.ts` speaks MCP over standard input and output with no other package, `tools.ts` holds its tools, and `sqlite-store.ts` keeps the boards. Its specs are `*.spec.ts` files, which `bun test mcp/` runs: the engine runner loads only `*.test.ts` files, and those cannot import `bun:sqlite`.
+- `hooks/board-store.ts` connects the hooks to `meld mcp`.
 - `hooks/pane.tsx` and `hooks/drawing.ts` draw the pane.
 - `hooks/register.tsx` is the one file that calls the engine.
 
