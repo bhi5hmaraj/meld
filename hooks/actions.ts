@@ -312,11 +312,11 @@ async function withResolvedCommit(io: Io, tool: string, args: Args, worker: Work
     return { error: 'CONFLICT', message: `${found.commit.slice(0, 12)} has a conflict. Fix the conflict, commit, and finish with the new commit.` }
   }
   const resolved = { ...args, commit: found.commit }
-  return tool === TOOL.finish ? { args: resolved, held: await heldWork(io, run, found.commit) } : { args: resolved }
+  return tool === TOOL.finish ? { args: resolved, held: await heldInFinal(io, run, found.commit) } : { args: resolved }
 }
 
 /** The commits of the done tasks that `final` holds, as the version control reads them. */
-async function heldWork(io: Io, run: Run, final: string): Promise<Set<string>> {
+async function heldInFinal(io: Io, run: Run, final: string): Promise<Set<string>> {
   const commits = board.doneWork(run).map(task => task.commit ?? '')
   const missing = new Set(await vcsFor(run.vcs).missing(io, run, final, commits))
   return new Set(commits.filter(commit => !missing.has(commit)))
@@ -795,7 +795,7 @@ function nextWorkerId(run: Run): WorkerId {
 export async function deliver(io: Io): Promise<string> {
   const run = await readRun(io)
   if (!run || run.state !== 'ready' || !run.final) return 'There is no final commit to deliver.'
-  const missing = lackingWork(run, await heldWork(io, run, run.final.commit))
+  const missing = lackingWork(run, await heldInFinal(io, run, run.final.commit))
   if (missing.length) return lackingDelivery(run.final.commit, missing)
   if (await isDirty(io, run.repo)) return 'Commit or stash the changes in your checkout first, then deliver.'
   const vcs = vcsFor(run.vcs)
