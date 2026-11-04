@@ -99,7 +99,7 @@ When the integration line holds every task, one agent runs one final build and t
 
 The result card shows the final commit, the changed files, the lines added and removed, and the checks that ran on that commit. A warning shows when no check ran on it.
 
-- **Deliver** (`d`) merges the final commit into your branch with a merge commit, and removes the workspaces. Your checkout must have no uncommitted changes. If the merge stops, meld aborts it, and nothing changes. The subject of the merge commit is `meld: ` and the summary of the final commit, cut at a space to 72 characters at most. With no summary, it is the first line of the request. The body holds the full request.
+- **Deliver** (`d`) merges the final commit into your branch with a merge commit, and removes the workspaces. Your checkout must have no uncommitted changes. If the merge stops, meld aborts it, and nothing changes. Deliver refuses a final commit that lacks the commit of a task that is done on the board: the reply names the tasks, and you steer the run so that an agent merges them. The subject of the merge commit is `meld: ` and the summary of the final commit, cut at a space to 72 characters at most. With no summary, it is the first line of the request. The body holds the full request.
 - **Show diff** (`v`) opens the diff of the first eight files.
 - **Ask for changes** gives the agents your instruction, and they change the result.
 - **Discard** removes the workspaces with no merge. **Clear** removes a delivered run from the pane.
@@ -139,7 +139,7 @@ As `add_tasks` does, `split` takes the version of the task list. A part names it
 
 The first board reply to a new agent carries the 20 newest current entries. Each later reply carries only the current entries that are new since the last reply to that agent, and not the entries of the agent. Each entry shows `seenBy`: the agents that got it. A reply that carries the same 20 entries each time makes every turn longer: in a run of 22 tasks and 5 agents, each turn read about 280,000 tokens again.
 
-**Commits.** `finish_task`, `check`, `finish` and `share` keep the full id of the commit that the revision names in the folder of the agent. `HEAD` or `@-` names the commit of the agent that calls the tool. meld refuses a final commit with a conflict.
+**Commits.** `finish_task`, `check`, `finish` and `share` keep the full id of the commit that the revision names in the folder of the agent. `HEAD` or `@-` names the commit of the agent that calls the tool. meld refuses a final commit with a conflict. `finish` also refuses a final commit that lacks the commit of a done task, with `MISSING_WORK`: `git merge-base --is-ancestor` reads each commit, and the error names the tasks, their commits and the steps that merge them.
 
 **Board file.** After each change, meld writes the board to `/tmp/meld/<run>/board.json`: the tasks, the log and the shared context. The file stays when your session ends. Deliver and Discard remove it, and `/meld-clean` removes the folders of runs that your session does not store.
 
@@ -183,7 +183,7 @@ A restarted agent reads its rules at its first board read. meld reads the agent 
 
 **integrate #N.** When a merge conflicts or fails, the line stays where it was, and meld adds the task `integrate #N` of size S. Its detail names the files in conflict and the steps: `jj new meld_integration <commit>`, or `git merge meld/<run>/integration` and then `git merge <commit>`, a fix, the checks, a commit and `finish_task`. meld merges that commit as it merges any other, and then the line holds #N.
 
-**The end.** When every task is done, meld asks the lead to start from the line, merge the commits that the line does not hold, run one final build and the checks, and call `finish`.
+**The end.** When every task is done, meld asks the lead to start from the line, merge the commits that the line does not hold, run one final build and the checks, and call `finish`. A task can finish after the lead started from the line, so `finish` and Deliver refuse a final commit that lacks the commit of a done task.
 
 **The proposal and the code.** The proposal was a merge through the vcs adapters, with no agent. meld does that with git plumbing for both adapters, because jj keeps its commits in a git store. So one merge serves jj and git, and no merge needs a working copy, as `jj new` in a workspace does. meld also merges every finished task that the line does not hold, not only the task that finishes. So a task that a failed merge or a restart of your session skipped goes in at the next finish, and so do the finished tasks of a run that meld 0.7.0 stored.
 
@@ -263,7 +263,7 @@ A hooks module spells `$` at its call sites and does not give it to other functi
 
 The tests use a fake `Io` and mount the pane on each surface. A test holds each block of the pane to 100 words at most.
 
-`scripts/adapters.mjs` checks the jj and git adapters with real processes. It compiles `hooks/` with `tsc` into a temporary folder. For each adapter, a temporary git repository goes through a run: three workspaces, a commit in each, the integration line (a move forward, two merge commits, a commit that the line holds, and a conflict), the integration, the lanes (with an edit that no jj command recorded), the result, deliver and remove. HOME is a temporary folder, so the check does not read or change your git or jj config. The script prints PASS or FAIL for each step, and it exits with code 1 when a step fails. It needs `tsc` 5.6 or newer, git, and jj 0.40 or newer.
+`scripts/adapters.mjs` checks the jj and git adapters with real processes. It compiles `hooks/` with `tsc` into a temporary folder. For each adapter, a temporary git repository goes through a run: three workspaces, a commit in each, the integration line (a move forward, two merge commits, a commit that the line holds, and a conflict), the integration, the commits that the final commit lacks, the lanes (with an edit that no jj command recorded), the result, deliver and remove. HOME is a temporary folder, so the check does not read or change your git or jj config. The script prints PASS or FAIL for each step, and it exits with code 1 when a step fails. It needs `tsc` 5.6 or newer, git, and jj 0.40 or newer.
 
 `scripts/shots.mjs` draws the pictures of this README. `scripts/scenes.tsx` builds sample runs with the board functions and prints the tree that the pane draws for each run. The script makes an HTML page of each tree, and takes a picture in a light and a dark theme with Playwright. The lanes, the bars and the texts are the ones that meld draws. The fonts and the spacing stand in for the app.
 

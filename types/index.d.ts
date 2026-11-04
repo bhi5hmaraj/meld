@@ -21,6 +21,8 @@ export type ErrorCode =
   | 'CONFLICT'
   | 'INVALID'
   | 'WAITING'
+  /** The final commit lacks the commit of a done task. */
+  | 'MISSING_WORK'
 
 /** What runs one worker: an agent type (`meld:worker`, `general-purpose`, a plugin's agent) and an optional model. */
 export type AgentSpec = { type: string; model?: string }

@@ -1,8 +1,8 @@
 import type { CommandRunResult, ToolCallInput, ToolCallResult, TurnUsage } from 'claude-code'
 
-import type { BoardView, Change, Facts, Failure, NewTask, PaneView, Run, Task, TaskSize, VcsKind, Worker, WorkerId, WorkerState } from '../types'
+import type { BoardView, Change, Facts, Failure, Final, NewTask, PaneView, Run, Task, TaskSize, VcsKind, Worker, WorkerId, WorkerState } from '../types'
 import * as board from './board'
-import { CONTROL_TOOLS, HAND_BACK, integrateDetail, integrateStep, splitNudge, TOOL, wakeText, workerPrompt, workerRules } from './contract'
+import { CONTROL_TOOLS, HAND_BACK, integrateDetail, integrateStep, missingWorkText, splitNudge, TOOL, wakeText, workerPrompt, workerRules } from './contract'
 import type { Control } from './contract'
 import { headCommit, isDirty, repoRoot } from './git'
 import type { Io, Spawned } from './io'
@@ -30,6 +30,8 @@ export const LEADING_CD = /^(?:\s*cd\s+\S+\s*(?:&&|;)\s*)+/
 
 type Args = Record<string, unknown>
 type Refused = { error: string; message: string }
+/** The arguments of a tool call with the full commit; for finish, the commits of the done tasks that the final commit holds. */
+type Checked = { args: Args; held?: ReadonlySet<string> }
 /** The change of a tool call, with what its reply gives beside the value. */
 type Made = { run: Run; value: unknown; extra?: object } | Failure
 
@@ -223,7 +225,7 @@ export async function serveTool(io: Io, e: ToolCallInput, cwd = ''): Promise<Too
   let nudge: Task | undefined
   await save(io, run => {
     if (!run) return run
-    const done = answered(run, worker.id, 'error' in checked ? checked : mutate(run, worker.id, tool, checked.args, now))
+    const done = answered(run, worker.id, 'error' in checked ? checked : mutate(run, worker.id, tool, checked.args, now, checked.held))
     const passed = board.passContext(done.run, worker.id)
     answer = { ...done.answer, context: passed.context }
     const counted = countedCall(passed.run, worker.id, now)
@@ -295,9 +297,10 @@ function reply(value: unknown): ToolCallResult {
 
 /**
  * The board keeps the full id of the commit that a revision names in the folder of the worker; a final commit with a
- * conflict is refused. A share that gives no commit needs no resolve.
+ * conflict is refused. For a final commit, the version control reads which done tasks it holds. A share that gives no
+ * commit needs no resolve.
  */
-async function withResolvedCommit(io: Io, tool: string, args: Args, worker: Worker): Promise<{ args: Args } | Refused> {
+async function withResolvedCommit(io: Io, tool: string, args: Args, worker: Worker): Promise<Checked | Refused> {
   if (!COMMIT_TOOLS.has(tool) && !(tool === TOOL.share && text(args.commit))) return { args }
   const run = await readRun(io)
   if (!run) return { args }
@@ -308,10 +311,34 @@ async function withResolvedCommit(io: Io, tool: string, args: Args, worker: Work
   if (tool === TOOL.finish && found.conflict) {
     return { error: 'CONFLICT', message: `${found.commit.slice(0, 12)} has a conflict. Fix the conflict, commit, and finish with the new commit.` }
   }
-  return { args: { ...args, commit: found.commit } }
+  const resolved = { ...args, commit: found.commit }
+  return tool === TOOL.finish ? { args: resolved, held: await heldWork(io, run, found.commit) } : { args: resolved }
 }
 
-function mutate(run: Run, by: WorkerId, tool: string, args: Args, now: number): Made {
+/** The commits of the done tasks that `final` holds, as the version control reads them. */
+async function heldWork(io: Io, run: Run, final: string): Promise<Set<string>> {
+  const commits = board.doneWork(run).map(task => task.commit ?? '')
+  const missing = new Set(await vcsFor(run.vcs).missing(io, run, final, commits))
+  return new Set(commits.filter(commit => !missing.has(commit)))
+}
+
+/** The done tasks whose commits are not in `held`. A task done after the version control read the final commit is not in it. */
+function lackingWork(run: Run, held: ReadonlySet<string>): Task[] {
+  return board.doneWork(run).filter(task => !held.has(task.commit ?? ''))
+}
+
+/**
+ * A final commit must hold the commit of every done task: a task finished after the integrator started from the line,
+ * or after its merge into the line was skipped, is done on the board and not in the final commit. finish fails with
+ * MISSING_WORK, which names the tasks and the steps, and the run stays as it was.
+ */
+function wholeFinal(run: Run, declared: Change<Final>, held: ReadonlySet<string>): Change<Final> {
+  if (board.isFailure(declared)) return declared
+  const missing = lackingWork(run, held)
+  return missing.length ? { error: 'MISSING_WORK', message: missingWorkText(run, declared.value.commit, missing) } : declared
+}
+
+function mutate(run: Run, by: WorkerId, tool: string, args: Args, now: number, held: ReadonlySet<string> = new Set()): Made {
   switch (tool) {
     case TOOL.addTasks:
       return board.addTasks(run, by, { seen: Number(args.seen), tasks: newTasks(args.tasks) }, now)
@@ -336,7 +363,7 @@ function mutate(run: Run, by: WorkerId, tool: string, args: Args, now: number): 
     case TOOL.integrate:
       return board.takeIntegration(run, by, now)
     case TOOL.finish:
-      return board.declareFinal(run, by, text(args.commit), text(args.summary), now)
+      return wholeFinal(run, board.declareFinal(run, by, text(args.commit), text(args.summary), now), held)
     default:
       return { error: 'NOT_FOUND', message: `meld has no tool ${tool}.` }
   }
@@ -768,6 +795,8 @@ function nextWorkerId(run: Run): WorkerId {
 export async function deliver(io: Io): Promise<string> {
   const run = await readRun(io)
   if (!run || run.state !== 'ready' || !run.final) return 'There is no final commit to deliver.'
+  const missing = lackingWork(run, await heldWork(io, run, run.final.commit))
+  if (missing.length) return lackingDelivery(run.final.commit, missing)
   if (await isDirty(io, run.repo)) return 'Commit or stash the changes in your checkout first, then deliver.'
   const vcs = vcsFor(run.vcs)
   const merged = await vcs.deliver(io, run, run.final.commit, deliveryMessage(run))
@@ -776,6 +805,14 @@ export async function deliver(io: Io): Promise<string> {
   const now = await io.now()
   await writeRun(io, current => board.markDelivered(current, now))
   return `Merged ${run.final.commit.slice(0, 7)} into your branch.`
+}
+
+/** Why Deliver refuses a final commit that lacks the work of done tasks: the tasks, and a steer that makes a new final commit. */
+function lackingDelivery(final: string, missing: readonly Task[]): string {
+  const one = missing.length === 1
+  const tasks = listed(missing.map(task => `#${task.id} ${task.title}`))
+  const ids = listed(missing.map(task => `#${task.id}`))
+  return `Nothing changed: the final commit ${final.slice(0, 7)} lacks the work of ${tasks}, which ${one ? 'is' : 'are'} done on the board. Steer the run so that an agent merges ${one ? 'it' : 'them'}, for example /meld-steer Merge ${ids} into the final commit. Then deliver the new final commit.`
 }
 
 export async function discard(io: Io): Promise<string> {

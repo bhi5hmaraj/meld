@@ -2,7 +2,8 @@
 /**
  * A check of the git and the jj adapter of hooks/vcs.ts with real processes. tsc compiles hooks/ into CommonJS in a
  * temporary folder. Each adapter goes through a run in a temporary git repository: three workspaces, a commit in
- * each, the integration line, the integration, resolve, lanes, result, deliver and remove. HOME is a temporary folder, so the check reads and
+ * each, the integration line, the integration, the commits that the final commit lacks, resolve, lanes, result, deliver and remove. HOME is a
+ * temporary folder, so the check reads and
  * changes no git or jj config of the person. Run: node scripts/adapters.mjs
  */
 import { spawnSync } from 'node:child_process'
