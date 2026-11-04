@@ -44,6 +44,11 @@ function lineOf(text: string, id: string): string {
   return text.split('\n').find(line => line.startsWith(`${id}:`)) ?? ''
 }
 
+/** /meld-clean as the person types it at the terminal. */
+function typed(args: string) {
+  return { command: 'meld-clean', args, origin: { kind: 'composer' as const }, presentation: { isFullscreen: false, columns: 80 } }
+}
+
 function folderNames(io: FakeIo): string[] {
   return (io.listings[ROOT] ?? []).map(entry => entry.name)
 }
@@ -219,9 +224,9 @@ test('the command /meld-clean lists through the file system of the engine and re
     const stdout = e.argv[0] === 'du' ? `8\t${ROOT}/abc` : ''
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  const listed = await $.command.run({ command: 'meld-clean', args: '' })
+  const listed = await $.command.run(typed(''))
   expect(listed.text).toContain('abc: stopped, board.json changed 3 d ago, 8 KB, git in /repo')
-  await $.command.run({ command: 'meld-clean', args: 'abc' })
+  await $.command.run(typed('abc'))
   expect(ran).toContain('rm -rf -- /tmp/meld/abc')
   expect(ran).toContain('git branch -D meld/abc/w2')
 })

@@ -10,7 +10,8 @@ export const JJ_LANE_TEMPLATE =
 
 const JJ_MIN_MINOR = 40
 const LANE_LIMIT = '40'
-const SAFE_ID = /^[0-9a-z]+$/
+/** A run id: lowercase letters and digits only, so a path made of it stays in the folder of meld. */
+export const SAFE_ID = /^[0-9a-z]+$/
 const FULL_COMMIT = /^[0-9a-f]{40}$/
 const JJ_CONFIG_FOLDER = /^(.+\/repos\/[0-9a-f]{8,64})\/config\.toml$/
 const BASE_BOOKMARK = 'meld_base'
@@ -44,7 +45,7 @@ export type Vcs = {
    */
   mergeIntoLine(io: Io, run: Run, commit: string, message: string): Promise<LineMerge>
   deliver(io: Io, run: Run, commit: string, message: string): Promise<CommandResult>
-  remove(io: Io, run: Run): Promise<void>
+  remove(io: Io, run: RunPlace): Promise<void>
 }
 
 export function runHome(id: string): string {
@@ -79,9 +80,20 @@ export function vcsFor(kind: VcsKind): Vcs {
   return kind === 'jj' ? JJ : GIT
 }
 
-/** Removes the folder of a run; an id with anything but lowercase letters and digits removes nothing. */
-async function removeHome(io: Io, place: { id: string; repo: string }): Promise<void> {
-  if (SAFE_ID.test(place.id)) await command(io, place.repo, ['rm', '-rf', '--', runHome(place.id)])
+/** What a removal needs of a run: its id, the repository of the person, and the workspace of each worker. */
+export type RunPlace = { id: string; repo: string; workers: readonly Workspace[] }
+
+/** The workspace of a worker of the run `id`: the folder and the ref that prepare makes for it. */
+export function workspaceOf(kind: VcsKind, id: string, worker: WorkerId): Workspace {
+  return { path: workspacePath(id, worker), ref: kind === 'jj' ? `${worker}@` : `meld/${id}/${worker}` }
+}
+
+/**
+ * Removes the folder of a run; an id with anything but lowercase letters and digits removes nothing. The rm runs in the
+ * folder of meld, so that a run whose repository is gone still loses its folder.
+ */
+export async function removeFolder(io: Io, id: string): Promise<void> {
+  if (SAFE_ID.test(id)) await command(io, MELD_ROOT, ['rm', '-rf', '--', runHome(id)])
 }
 
 async function dropWorktree(io: Io, repo: string, workspace: Workspace): Promise<void> {
@@ -90,7 +102,7 @@ async function dropWorktree(io: Io, repo: string, workspace: Workspace): Promise
 }
 
 /** The git ref of the integration line of a git run: a branch next to the branches of the workers. */
-function gitLine(run: Run): string {
+function gitLine(run: { id: string }): string {
   return `meld/${run.id}/integration`
 }
 
@@ -146,7 +158,7 @@ const GIT: Vcs = {
   async prepare(io, place, ids) {
     const made: Workspace[] = []
     for (const id of ids) {
-      const workspace = { path: workspacePath(place.id, id), ref: `meld/${place.id}/${id}` }
+      const workspace = workspaceOf('git', place.id, id)
       const added = await git(io, place.repo, ['worktree', 'add', '-b', workspace.ref, workspace.path, place.base])
       if (!added.ok) {
         for (const one of made) await dropWorktree(io, place.repo, one)
@@ -184,7 +196,7 @@ const GIT: Vcs = {
     if (!SAFE_ID.test(run.id)) return
     for (const worker of run.workers) await dropWorktree(io, run.repo, worker)
     await git(io, run.repo, ['branch', '-D', gitLine(run)])
-    await removeHome(io, run)
+    await removeFolder(io, run.id)
     await git(io, run.repo, ['worktree', 'prune'])
   },
 }
@@ -200,18 +212,18 @@ const JJ: Vcs = {
   async prepare(io, place, ids) {
     const made = await makeJjRepo(io, place)
     if ('error' in made) {
-      await removeJj(io, place)
+      await removeJj(io, place.id)
       return made
     }
     const workspaces: Workspace[] = []
     for (const id of ids) {
-      const path = workspacePath(place.id, id)
-      const added = await command(io, place.repo, ['jj', '-R', jjRepoOf(place.id), 'workspace', 'add', '--name', id, '-r', BASE_BOOKMARK, path])
+      const workspace = workspaceOf('jj', place.id, id)
+      const added = await command(io, place.repo, ['jj', '-R', jjRepoOf(place.id), 'workspace', 'add', '--name', id, '-r', BASE_BOOKMARK, workspace.path])
       if (!added.ok) {
-        await removeJj(io, place)
+        await removeJj(io, place.id)
         return { error: added.err || added.out }
       }
-      workspaces.push({ path, ref: `${id}@` })
+      workspaces.push(workspace)
     }
     return { workspaces }
   },
@@ -276,7 +288,7 @@ const JJ: Vcs = {
     return mergeInto(io, run.repo, commit, message)
   },
 
-  remove: (io, run) => removeJj(io, run),
+  remove: (io, run) => removeJj(io, run.id),
 }
 
 async function makeJjRepo(io: Io, place: Place): Promise<{ ok: true } | { error: string }> {
@@ -313,12 +325,13 @@ function jjConfig(name: string, email: string): string {
   return `${sections.filter(Boolean).join('\n\n')}\n`
 }
 
-async function removeJj(io: Io, place: { id: string; repo: string }): Promise<void> {
-  if (!SAFE_ID.test(place.id)) return
-  const config = await command(io, place.repo, ['jj', '-R', jjRepoOf(place.id), 'config', 'path', '--repo'])
+/** Removes the repository config of jj, which jj keeps outside the run, then the folder; both run in the folder of meld, as removeFolder does. */
+async function removeJj(io: Io, id: string): Promise<void> {
+  if (!SAFE_ID.test(id)) return
+  const config = await command(io, MELD_ROOT, ['jj', '-R', jjRepoOf(id), 'config', 'path', '--repo'])
   const folder = config.ok ? JJ_CONFIG_FOLDER.exec(config.out)?.[1] : undefined
-  if (folder) await command(io, place.repo, ['rm', '-rf', '--', folder])
-  await removeHome(io, place)
+  if (folder) await command(io, MELD_ROOT, ['rm', '-rf', '--', folder])
+  await removeFolder(io, id)
 }
 
 function jjLane(id: WorkerId, out: string): LaneFacts {

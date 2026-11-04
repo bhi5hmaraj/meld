@@ -16,7 +16,8 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 const HANDBACK_TOOL = 'SubagentHandback'
 const COMMIT_TOOLS = new Set<string>([TOOL.finishTask, TOOL.check, TOOL.finish])
 const OPEN_WORK_TOOLS = new Set<string>([TOOL.addTasks, TOOL.split, TOOL.release])
-const LIVE_STATES = new Set(['starting', 'working', 'ready'])
+/** The states of a run whose agents can still work. */
+export const LIVE_STATES: ReadonlySet<string> = new Set(['starting', 'working', 'ready'])
 const ACTIVE_RUN = new Set(['starting', 'working'])
 const BIND_POLL_MS = 200
 const BIND_POLLS = 100
