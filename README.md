@@ -90,8 +90,8 @@ The result card shows the final commit, the changed files, the lines added and r
 
 1. **Workspaces.** meld makes one workspace for each agent from `HEAD`, under `/tmp/meld/<run>/`: a jj workspace, or a git worktree on a branch such as `meld/<run>/w1`.
 2. **Plan.** The agents plan the request as small tasks on the board. When two agents plan at the same time, the first plan wins, and the other agent claims tasks from it. A task can name a parent, a size (S, M or L) and the tasks that it needs.
-3. **Work.** Each agent claims a task, commits in its own workspace, and takes the commits of other agents with `jj new`, `git merge` or `git cherry-pick`. An agent splits a large task with `split`: it keeps the first part, and the other parts open for the other agents.
-4. **Share.** The agents share facts, fails and interfaces. Each board reply carries the newest entries, and the rules tell an agent not to try an approach that failed.
+3. **Work.** Each agent claims a task, commits in its own workspace, and takes the commits of other agents with `jj new`, `git merge` or `git cherry-pick`. An agent splits a large task with `split`: it keeps the first part, and the other parts open for the other agents. After `finish_task`, the agent hands back, and meld starts a new agent for the next task.
+4. **Share.** The agents share facts, fails and interfaces. Each board reply carries the entries that are new for the agent, and the rules tell an agent not to try an approach that failed.
 5. **Integrate.** One agent merges the work of every agent, runs the checks, and declares the final commit.
 
 The agents use eleven board tools: `board`, `add_tasks`, `claim`, `split`, `release`, `finish_task`, `note`, `share`, `check`, `integrate` and `finish`. The main session has three more: `start`, `steer` and `stop`. These three refuse a call from an agent or another subagent.
@@ -101,15 +101,19 @@ The agents use eleven board tools: `board`, `add_tasks`, `claim`, `split`, `rele
 
 **Versions.** The task list has a version. An agent adds its tasks in one call, with the version of its last board read. If another agent added tasks since that read, the add fails and shows the current tasks. A claim is a compare-and-set on the task version, so two agents cannot claim one task.
 
+As `add_tasks` does, `split` takes the version of the task list. A part names its needs by number, so a split after a stale read can make a part need the wrong task. A stale split fails with `STALE_VERSION` and shows the current tasks.
+
 **Task tree.** The parents make the tasks a tree, and the needs make a DAG. A task with no size is M. While a need of a task, or a need of one of its parents, is not done, a claim of the task fails with `WAITING`, and the error names the need. `add_tasks` and `split` refuse a need that makes a loop. A parent has no commit of its own. It is done when all its parts are done, and `claim` and `finish_task` refuse it. The first part of a split cannot wait, because the agent keeps it.
 
 **Times.** Each task keeps the time when it was added, when it became ready, when it was claimed and when it was done. It counts the times that it returned to open: a release, or a stop of its agent.
 
 **Percent.** meld computes the percent from the task states, and no agent reports a percent. A task is at 0 until an agent finishes it, and at 100 after that. A parent is the mean of its parts, with the sizes S 1, M 3 and L 8 as weights. Each percent is cut to the whole number below it, so 100% means that all the work is done.
 
-**Nudge.** After 40 tool calls on one task with no finish and no split, meld tells the agent one time: "Split #N into smaller tasks, or finish it."
+**Nudge.** After a number of tool calls on one task with no finish and no split, meld tells the agent one time: "Split #N into smaller tasks, or finish it." The number goes by the size of the task: 30 for S, 60 for M and 120 for L. A task with no size is M. One limit of 40 for each task fired on 11 of the 22 tasks of a run, so the nudge did not show which tasks were too large.
 
-**Shared context.** As in DeLM, the agents keep a shared context of typed entries. `share` takes a `kind`, a `text` of 500 characters at most, and an optional `commit`, `files` and `replaces`. A fact is a finding with its evidence. A fail is an approach that did not work, with the reason. An interface is a contract between tasks: a name and its shape. An entry with `replaces` corrects an older entry. `finish_task` takes optional `interfaces` and `unfinished` text, which meld adds as an interface and a fact. Each board reply carries the 20 newest current entries, each with `seenBy`: the agents that got it.
+**Shared context.** As in DeLM, the agents keep a shared context of typed entries. `share` takes a `kind`, a `text` of 500 characters at most, and an optional `commit`, `files` and `replaces`. A fact is a finding with its evidence. A fail is an approach that did not work, with the reason. An interface is a contract between tasks: a name and its shape. An entry with `replaces` corrects an older entry. `finish_task` takes optional `interfaces` and `unfinished` text, which meld adds as an interface and a fact. The task keeps the two texts as its handover.
+
+The first board reply to a new agent carries the 20 newest current entries. Each later reply carries only the current entries that are new since the last reply to that agent, and not the entries of the agent. Each entry shows `seenBy`: the agents that got it. A reply that carries the same 20 entries each time makes every turn longer: in a run of 22 tasks and 5 agents, each turn read about 280,000 tokens again.
 
 **Commits.** `finish_task`, `check`, `finish` and `share` keep the full id of the commit that the revision names in the folder of the agent. `HEAD` or `@-` names the commit of the agent that calls the tool. meld refuses a final commit with a conflict.
 
@@ -124,8 +128,11 @@ The agents use eleven board tools: `board`, `add_tasks`, `claim`, `split`, `rele
 
 **Restarts.** Claude Code ends an agent when the agent returns its result. At the end of each turn of your session, meld restarts an idle agent in the same folder when there is work for it:
 
-- The board has news that the agent did not read, and a task is open or claimed by that agent. A note, a share, a claim, a finished task or a check of another agent is news.
+- A task is ready, and the agent claims no task. meld restarts one agent for each ready task at most.
+- The board has news that the agent did not read, and the agent claims a task that is not done. A note, a share, a claim, a finished task or a check of another agent is news.
 - Every live agent is idle. meld restarts the owners of unfinished tasks, and idle agents for the open tasks. With no open task, meld restarts the lead, the integrator or the first live agent, to plan, to take your new instruction, or to integrate.
+
+**A new agent for each task.** After `finish_task`, the rules and the reply of `finish_task` tell the agent to hand back, and not to claim the next task. meld restarts the agent when a task is ready. An agent that does task after task reads its whole history again on each turn, and that history grows with each task. A new agent starts from the board: the request, the steers, the tasks and the shared context. The reply of its claim gives the handovers of the tasks that its task needs: the commit, the interfaces and the unfinished work of each. A board read gives the same handovers for the tasks that the agent claims. The task list in a board reply does not carry the handovers.
 
 A restarted agent reads its rules at its first board read. meld reads the agent list of Claude Code, so it finds an agent that ended when meld did not see the end. meld does not restart a stopped agent. After three restarts in a row that finish no task, meld stops the restarts and tells you. A finished task or a steer starts the count from zero. A steer goes as a message to each running agent, and it restarts the agents that ended.
 

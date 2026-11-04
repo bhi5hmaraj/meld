@@ -253,7 +253,7 @@ function mutate(run: Run, by: WorkerId, tool: string, args: Args, now: number): 
     case TOOL.claim:
       return withHandovers(board.claimTask(run, by, Number(args.task), Number(args.version), now))
     case TOOL.split:
-      return board.splitTask(run, by, Number(args.task), Number(args.version), newTasks(args.tasks), now)
+      return board.splitTask(run, by, { task: Number(args.task), version: Number(args.version), seen: Number(args.seen), tasks: newTasks(args.tasks) }, now)
     case TOOL.release:
       return board.releaseTask(run, by, Number(args.task), Number(args.version), text(args.note), now)
     case TOOL.finishTask: {

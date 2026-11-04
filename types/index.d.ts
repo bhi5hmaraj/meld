@@ -40,6 +40,11 @@ export type Worker = {
   tokens: number
   /** Tool calls so far; absent in a run that meld 0.2.0 stored. */
   calls?: number
+  /**
+   * The newest context entry when a reply last carried the context to the agent of this worker. Absent until the first
+   * reply to each new agent, and in a run that meld 0.7.0 or older stored: that reply carries the current entries.
+   */
+  seenContext?: number
 }
 
 /**

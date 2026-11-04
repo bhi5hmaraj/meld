@@ -18,6 +18,7 @@ import {
   markBriefed,
   passContext,
   releaseTask,
+  restartWorker,
   shareEntry,
   SPLIT_CALLS,
   splitTask,
@@ -30,7 +31,7 @@ import {
   takeSplitNudge,
   workerOf,
 } from '../hooks/board'
-import type { Change, NewTask, Run, WorkerId } from '../types'
+import type { Change, NewTask, Run, TaskSize, WorkerId } from '../types'
 import { STORED_BY_0_6_0 } from './stored-runs'
 
 const NOW = 1_800_000_000_000
@@ -75,7 +76,7 @@ const PARTS: NewTask[] = [{ title: 'Colour tokens', size: 'S' }, { title: 'Spaci
 
 /** #1 split by w1 into #2, which w1 keeps, and the open #3 and #4; #4 needs #3. */
 function splitRun(): Run {
-  return runOf(splitTask(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w1', 1, 2, PARTS, NOW + 1))
+  return runOf(splitTask(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w1', { task: 1, version: 2, seen: 1, tasks: PARTS }, NOW + 1))
 }
 
 /** Finishes the parts of the split: #2 at NOW + 2, #3 at NOW + 4 and #4 at NOW + 6. */
@@ -146,24 +147,51 @@ test('an open task counts no calls', () => {
   expect(countCall(withTask(), 'w2').tasks[0]?.calls).toBeUndefined()
 })
 
-test('a leaf with 40 calls of its owner earns one nudge', () => {
+/** The tool calls of its owner after which a leaf of this size earns its nudge, or 0 when none comes in 200 calls. */
+function callsToNudge(size?: TaskSize): number {
+  const added = runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Theme tokens', size }] }, NOW))
+  let run = runOf(claimTask(added, 'w2', 1, 1, NOW))
+  for (let calls = 1; calls <= 200; calls++) {
+    run = countCall(run, 'w2')
+    if (takeSplitNudge(run, 'w2').task) return calls
+  }
+  return 0
+}
+
+test('the nudge limit of a leaf goes by its size: S 30, M 60 and L 120 tool calls', () => {
+  expect(SPLIT_CALLS).toEqual({ S: 30, M: 60, L: 120 })
+  expect([callsToNudge('S'), callsToNudge('M'), callsToNudge('L')]).toEqual([30, 60, 120])
+})
+
+test('a leaf with no size has the nudge limit of an M task', () => {
+  expect(callsToNudge()).toBe(60)
+})
+
+test('a leaf with 60 calls of its owner and no size earns one nudge', () => {
   let run = runOf(claimTask(withTask(), 'w2', 1, 1, NOW))
-  for (let call = 0; call < SPLIT_CALLS; call++) run = countCall(run, 'w2')
+  for (let call = 0; call < SPLIT_CALLS.M; call++) run = countCall(run, 'w2')
   const nudge = takeSplitNudge(run, 'w2')
-  expect(nudge.task).toMatchObject({ id: 1, calls: 40, nudged: true })
+  expect(nudge.task).toMatchObject({ id: 1, calls: 60, nudged: true })
   expect(takeSplitNudge(nudge.run, 'w2').task).toBeUndefined()
 })
 
-test('a leaf with 39 calls of its owner earns no nudge', () => {
+test('a leaf with 59 calls of its owner and no size earns no nudge', () => {
   let run = runOf(claimTask(withTask(), 'w2', 1, 1, NOW))
-  for (let call = 1; call < SPLIT_CALLS; call++) run = countCall(run, 'w2')
+  for (let call = 1; call < SPLIT_CALLS.M; call++) run = countCall(run, 'w2')
   expect(takeSplitNudge(run, 'w2').task).toBeUndefined()
 })
 
 test('the nudge of a leaf goes to its owner and to no other worker', () => {
   let run = runOf(claimTask(withTask(), 'w2', 1, 1, NOW))
-  for (let call = 0; call < SPLIT_CALLS; call++) run = countCall(run, 'w2')
+  for (let call = 0; call < SPLIT_CALLS.M; call++) run = countCall(run, 'w2')
   expect(takeSplitNudge(run, 'w1').task).toBeUndefined()
+})
+
+test('a leaf of a run that meld 0.7.0 or older stored, with no size, earns its nudge at 60 calls of its owner', () => {
+  let run = STORED_BY_0_6_0
+  for (let call = 1; call < SPLIT_CALLS.M; call++) run = countCall(run, 'w1')
+  expect(takeSplitNudge(run, 'w1').task).toBeUndefined()
+  expect(takeSplitNudge(countCall(run, 'w1'), 'w1').task).toMatchObject({ id: 2, calls: 60, nudged: true })
 })
 
 test('a finished task counts no more calls', () => {
@@ -392,7 +420,7 @@ test('a board read adds its reader to seenBy of each entry one time, and does no
   const shared = runOf(shareEntry(workingThree(), 'w1', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW))
   const byAuthor = boardFor(shared, 'w1').run
   const twice = boardFor(boardFor(byAuthor, 'w2').run, 'w2')
-  expect(twice.view.context[0]?.seenBy).toEqual(['w2'])
+  expect(twice.run.context?.[0]?.seenBy).toEqual(['w2'])
   expect(boardFor(twice.run, 'w3').run.context?.[0]?.seenBy).toEqual(['w2', 'w3'])
 })
 
@@ -407,6 +435,60 @@ test('a read counts no reader for an entry that it does not show', () => {
   const read = passContext(withFacts(21), 'w2').run
   expect(read.context?.[0]?.seenBy).toEqual([])
   expect(read.context?.[1]?.seenBy).toEqual(['w2'])
+})
+
+test('a later reply carries only the entries that are new for its reader since its last reply', () => {
+  const first = runOf(shareEntry(working(), 'w2', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW))
+  const read = boardFor(first, 'w1')
+  expect(read.view.context.map(entry => entry.text)).toEqual(['The theme lives in theme.css'])
+  const second = runOf(shareEntry(read.run, 'w2', { kind: 'fail', text: 'A CSS filter inverts the images' }, NOW))
+  expect(boardFor(second, 'w1').view.context.map(entry => [entry.id, entry.text, entry.seenBy])).toEqual([[2, 'A CSS filter inverts the images', ['w1']]])
+})
+
+test('a reply carries no entry when nothing is new for its reader', () => {
+  const read = passContext(runOf(shareEntry(working(), 'w2', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW)), 'w1').run
+  expect(passContext(read, 'w1').context).toEqual([])
+  expect(boardFor(read, 'w1').view.context).toEqual([])
+})
+
+test('after its first reply, a reply carries no entry that its reader wrote', () => {
+  const read = passContext(working(), 'w1').run
+  const shared = runOf(shareEntry(read, 'w1', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW))
+  expect(passContext(shared, 'w1').context).toEqual([])
+  expect(passContext(shared, 'w2').context.map(entry => entry.text)).toEqual(['The theme lives in theme.css'])
+})
+
+test('the first reply to an agent carries the current entries, 20 at most, its own entries too', () => {
+  const first = passContext(withFacts(25), 'w1')
+  expect(first.context).toHaveLength(20)
+  expect([first.context[0]?.text, first.context.at(-1)?.text]).toEqual(['Fact 25', 'Fact 6'])
+  expect(passContext(first.run, 'w1').context).toEqual([])
+})
+
+test('a new agent of a worker gets the current entries again at its first reply', () => {
+  const read = passContext(runOf(shareEntry(working(), 'w2', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW)), 'w1').run
+  const again = passContext(restartWorker(read, 'w1', 'agent-9', NOW), 'w1')
+  expect(again.context.map(entry => [entry.text, entry.seenBy])).toEqual([['The theme lives in theme.css', ['w1']]])
+  expect(passContext(again.run, 'w1').context).toEqual([])
+})
+
+test('an entry that the first reply left out is not carried later, and does not count the reader', () => {
+  const later = passContext(passContext(withFacts(21), 'w2').run, 'w2')
+  expect(later.context).toEqual([])
+  expect(later.run.context?.[0]?.seenBy).toEqual([])
+})
+
+test('a correction is new for a reader that got the entry it replaces', () => {
+  const read = passContext(runOf(shareEntry(working(), 'w2', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW)), 'w1').run
+  const fixed = runOf(shareEntry(read, 'w2', { kind: 'fact', text: 'The theme lives in tokens.css', replaces: 1 }, NOW))
+  expect(passContext(fixed, 'w1').context.map(entry => [entry.id, entry.replaces, entry.text])).toEqual([[2, 1, 'The theme lives in tokens.css']])
+})
+
+test('a worker of a run that meld 0.7.0 or older stored gets the current entries at its next reply, then only new ones', () => {
+  const first = passContext(STORED_BY_0_6_0, 'w1')
+  expect(first.context.map(entry => [entry.text, entry.seenBy])).toEqual([['The theme lives in theme.css', ['w1']]])
+  const shared = runOf(shareEntry(first.run, 'w2', { kind: 'fail', text: 'A CSS filter inverts the images' }, NOW))
+  expect(passContext(shared, 'w1').context.map(entry => entry.text)).toEqual(['A CSS filter inverts the images'])
 })
 
 test('a finished task shares its interfaces and what it left unfinished, with its commit', () => {
@@ -562,33 +644,59 @@ test('a split makes the task a parent, gives the worker the first part, and leav
 })
 
 test('a split adds its parts to the task list in one change, and gives the parts to the worker', () => {
-  const change = splitTask(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w1', 1, 2, PARTS, NOW + 1)
+  const change = splitTask(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w1', { task: 1, version: 2, seen: 1, tasks: PARTS }, NOW + 1)
   expect(change).toMatchObject({ value: { taskList: 2, tasks: [{ id: 2, state: 'claimed' }, { id: 3, state: 'open' }, { id: 4, state: 'open' }] } })
   expect(runOf(change).log.at(-1)?.text).toBe('split #1 into #2 Colour tokens; #3 Spacing tokens; #4 Token docs, and claimed #2')
 })
 
+test('a split from a worker that has not seen the newest tasks fails with STALE_VERSION and shows them, so no part needs the wrong task', () => {
+  const claimed = runOf(claimTask(withTask(), 'w1', 1, 1, NOW))
+  const added = runOf(addTasks(claimed, 'w2', { seen: 1, tasks: [{ title: 'Contrast check' }] }, NOW))
+  const change = splitTask(added, 'w1', { task: 1, version: 2, seen: 1, tasks: PARTS }, NOW + 1)
+  expect(change).toMatchObject({ error: 'STALE_VERSION', taskList: 2 })
+  expect(isFailure(change) ? change.tasks?.map(task => [task.id, task.title]) : []).toEqual([
+    [1, 'Theme tokens'],
+    [2, 'Contrast check'],
+  ])
+  expect(messageOf(change)).toContain('split #1 again with seen 2')
+})
+
+test('a split with the task list version that a stale split returned goes through', () => {
+  const added = runOf(addTasks(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w2', { seen: 1, tasks: [{ title: 'Contrast check' }] }, NOW))
+  const stale = splitTask(added, 'w1', { task: 1, version: 2, seen: 1, tasks: PARTS }, NOW + 1)
+  const seen = isFailure(stale) ? (stale.taskList ?? 0) : 0
+  const parts: NewTask[] = [{ title: 'Colour tokens' }, { title: 'Spacing tokens' }, { title: 'Token docs', needs: [4] }]
+  const change = splitTask(added, 'w1', { task: 1, version: 2, seen, tasks: parts }, NOW + 1)
+  expect(change).toMatchObject({ value: { taskList: 3, tasks: [{ id: 3 }, { id: 4 }, { id: 5, needs: [4] }] } })
+})
+
+test('a split from a worker that is not the owner is refused before its task list version', () => {
+  const added = runOf(addTasks(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w2', { seen: 1, tasks: [{ title: 'Contrast check' }] }, NOW))
+  expect(splitTask(added, 'w2', { task: 1, version: 2, seen: 1, tasks: PARTS }, NOW)).toMatchObject({ error: 'NOT_OWNER' })
+})
+
 test('only the owner of a task splits it', () => {
-  expect(splitTask(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w2', 1, 2, PARTS, NOW)).toMatchObject({ error: 'NOT_OWNER' })
+  expect(splitTask(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w2', { task: 1, version: 2, seen: 1, tasks: PARTS }, NOW)).toMatchObject({ error: 'NOT_OWNER' })
 })
 
 test('a split into fewer than two parts is refused', () => {
-  expect(splitTask(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w1', 1, 2, [{ title: 'Colour tokens' }], NOW)).toMatchObject({ error: 'INVALID' })
+  expect(splitTask(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w1', { task: 1, version: 2, seen: 1, tasks: [{ title: 'Colour tokens' }] }, NOW)).toMatchObject({ error: 'INVALID' })
 })
 
 test('a split whose first part waits is refused with WAITING', () => {
   const two = runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Theme tokens' }, { title: 'Print styles' }] }, NOW))
   const parts: NewTask[] = [{ title: 'Colour tokens', needs: [2] }, { title: 'Spacing tokens' }]
-  expect(splitTask(runOf(claimTask(two, 'w1', 1, 1, NOW)), 'w1', 1, 2, parts, NOW)).toMatchObject({ error: 'WAITING' })
+  expect(splitTask(runOf(claimTask(two, 'w1', 1, 1, NOW)), 'w1', { task: 1, version: 2, seen: 1, tasks: parts }, NOW)).toMatchObject({ error: 'WAITING' })
 })
 
 test('a part cannot need the task that it splits', () => {
   const claimed = runOf(claimTask(withTask(), 'w1', 1, 1, NOW))
-  expect(splitTask(claimed, 'w1', 1, 2, [{ title: 'Colour tokens' }, { title: 'Spacing tokens', needs: [1] }], NOW)).toMatchObject({ error: 'INVALID' })
+  expect(splitTask(claimed, 'w1', { task: 1, version: 2, seen: 1, tasks: [{ title: 'Colour tokens' }, { title: 'Spacing tokens', needs: [1] }] }, NOW)).toMatchObject({ error: 'INVALID' })
 })
 
 test('a new task cannot need a task that waits for its parent', () => {
   const claimed = runOf(claimTask(planned(), 'w1', 1, 1, NOW))
-  const change = splitTask(claimed, 'w1', 1, 2, [{ title: 'Colour tokens' }, { title: 'Toggle colours', needs: [2] }], NOW)
+  const change = splitTask(claimed, 'w1', { task: 1, version: 2, seen: 1, tasks: [{ title: 'Colour tokens' }, { title: 'Toggle colours', needs: [2] }] }, NOW)
   expect(change).toMatchObject({ error: 'INVALID' })
   expect(messageOf(change)).toContain('#2')
 })
@@ -618,7 +726,7 @@ test('a parent with an open part is not done', () => {
 })
 
 test('a done parent makes its own parent done', () => {
-  const nested = runOf(splitTask(splitRun(), 'w1', 2, 1, [{ title: 'Light colours' }, { title: 'Dark colours' }], NOW + 2))
+  const nested = runOf(splitTask(splitRun(), 'w1', { task: 2, version: 1, seen: 2, tasks: [{ title: 'Light colours' }, { title: 'Dark colours' }] }, NOW + 2))
   const light = runOf(finishTask(nested, 'w1', 5, 1, 'ddd4444', 'Light added', NOW + 3))
   const dark = runOf(finishTask(runOf(claimTask(light, 'w2', 6, 1, NOW + 3)), 'w2', 6, 2, 'eee5555', 'Dark added', NOW + 4))
   const spacing = runOf(finishTask(runOf(claimTask(dark, 'w2', 3, 1, NOW + 5)), 'w2', 3, 2, 'bbb2222', 'Spacing added', NOW + 6))
