@@ -4,7 +4,7 @@ import type { BoardView, Change, Facts, Failure, Final, NewTask, PaneView, Run, 
 import * as board from './board'
 import { CONTROL_TOOLS, HAND_BACK, integrateDetail, integrateStep, missingWorkText, splitNudge, TOOL, wakeText, workerPrompt, workerRules } from './contract'
 import type { Control } from './contract'
-import { headCommit, isDirty, repoRoot } from './git'
+import { GIT_MIN, gitVersion, headCommit, isDirty, isOldGit, repoRoot } from './git'
 import type { Io, Spawned } from './io'
 import { agentSpecOf, agentsOf, MAX_AGENTS, parseStart, WORKER_TYPE } from './options'
 import type { StartOptions } from './options'
@@ -76,6 +76,8 @@ function mirrorBoard(io: Io): Promise<void> {
 export async function startRun(io: Io, cwd: string, options: StartOptions): Promise<CommandRunResult> {
   const current = await readRun(io)
   if (current && LIVE_STATES.has(current.state)) return { text: 'A run is active. Deliver, discard or stop it first: /meld-deliver, /meld-discard or /meld-stop, or the meld pane.' }
+  const old = await oldGit(io, cwd)
+  if (old) return { text: old }
   if (current?.state === 'stopped') {
     const kept = await keptWork(io, current)
     if (kept) return { text: kept }
@@ -112,6 +114,16 @@ export async function startRun(io: Io, cwd: string, options: StartOptions): Prom
   const notStarted = refused.length ? ` ${refused.length} did not start: ${refused[0]}.` : ''
   const dirty = (await isDirty(io, repo)) ? ' Your uncommitted changes are not in their workspaces.' : ''
   return { text: `Run ${id}: ${workers.length} workers on ${kind}, from commit ${base.slice(0, 7)}.${fallback}${notStarted}${dirty}` }
+}
+
+/**
+ * Why a start cannot go on with the git of the session: the integration line of both adapters merges with git merge-tree
+ * --write-tree. Undefined when git is new enough, or when meld cannot read its version, so the start goes on.
+ */
+async function oldGit(io: Io, cwd: string): Promise<string | undefined> {
+  const version = await gitVersion(io, cwd)
+  if (!version || !isOldGit(version)) return undefined
+  return `meld needs git ${GIT_MIN} or newer for git merge-tree --write-tree, which merges each finished task into the integration line. This git is ${version}. Update git, then start again.`
 }
 
 /**

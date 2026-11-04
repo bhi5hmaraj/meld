@@ -30,6 +30,25 @@ export async function headCommit(io: Io, repo: string): Promise<string> {
   return (await git(io, repo, ['rev-parse', 'HEAD'])).out
 }
 
+/** The oldest git that meld works with: the integration line merges with git merge-tree --write-tree, which came in git 2.38. */
+export const GIT_MIN = '2.38'
+
+/**
+ * The version of git as `git version` prints it, with no suffix of a vendor build: 2.39.5 of "git version 2.39.5 (Apple
+ * Git-154)". Undefined when git does not answer or prints no version.
+ */
+export async function gitVersion(io: Io, cwd: string): Promise<string | undefined> {
+  const printed = await git(io, cwd, ['version'])
+  return printed.ok ? /git version (\d+\.\d+(?:\.\d+)*)/.exec(printed.out)?.[1] : undefined
+}
+
+/** Whether a version that gitVersion read is older than GIT_MIN. */
+export function isOldGit(version: string): boolean {
+  const [major = 0, minor = 0] = version.split('.').map(Number)
+  const [minMajor = 0, minMinor = 0] = GIT_MIN.split('.').map(Number)
+  return major < minMajor || (major === minMajor && minor < minMinor)
+}
+
 export async function isDirty(io: Io, cwd: string): Promise<boolean> {
   const status = await git(io, cwd, ['status', '--porcelain'])
   return status.ok && status.out.length > 0
