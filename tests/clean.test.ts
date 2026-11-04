@@ -138,6 +138,22 @@ test('a board.json whose base is not a commit id is not readable, so no text of 
   expect(io.ran('git ')).toBe(false)
 })
 
+test('a board.json with no workers, or with a worker that meld does not name, is not readable, as the work check would miss workspaces of its folder: --all keeps it', async () => {
+  const io = session()
+  folder(io, 'aaa', { board: { ...boardRun('aaa', 'stopped'), workers: [] } })
+  const run = boardRun('bbb', 'stopped')
+  folder(io, 'bbb', { board: JSON.stringify({ ...run, workers: [...run.workers, { id: 'x3', path: '/repo', ref: 'main' }] }) })
+  const text = await cleanFolders(io, '')
+  expect(lineOf(text, 'aaa')).toBe('aaa: board.json not readable, changed 3 d ago, 4 KB')
+  expect(lineOf(text, 'bbb')).toBe('bbb: board.json not readable, changed 3 d ago, 4 KB')
+  expect(await cleanFolders(io, '--all')).toBe(
+    'Kept aaa (board.json not readable) and bbb (board.json not readable). /meld-clean <id> removes one, with any work in it.',
+  )
+  expect(folderNames(io)).toEqual(['r1', 'aaa', 'bbb'])
+  expect(io.ran('git ')).toBe(false)
+  expect(io.ran('rm ')).toBe(false)
+})
+
 test('the list marks a folder maybe live when its board.json says starting, working or ready and changed in the last 24 hours', async () => {
   const io = session()
   folder(io, 'aaa', { board: boardRun('aaa', 'ready'), changedAt: NOW - 2 * HOUR })
