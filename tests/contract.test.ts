@@ -70,6 +70,12 @@ test('the rules tell a worker to read the shared context before it starts a task
   expect(workerRules(runOn('git'), 'w2')).toContain('Read it before you start a task')
 })
 
+test('the rules and the board and share tools say that a reply carries only the entries that are new for the worker', () => {
+  expect(workerRules(runOn('git'), 'w2')).toContain('the first reply to you carries the current entries, 20 at most, and each later reply only the entries that are new since your last reply')
+  expect(TOOL_SPECS.find(spec => spec.name === 'board')?.description).toContain('the shared-context entries that are new for you')
+  expect(TOOL_SPECS.find(spec => spec.name === 'share')?.description).toContain('The next board reply to each other worker carries it.')
+})
+
 test('the rules send the contracts and the work left of a task to finish_task', () => {
   const rules = workerRules(runOn('git'), 'w1')
   expect(rules).toContain(`call ${TOOL.finishTask} with the commit and a one-line summary`)
