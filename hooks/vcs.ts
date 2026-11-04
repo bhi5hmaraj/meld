@@ -10,6 +10,8 @@ export const JJ_LANE_TEMPLATE =
 
 const JJ_MIN_MINOR = 40
 const LANE_LIMIT = '40'
+/** What jj warns, and still exits 0, when a snapshot leaves out a new file, as one over snapshot.max-new-file-size (1 MiB). */
+const JJ_REFUSED = 'Refused to snapshot'
 /** A run id: lowercase letters and digits only, so a path made of it stays in the folder of meld. */
 export const SAFE_ID = /^[0-9a-z]+$/
 const FULL_COMMIT = /^[0-9a-f]{40}$/
@@ -37,7 +39,8 @@ export type Vcs = {
   resolve(io: Io, run: Run, worker: Worker, revision: string): Promise<Resolved | undefined>
   /**
    * The commits of each worker since the base, and its uncommitted edits. jj records the files of a workspace only when a
-   * jj command runs there, so a lane shows them as of that command; with snapshot, jj first records them. git reads the files.
+   * jj command runs there, so a lane shows them as of that command; with snapshot, jj first records them. git reads the
+   * files, new files too. A lane that meld cannot read, or whose snapshot left out a new file, names the error.
    */
   lanes(io: Io, run: LanePlace, read?: LaneRead): Promise<LaneFacts[]>
   result(io: Io, run: Run, commit: string): Promise<ResultFacts>
@@ -223,11 +226,15 @@ const GIT: Vcs = {
     return found.ok && FULL_COMMIT.test(found.out) ? { commit: found.out, conflict: false } : undefined
   },
 
+  /**
+   * git status lists each new file: with status.showUntrackedFiles=no, a plain git status --porcelain hides them, and a
+   * workspace whose only work is new files would read as one with no work.
+   */
   async lanes(io, run) {
     const lanes: LaneFacts[] = []
     for (const worker of run.workers) {
       const log = await git(io, run.repo, ['log', '--format=%H%x09%P%x09%s', '-n', LANE_LIMIT, `${run.base}..${worker.ref}`])
-      const status = await git(io, worker.path, ['status', '--porcelain'])
+      const status = await git(io, worker.path, ['status', '--porcelain', '--untracked-files=all'])
       const lane = { id: worker.id, commits: log.ok ? gitCommits(log.out) : [], edits: status.ok && status.out.length > 0 }
       const failed = [log, status].find(read => !read.ok)
       lanes.push(failed ? { ...lane, error: failed.err || failed.out } : lane)
@@ -296,13 +303,19 @@ const JJ: Vcs = {
     return FULL_COMMIT.test(commit) ? { commit, conflict: state === 'conflict' } : undefined
   },
 
-  /** A lane with snapshot runs jj in the folder of the worker, which records its files first; else jj reads the repository as it is. */
+  /**
+   * A lane with snapshot runs jj in the folder of the worker, which records its files first; else jj reads the repository
+   * as it is. A snapshot that left out a new file, as one over snapshot.max-new-file-size, makes the lane not readable:
+   * jj still exits 0, and the working copy shows no edit for that file.
+   */
   async lanes(io, run, read) {
     const lanes: LaneFacts[] = []
     for (const worker of run.workers) {
       const from = read?.snapshot ? [worker.path] : [jjRepoOf(run.id), '--ignore-working-copy']
       const log = await command(io, run.repo, ['jj', '-R', ...from, 'log', '--no-graph', '--limit', LANE_LIMIT, '-r', `${BASE_BOOKMARK}..${worker.id}@`, '-T', JJ_LANE_TEMPLATE])
-      lanes.push(log.ok ? jjLane(worker.id, log.out) : { ...jjLane(worker.id, ''), error: log.err || log.out })
+      const lane = jjLane(worker.id, log.ok ? log.out : '')
+      const error = log.ok ? refusedSnapshot(log.err) : log.err || log.out
+      lanes.push(error === undefined ? lane : { ...lane, error })
     }
     return lanes
   },
@@ -392,6 +405,20 @@ async function removeJj(io: Io, id: string): Promise<void> {
   const folder = config.ok ? JJ_CONFIG_FOLDER.exec(config.out)?.[1] : undefined
   if (folder) await command(io, MELD_ROOT, ['rm', '-rf', '--', folder])
   await removeFolder(io, id)
+}
+
+/**
+ * Why a snapshot of jj left out new files, in one line: the warning, and the files that jj names under it with an indent.
+ * Undefined when jj left out none, so the lane shows each file of the workspace.
+ */
+function refusedSnapshot(err: string): string | undefined {
+  const lines = err.split('\n')
+  const at = lines.findIndex(line => line.includes(JJ_REFUSED))
+  if (at < 0) return undefined
+  const after = lines.slice(at + 1)
+  const end = after.findIndex(line => !/^\s/.test(line))
+  const files = (end < 0 ? after : after.slice(0, end)).map(line => line.trim()).filter(Boolean)
+  return [(lines[at] ?? '').replace(/^Warning:\s*/, '').trim(), files.join(', ')].filter(Boolean).join(' ')
 }
 
 function jjLane(id: WorkerId, out: string): LaneFacts {
