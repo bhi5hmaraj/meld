@@ -662,12 +662,32 @@ export async function stopOne(io: Io, id: WorkerId): Promise<string> {
   return `Stopped ${id}.`
 }
 
+/** The longest subject of the merge commit of a delivery, with its 'meld: '. */
+const SUBJECT_CHARS = 72
+const SUBJECT_PREFIX = 'meld: '
+
+/**
+ * The message of the merge commit of a delivery. Its subject is 'meld: ' and the summary of the final commit, or the first
+ * line of the request when the summary is empty, cut at its last space to 72 characters. Its body holds the full request.
+ */
+export function deliveryMessage(run: Run): string {
+  const summary = run.final?.summary.split('\n')[0]?.trim() || run.request.split('\n')[0]?.trim() || ''
+  return `${cutAtSpace(`${SUBJECT_PREFIX}${summary}`, SUBJECT_CHARS)}\n\n${run.request.trim()}`
+}
+
+/** The text cut at its last space within the limit; a text with no such space after the prefix is cut at the limit. */
+function cutAtSpace(text: string, limit: number): string {
+  if (text.length <= limit) return text
+  const space = text.slice(0, limit + 1).lastIndexOf(' ')
+  return space > SUBJECT_PREFIX.length ? text.slice(0, space).trimEnd() : text.slice(0, limit)
+}
+
 export async function deliver(io: Io): Promise<string> {
   const run = await readRun(io)
   if (!run || run.state !== 'ready' || !run.final) return 'There is no final commit to deliver.'
   if (await isDirty(io, run.repo)) return 'Commit or stash the changes in your checkout first, then deliver.'
   const vcs = vcsFor(run.vcs)
-  const merged = await vcs.deliver(io, run, run.final.commit, `meld: ${run.request.split('\n')[0]?.slice(0, 72)}`)
+  const merged = await vcs.deliver(io, run, run.final.commit, deliveryMessage(run))
   if (!merged.ok) return `The merge stopped, and nothing changed: ${merged.err || merged.out}`
   await vcs.remove(io, run)
   const now = await io.now()
