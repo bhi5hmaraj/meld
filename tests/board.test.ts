@@ -76,7 +76,7 @@ const PARTS: NewTask[] = [{ title: 'Colour tokens', size: 'S' }, { title: 'Spaci
 
 /** #1 split by w1 into #2, which w1 keeps, and the open #3 and #4; #4 needs #3. */
 function splitRun(): Run {
-  return runOf(splitTask(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w1', 1, 2, PARTS, NOW + 1))
+  return runOf(splitTask(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w1', { task: 1, version: 2, seen: 1, tasks: PARTS }, NOW + 1))
 }
 
 /** Finishes the parts of the split: #2 at NOW + 2, #3 at NOW + 4 and #4 at NOW + 6. */
@@ -617,33 +617,59 @@ test('a split makes the task a parent, gives the worker the first part, and leav
 })
 
 test('a split adds its parts to the task list in one change, and gives the parts to the worker', () => {
-  const change = splitTask(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w1', 1, 2, PARTS, NOW + 1)
+  const change = splitTask(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w1', { task: 1, version: 2, seen: 1, tasks: PARTS }, NOW + 1)
   expect(change).toMatchObject({ value: { taskList: 2, tasks: [{ id: 2, state: 'claimed' }, { id: 3, state: 'open' }, { id: 4, state: 'open' }] } })
   expect(runOf(change).log.at(-1)?.text).toBe('split #1 into #2 Colour tokens; #3 Spacing tokens; #4 Token docs, and claimed #2')
 })
 
+test('a split from a worker that has not seen the newest tasks fails with STALE_VERSION and shows them, so no part needs the wrong task', () => {
+  const claimed = runOf(claimTask(withTask(), 'w1', 1, 1, NOW))
+  const added = runOf(addTasks(claimed, 'w2', { seen: 1, tasks: [{ title: 'Contrast check' }] }, NOW))
+  const change = splitTask(added, 'w1', { task: 1, version: 2, seen: 1, tasks: PARTS }, NOW + 1)
+  expect(change).toMatchObject({ error: 'STALE_VERSION', taskList: 2 })
+  expect(isFailure(change) ? change.tasks?.map(task => [task.id, task.title]) : []).toEqual([
+    [1, 'Theme tokens'],
+    [2, 'Contrast check'],
+  ])
+  expect(messageOf(change)).toContain('split #1 again with seen 2')
+})
+
+test('a split with the task list version that a stale split returned goes through', () => {
+  const added = runOf(addTasks(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w2', { seen: 1, tasks: [{ title: 'Contrast check' }] }, NOW))
+  const stale = splitTask(added, 'w1', { task: 1, version: 2, seen: 1, tasks: PARTS }, NOW + 1)
+  const seen = isFailure(stale) ? (stale.taskList ?? 0) : 0
+  const parts: NewTask[] = [{ title: 'Colour tokens' }, { title: 'Spacing tokens' }, { title: 'Token docs', needs: [4] }]
+  const change = splitTask(added, 'w1', { task: 1, version: 2, seen, tasks: parts }, NOW + 1)
+  expect(change).toMatchObject({ value: { taskList: 3, tasks: [{ id: 3 }, { id: 4 }, { id: 5, needs: [4] }] } })
+})
+
+test('a split from a worker that is not the owner is refused before its task list version', () => {
+  const added = runOf(addTasks(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w2', { seen: 1, tasks: [{ title: 'Contrast check' }] }, NOW))
+  expect(splitTask(added, 'w2', { task: 1, version: 2, seen: 1, tasks: PARTS }, NOW)).toMatchObject({ error: 'NOT_OWNER' })
+})
+
 test('only the owner of a task splits it', () => {
-  expect(splitTask(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w2', 1, 2, PARTS, NOW)).toMatchObject({ error: 'NOT_OWNER' })
+  expect(splitTask(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w2', { task: 1, version: 2, seen: 1, tasks: PARTS }, NOW)).toMatchObject({ error: 'NOT_OWNER' })
 })
 
 test('a split into fewer than two parts is refused', () => {
-  expect(splitTask(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w1', 1, 2, [{ title: 'Colour tokens' }], NOW)).toMatchObject({ error: 'INVALID' })
+  expect(splitTask(runOf(claimTask(withTask(), 'w1', 1, 1, NOW)), 'w1', { task: 1, version: 2, seen: 1, tasks: [{ title: 'Colour tokens' }] }, NOW)).toMatchObject({ error: 'INVALID' })
 })
 
 test('a split whose first part waits is refused with WAITING', () => {
   const two = runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Theme tokens' }, { title: 'Print styles' }] }, NOW))
   const parts: NewTask[] = [{ title: 'Colour tokens', needs: [2] }, { title: 'Spacing tokens' }]
-  expect(splitTask(runOf(claimTask(two, 'w1', 1, 1, NOW)), 'w1', 1, 2, parts, NOW)).toMatchObject({ error: 'WAITING' })
+  expect(splitTask(runOf(claimTask(two, 'w1', 1, 1, NOW)), 'w1', { task: 1, version: 2, seen: 1, tasks: parts }, NOW)).toMatchObject({ error: 'WAITING' })
 })
 
 test('a part cannot need the task that it splits', () => {
   const claimed = runOf(claimTask(withTask(), 'w1', 1, 1, NOW))
-  expect(splitTask(claimed, 'w1', 1, 2, [{ title: 'Colour tokens' }, { title: 'Spacing tokens', needs: [1] }], NOW)).toMatchObject({ error: 'INVALID' })
+  expect(splitTask(claimed, 'w1', { task: 1, version: 2, seen: 1, tasks: [{ title: 'Colour tokens' }, { title: 'Spacing tokens', needs: [1] }] }, NOW)).toMatchObject({ error: 'INVALID' })
 })
 
 test('a new task cannot need a task that waits for its parent', () => {
   const claimed = runOf(claimTask(planned(), 'w1', 1, 1, NOW))
-  const change = splitTask(claimed, 'w1', 1, 2, [{ title: 'Colour tokens' }, { title: 'Toggle colours', needs: [2] }], NOW)
+  const change = splitTask(claimed, 'w1', { task: 1, version: 2, seen: 1, tasks: [{ title: 'Colour tokens' }, { title: 'Toggle colours', needs: [2] }] }, NOW)
   expect(change).toMatchObject({ error: 'INVALID' })
   expect(messageOf(change)).toContain('#2')
 })
@@ -673,7 +699,7 @@ test('a parent with an open part is not done', () => {
 })
 
 test('a done parent makes its own parent done', () => {
-  const nested = runOf(splitTask(splitRun(), 'w1', 2, 1, [{ title: 'Light colours' }, { title: 'Dark colours' }], NOW + 2))
+  const nested = runOf(splitTask(splitRun(), 'w1', { task: 2, version: 1, seen: 2, tasks: [{ title: 'Light colours' }, { title: 'Dark colours' }] }, NOW + 2))
   const light = runOf(finishTask(nested, 'w1', 5, 1, 'ddd4444', 'Light added', NOW + 3))
   const dark = runOf(finishTask(runOf(claimTask(light, 'w2', 6, 1, NOW + 3)), 'w2', 6, 2, 'eee5555', 'Dark added', NOW + 4))
   const spacing = runOf(finishTask(runOf(claimTask(dark, 'w2', 3, 1, NOW + 5)), 'w2', 3, 2, 'bbb2222', 'Spacing added', NOW + 6))

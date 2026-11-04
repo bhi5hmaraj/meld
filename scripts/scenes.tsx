@@ -63,7 +63,7 @@ function planned(): Run {
   let run = runOf(addTasks(started(), 'w1', { seen: 0, tasks }, NOW - 13 * MINUTE))
   run = runOf(claimTask(run, 'w1', 1, 1, NOW - 13 * MINUTE))
   run = runOf(claimTask(run, 'w2', 2, 1, NOW - 13 * MINUTE))
-  run = runOf(splitTask(run, 'w1', 1, 2, [{ title: 'Colour tokens' }, { title: 'Spacing tokens', size: 'S' }], NOW - 12 * MINUTE))
+  run = runOf(splitTask(run, 'w1', { task: 1, version: 2, seen: 1, tasks: [{ title: 'Colour tokens' }, { title: 'Spacing tokens', size: 'S' }] }, NOW - 12 * MINUTE))
   run = runOf(claimTask(run, 'w3', 6, 1, NOW - 11 * MINUTE))
   run = runOf(finishTask(run, 'w1', 5, 1, full(LANES.w1!.commits[0]!), 'Colour tokens in theme.css', NOW - 6 * MINUTE))
   return runOf(claimTask(run, 'w1', 4, 1, NOW - 5 * MINUTE))

@@ -88,12 +88,13 @@ test('the note tool sends a fact, a fail and an interface to share', () => {
   expect(note?.description).not.toContain('need: an interface')
 })
 
-test('the split tool takes a task, its version and two or more new tasks', () => {
+test('the split tool takes a task, its version, the task list version that the worker saw and two or more new tasks', () => {
   const split = TOOL_SPECS.find(spec => spec.name === 'split')
   expect(split?.inputSchema).toMatchObject({
-    properties: { task: { type: 'number' }, version: { type: 'number' }, tasks: { type: 'array', minItems: 2 } },
-    required: ['task', 'version', 'tasks'],
+    properties: { task: { type: 'number' }, version: { type: 'number' }, seen: { type: 'number' }, tasks: { type: 'array', minItems: 2 } },
+    required: ['task', 'version', 'seen', 'tasks'],
   })
+  expect(split?.description).toContain('fails with STALE_VERSION and returns the current tasks')
 })
 
 test('a new task takes a parent, a size of S, M or L, and the tasks it needs', () => {

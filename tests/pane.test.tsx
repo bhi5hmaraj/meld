@@ -116,7 +116,7 @@ function rowKeys(boxes: { key: string | undefined }[]): (string | undefined)[] {
 
 /** w1 splits its claim #1 into #5, which it keeps, and #6, which is open. */
 function splitRun(): Run {
-  return runOf(splitTask(workingRun(3), 'w1', 1, 2, [{ title: 'Colour tokens' }, { title: 'Spacing tokens', size: 'S' }], NOW))
+  return runOf(splitTask(workingRun(3), 'w1', { task: 1, version: 2, seen: 1, tasks: [{ title: 'Colour tokens' }, { title: 'Spacing tokens', size: 'S' }] }, NOW))
 }
 
 /** w1 finishes #5, and w2 claims and finishes #6: #1 is done. */
