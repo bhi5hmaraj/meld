@@ -9,6 +9,8 @@ export class FakeIo implements Io {
   facts: Facts | null = null
   repos = ['/repo', '/elsewhere']
   answers: Record<string, string> = {}
+  /** Whole results by command, for a command that fails with an output, as git merge-tree does on a conflict. */
+  outcomes: Record<string, ProcessResult> = {}
   failing: string[] = []
   missing: string[] = []
   dirty = false
@@ -31,6 +33,8 @@ export class FakeIo implements Io {
     this.cwds[command] = cwd
     if (this.missing.includes(argv[0] ?? '')) throw new Error(`spawn ${argv[0]} ENOENT`)
     if (this.failing.some(prefix => command.startsWith(prefix))) return refusal(`${argv[0]}: failed`)
+    const outcome = this.outcomes[command]
+    if (outcome !== undefined) return outcome
     const known = this.answers[command]
     if (known !== undefined) return answer(known)
     if (command === 'git rev-parse --show-toplevel') return this.rootOf(cwd)

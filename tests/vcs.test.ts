@@ -225,3 +225,100 @@ test('removal refuses a run id that could leave the meld folder', async () => {
   await vcsFor('git').remove(io, { ...runOn('git'), id: '../home' })
   expect(io.ran('rm')).toBe(false)
 })
+
+const LINE = 'c'.repeat(40)
+const TREE = 'd'.repeat(40)
+const MERGED = '9'.repeat(40)
+const GIT_LINE = 'refs/heads/meld/r1/integration'
+const JJ_LINE = 'refs/heads/meld_integration'
+const MESSAGE = 'meld: integrate #3 Add the theme switch'
+
+/** The answers of git for a merge of FULL into a line at LINE that neither holds the other. */
+function lineAnswers(io: FakeIo, ref: string, identity = ''): void {
+  io.answers[`git rev-parse --verify --quiet ${ref}^{commit}`] = LINE
+  io.failing = [`git merge-base --is-ancestor ${FULL} ${LINE}`, `git merge-base --is-ancestor ${LINE} ${FULL}`]
+  io.answers[`git merge-tree --write-tree --name-only --no-messages ${LINE} ${FULL}`] = TREE
+  io.answers[`git ${identity}commit-tree ${TREE} -p ${LINE} -p ${FULL} -m ${MESSAGE}`] = MERGED
+}
+
+test('each adapter names the integration line as a worker names it in its folder', () => {
+  expect(vcsFor('git').lineName(runOn('git'))).toBe('meld/r1/integration')
+  expect(vcsFor('jj').lineName(runOn('jj'))).toBe('meld_integration')
+})
+
+test('git merges a finished commit into the integration line with a merge commit and no worktree', async () => {
+  const io = new FakeIo()
+  lineAnswers(io, GIT_LINE)
+  expect(await vcsFor('git').mergeIntoLine(io, runOn('git'), FULL, MESSAGE)).toEqual({ state: 'merged', head: MERGED })
+  expect(io.commands).toContain(`git update-ref ${GIT_LINE} ${MERGED} ${LINE}`)
+  expect(io.cwds[`git merge-tree --write-tree --name-only --no-messages ${LINE} ${FULL}`]).toBe('/repo')
+  expect(io.ran('git merge ')).toBe(false)
+  expect(io.ran('git checkout')).toBe(false)
+})
+
+test('git starts the integration line at the base, and moves it forward to a commit that holds it', async () => {
+  const io = new FakeIo()
+  io.failing = [`git rev-parse --verify --quiet ${GIT_LINE}`, `git merge-base --is-ancestor ${FULL} ${HEAD}`]
+  expect(await vcsFor('git').mergeIntoLine(io, runOn('git'), FULL, MESSAGE)).toEqual({ state: 'merged', head: FULL })
+  expect(io.commands).toContain(`git update-ref ${GIT_LINE} ${FULL} `)
+  expect(io.ran('git merge-tree')).toBe(false)
+  expect(io.ran('git commit-tree')).toBe(false)
+})
+
+test('a commit that the integration line holds leaves the line as it is', async () => {
+  const io = new FakeIo()
+  io.answers[`git rev-parse --verify --quiet ${GIT_LINE}^{commit}`] = LINE
+  expect(await vcsFor('git').mergeIntoLine(io, runOn('git'), FULL, MESSAGE)).toEqual({ state: 'merged', head: LINE })
+  expect(io.ran('git update-ref')).toBe(false)
+})
+
+test('a conflict leaves the integration line where it was, and names the files', async () => {
+  const io = new FakeIo()
+  lineAnswers(io, GIT_LINE)
+  io.outcomes[`git merge-tree --write-tree --name-only --no-messages ${LINE} ${FULL}`] = { exitCode: 1, stdout: `${TREE}\nsrc/a.ts\nsrc/b.ts\n`, stderr: '' }
+  expect(await vcsFor('git').mergeIntoLine(io, runOn('git'), FULL, MESSAGE)).toEqual({ state: 'conflict', head: LINE, files: ['src/a.ts', 'src/b.ts'] })
+  expect(io.ran('git commit-tree')).toBe(false)
+  expect(io.ran('git update-ref')).toBe(false)
+})
+
+test('a merge that git cannot make fails, and the line stays', async () => {
+  const io = new FakeIo()
+  lineAnswers(io, GIT_LINE)
+  io.failing.push('git merge-tree')
+  expect(await vcsFor('git').mergeIntoLine(io, runOn('git'), FULL, MESSAGE)).toEqual({ state: 'failed', error: 'git: failed' })
+  expect(io.ran('git update-ref')).toBe(false)
+})
+
+test('a line that moved since the merge read it fails the merge', async () => {
+  const io = new FakeIo()
+  lineAnswers(io, GIT_LINE)
+  io.failing.push(`git update-ref ${GIT_LINE}`)
+  expect(await vcsFor('git').mergeIntoLine(io, runOn('git'), FULL, MESSAGE)).toEqual({ state: 'failed', error: 'git: failed' })
+})
+
+test('jj merges in its store, with the identity of the repository, and gives jj the line as a bookmark', async () => {
+  const io = new FakeIo()
+  io.answers[`jj -R ${JJ_REPO} --ignore-working-copy log --no-graph -r ${FULL} -T ${JJ_RESOLVE_TEMPLATE}`] = `${FULL} clean\n`
+  io.answers['git config user.name'] = 'Sample Person'
+  io.answers['git config user.email'] = 'sample@example.com'
+  lineAnswers(io, JJ_LINE, '-c user.name=Sample Person -c user.email=sample@example.com ')
+  expect(await vcsFor('jj').mergeIntoLine(io, runOn('jj'), FULL, MESSAGE)).toEqual({ state: 'merged', head: MERGED })
+  expect(io.cwds[`git merge-tree --write-tree --name-only --no-messages ${LINE} ${FULL}`]).toBe(STORE)
+  expect(io.cwds[`git update-ref ${JJ_LINE} ${MERGED} ${LINE}`]).toBe(STORE)
+  expect(io.commands.at(-1)).toBe(`jj -R ${JJ_REPO} --ignore-working-copy git import`)
+})
+
+test('jj does not merge a commit with a conflict into the integration line', async () => {
+  const io = new FakeIo()
+  io.answers[`jj -R ${JJ_REPO} --ignore-working-copy log --no-graph -r ${FULL} -T ${JJ_RESOLVE_TEMPLATE}`] = `${FULL} conflict\n`
+  lineAnswers(io, JJ_LINE)
+  expect(await vcsFor('jj').mergeIntoLine(io, runOn('jj'), FULL, MESSAGE)).toEqual({ state: 'conflict', head: LINE, files: [] })
+  expect(io.ran('git merge-tree')).toBe(false)
+  expect(io.ran('git update-ref')).toBe(false)
+})
+
+test('git removal drops the integration line', async () => {
+  const io = new FakeIo()
+  await vcsFor('git').remove(io, runOn('git'))
+  expect(io.commands).toContain('git branch -D meld/r1/integration')
+})
