@@ -723,27 +723,19 @@ function leadStep(run: Run, lead: Worker): string {
   return integrateStep(run, board.lackingTasks(run))
 }
 
+/** The tries of a steer: a try fails when the integrator declared the final commit after the try read the run. */
+const STEER_TRIES = 3
+const NO_RUN_TO_STEER = 'There is no run to steer.'
+
 export async function steerRun(io: Io, instruction: string): Promise<string> {
   if (!instruction) return 'Write the instruction after /meld-steer.'
-  const line = await lineToFinal(io)
-  if ('error' in line) return line.error
-  const now = await io.now()
-  let outcome = 'There is no run to steer.'
-  let revision = 0
-  await save(io, run => {
-    if (!run) return run
-    const change = board.steer(run, instruction, now, line.moved)
-    if (board.isFailure(change)) {
-      outcome = change.message
-      return run
-    }
-    revision = change.value
-    return change.run
-  })
-  if (!revision) return outcome
+  let steered = await trySteer(io, instruction)
+  for (let tries = 1; steered.again && tries < STEER_TRIES; tries++) steered = await trySteer(io, instruction)
+  const revision = steered.revision
+  if (!revision) return steered.outcome
   await settleEnded(io)
   const run = await readRun(io)
-  if (!run) return outcome
+  if (!run) return NO_RUN_TO_STEER
   const step = wakeText(`The person changed the request (revision ${revision}): ${instruction}`)
   const live = run.workers.filter(worker => worker.state !== 'stopped')
   const running = live.filter(worker => worker.state === 'working')
@@ -760,11 +752,37 @@ export async function steerRun(io: Io, instruction: string): Promise<string> {
   return `Revision ${revision}: meld starts ${started.join(', ')} again with it.`
 }
 
+/** One try of a steer: the revision it saved, or why not, and `again` when the line was not at the final commit of a ready run. */
+type Steered = { revision: number; outcome: string; again: boolean }
+
+/**
+ * One try of a steer: meld moves the line to the final commit of a ready run, then saves the steer. The integrator can
+ * declare the final commit after the move read a working run: board.steer then refuses the ready run with
+ * LINE_NOT_MOVED, the run stays as it is, and the next try moves the line to that commit.
+ */
+async function trySteer(io: Io, instruction: string): Promise<Steered> {
+  const line = await lineToFinal(io)
+  if ('error' in line) return { revision: 0, outcome: line.error, again: false }
+  const now = await io.now()
+  let steered: Steered = { revision: 0, outcome: NO_RUN_TO_STEER, again: false }
+  await save(io, run => {
+    if (!run) return run
+    const change = board.steer(run, instruction, now, line.moved)
+    if (board.isFailure(change)) {
+      steered = { revision: 0, outcome: change.message, again: change.error === 'LINE_NOT_MOVED' }
+      return run
+    }
+    steered = { revision: change.value, outcome: '', again: false }
+    return change.run
+  })
+  return steered
+}
+
 /**
  * Before a steer of a ready run, meld moves the integration line to the final commit, so that the steer keeps the work of
  * that commit: the merges after the steer and the next final build on it. The move runs in the chain of merges, as it
  * moves the line too. It gives the commit that the line moved to, nothing for a run that is not ready, or why the line
- * could not move: then the steer changes nothing.
+ * could not move: then the steer changes nothing. The board refuses a steer of a ready run whose line did not move.
  */
 function lineToFinal(io: Io): Promise<{ moved?: string } | { error: string }> {
   const moved = merging.then(async () => {
