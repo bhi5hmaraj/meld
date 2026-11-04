@@ -229,36 +229,36 @@ export async function serveTool(io: Io, e: ToolCallInput, cwd = ''): Promise<Too
     return counted.run
   })
   await afterChange(io, worker.id, tool)
-  if (tool === TOOL.finishTask) await mergeFinished(io, worker.id)
+  if (tool === TOOL.finishTask) await mergeFinished(io, worker.id, Number((e as unknown as Args).task))
   await sendNudge(io, worker.id, nudge)
   return reply(answer)
 }
 
 /**
- * Merges the commit of each finished task that the integration line does not hold into the line, oldest first, with no
- * agent. A merge that conflicts or fails adds a task "integrate #N", and the working peers of the finisher hear of it.
- * One merge runs at a time, as the line moves only from the head that a merge read.
+ * Merges the commit of the task that a finish_task finished into the integration line, with no agent. A merge that
+ * conflicts or fails adds a task "integrate #N", and the working peers of the finisher hear of it. A finish merges its
+ * own task alone, so its reply waits for one merge, and for the merges of the finishes before it: one merge runs at a
+ * time, as the line moves only from the head that a merge read. The done tasks that the line lacks wait for the
+ * integrator, and finish refuses a final commit that lacks one of them.
  */
-function mergeFinished(io: Io, by: WorkerId): Promise<void> {
-  merging = merging.then(() => mergeUnmerged(io, by)).catch(() => undefined)
+function mergeFinished(io: Io, by: WorkerId, id: number): Promise<void> {
+  merging = merging.then(() => mergeTask(io, by, id)).catch(() => undefined)
   return merging
 }
 
-async function mergeUnmerged(io: Io, by: WorkerId): Promise<void> {
+/** Merges #id when it is a done task that the line lacks, with no task "integrate #id": a finish that leaves its task undone merges nothing. */
+async function mergeTask(io: Io, by: WorkerId, id: number): Promise<void> {
   const run = await readRun(io)
-  if (!run || !ACTIVE_RUN.has(run.state)) return
-  const vcs = vcsFor(run.vcs)
-  let added = false
-  for (const task of board.unmergedTasks(run)) {
-    const merged = await vcs.mergeIntoLine(io, run, task.commit ?? '', `meld: integrate #${task.id} ${task.title}`)
-    const now = await io.now()
-    await writeRun(io, current => {
-      if (merged.state === 'merged') return board.lineMerged(current, task.id, merged.head, now)
-      return runOf(board.addIntegrateTask(current, task.id, integrateDetail(current, task, merged), now), current)
-    })
-    added ||= merged.state !== 'merged'
-  }
-  const after = added ? await readRun(io) : null
+  const task = run && ACTIVE_RUN.has(run.state) ? board.unmergedTasks(run).find(one => one.id === id) : undefined
+  if (!run || !task) return
+  const merged = await vcsFor(run.vcs).mergeIntoLine(io, run, task.commit ?? '', `meld: integrate #${task.id} ${task.title}`)
+  const now = await io.now()
+  await writeRun(io, current => {
+    if (merged.state === 'merged') return board.lineMerged(current, task.id, merged.head, now)
+    return runOf(board.addIntegrateTask(current, task.id, integrateDetail(current, task, merged), now), current)
+  })
+  if (merged.state === 'merged') return
+  const after = await readRun(io)
   for (const peer of after?.workers ?? []) if (peer.id !== by && peer.state === 'working') tell(io, peer, wakeText('There is open work on the board.'))
 }
 

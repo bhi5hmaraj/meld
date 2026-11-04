@@ -311,7 +311,7 @@ export function lackingTasks(run: Run): Task[] {
     .sort((a, b) => (a.doneAt ?? 0) - (b.doneAt ?? 0) || a.id - b.id)
 }
 
-/** The tasks that meld merges into the line next: the lacking tasks with no task "integrate #N" for them. */
+/** The lacking tasks with no task "integrate #N" for them. A finish_task merges its own task into the line when it is one of them. */
 export function unmergedTasks(run: Run): Task[] {
   const integrated = new Set(run.tasks.map(task => task.integrates))
   return lackingTasks(run).filter(task => !integrated.has(task.id))
