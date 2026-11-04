@@ -3,15 +3,18 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 import manifest from '../.claude-plugin/plugin.json'
+import { mcpIo } from './io'
+import { AcpRunner } from './leader'
 import { serveStdio } from './protocol'
 import { SqliteBoards } from './sqlite-store'
-import { boardTools } from './tools'
-import { workerIo, workerTools } from './worker'
+import { boardTools, runnerTools } from './tools'
+import { workerTools } from './worker'
 
 /**
  * `meld mcp`: the board store of meld, an MCP server over standard input and output. Each session that runs meld starts
  * one; all of them on a machine share one SQLite file, MELD_DB or ~/.meld/meld.db. With --worker, it serves the board
  * tools of the agent MELD_AGENT on the board MELD_BOARD, as the ACP runner starts it for a worker such as Codex.
+ * Without it, it also runs the ACP runner of the leader, and stops its agents when the session ends.
  */
 const path = process.env.MELD_DB || join(homedir(), '.meld', 'meld.db')
 const info = { name: 'meld', version: manifest.version }
@@ -23,5 +26,12 @@ if (asWorker && (!place.board || !place.agent)) {
 }
 mkdirSync(dirname(path), { recursive: true })
 const boards = new SqliteBoards(path)
-await serveStdio(asWorker ? workerTools(workerIo(boards, place), place) : boardTools(boards, Date.now), info)
+if (asWorker) {
+  await serveStdio(workerTools(mcpIo(boards, place.board), place), info)
+} else {
+  const runner = new AcpRunner(boards)
+  process.on('SIGTERM', () => void runner.stopAll().finally(() => process.exit(0)))
+  await serveStdio([...boardTools(boards, Date.now), ...runnerTools(runner, boards)], info)
+  await runner.stopAll()
+}
 boards.close()

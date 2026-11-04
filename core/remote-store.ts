@@ -7,6 +7,9 @@ export type BoardRead = { run: Run | null; version: number }
 /** What a commit did: stored, refused for an old version, refused as another session holds the lease, or refused by a newer file. */
 export type Committed = 'committed' | 'stale' | 'taken' | 'newer schema'
 
+/** Work that only the leader of a board can do, left by a worker of `meld mcp`: a message to an agent, or a toast to the person. */
+export type Action = { id: number; board: string; kind: 'send' | 'toast'; agent: string; text: string; at: number }
+
 /** A board with a run, for a session that looks for a run to resume. */
 export type BoardSummary = { board: string; run: string; state: string; request: string; repo: string; owner: string | null; ownerAt: number | null }
 

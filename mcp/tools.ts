@@ -1,4 +1,5 @@
 import type { Run } from '../types'
+import type { AcpRunner } from './leader'
 import { isRecord } from './protocol'
 import type { ServedTool } from './protocol'
 import type { SqliteBoards } from './sqlite-store'
@@ -7,6 +8,7 @@ const ONLY_MELD = 'Only the meld plugin calls this tool.'
 const BOARD = { type: 'string', description: 'The id of the board: one board holds the run of one session.' }
 const OWNER = { type: 'string', description: 'The id of the session that writes.' }
 const READ_ONLY = { readOnlyHint: true }
+const AGENT = { type: 'string', description: 'The agent id of an ACP agent, acp-...' }
 
 /** The tools of `meld mcp`: the boards in its SQLite file, which the meld plugin reads and writes as its store. */
 export function boardTools(boards: SqliteBoards, now: () => number): ServedTool[] {
@@ -39,6 +41,49 @@ export function boardTools(boards: SqliteBoards, now: () => number): ServedTool[
         const adopted = boards.adopt(text(args, 'board'), text(args, 'owner'), now())
         return typeof adopted === 'string' ? { result: adopted } : { result: 'busy', ...adopted }
       },
+    },
+  ]
+}
+
+/** The tools of the ACP runner of the leader: the plugin starts, reaches and stops the ACP workers of its board through them. */
+export function runnerTools(runner: AcpRunner, boards: SqliteBoards): ServedTool[] {
+  return [
+    {
+      name: 'spawn_worker',
+      description: `${ONLY_MELD} Starts an ACP agent, such as Codex, for a worker of a board, in the folder of the worker. Answers with the agent id, or why it did not start.`,
+      inputSchema: schema({ board: BOARD, subagentType: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, description: { type: 'string' } }),
+      answer: args => runner.spawn(text(args, 'board'), { subagentType: text(args, 'subagentType'), cwd: text(args, 'cwd'), prompt: text(args, 'prompt'), description: text(args, 'description') }),
+    },
+    {
+      name: 'send_worker',
+      description: `${ONLY_MELD} Gives a message to an ACP agent: a new prompt in its session, after the prompt that it runs.`,
+      inputSchema: schema({ agent: AGENT, text: { type: 'string' } }),
+      answer: async args => {
+        await runner.send(text(args, 'agent'), text(args, 'text'))
+        return { ok: true }
+      },
+    },
+    {
+      name: 'stop_worker',
+      description: `${ONLY_MELD} Stops an ACP agent.`,
+      inputSchema: schema({ agent: AGENT }),
+      answer: async args => {
+        await runner.stop(text(args, 'agent'))
+        return { ok: true }
+      },
+    },
+    {
+      name: 'acp_agents',
+      description: `${ONLY_MELD} Gives the liveness of each ACP agent: live while it starts or runs a prompt, ended when its turn is over.`,
+      inputSchema: schema({}),
+      annotations: READ_ONLY,
+      answer: () => ({ agents: Object.fromEntries(runner.states()) }),
+    },
+    {
+      name: 'take_actions',
+      description: `${ONLY_MELD} Takes the work for the plugin that the workers of meld mcp left on a board: messages to its subagents, and toasts.`,
+      inputSchema: schema({ board: BOARD }),
+      answer: args => ({ actions: boards.takeActions(text(args, 'board'), 'engine') }),
     },
   ]
 }

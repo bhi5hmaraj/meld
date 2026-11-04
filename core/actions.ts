@@ -4,7 +4,7 @@ import { CONTROL_TOOLS, HAND_BACK, integrateDetail, integrateStep, missingWorkTe
 import type { Control } from './contract'
 import { GIT_MIN, gitVersion, headCommit, isDirty, isOldGit, repoRoot } from './git'
 import type { Clock, CodeHost, CommandReply, FactsStore, Io, Runner, Spawned, Store, Surface, TokenUsage, ToolCall, ToolReply } from './ports'
-import { agentSpecOf, agentsOf, MAX_AGENTS, parseStart, WORKER_TYPE } from './options'
+import { agentSpecOf, agentsOf, isAcpSpec, MAX_AGENTS, parseStart, WORKER_TYPE } from './options'
 import type { StartOptions } from './options'
 import { claimable } from './tasks'
 import { detectVcs, heldWork, runHome, vcsFor } from './vcs'
@@ -49,6 +49,8 @@ const STOPPED_YOU = 'meld stopped you. End your turn now.'
 /** Why meld bound no agent to a worker of a run that the person discarded during the spawn. */
 const RUN_ENDED = 'the run ended'
 const STOPPED_CALL = 'meld stopped you. End your turn now with a one-line summary.'
+/** ACP tool kinds that change files: the paths of such a call must stay in the folder of the worker. */
+const ACP_EDIT_KINDS = new Set(['edit', 'delete', 'move'])
 
 /** What a write of the board needs: the store, and the machine where meld mirrors the board to board.json. */
 type Board = Store & CodeHost
@@ -600,19 +602,51 @@ export async function guardCall(io: Board & Clock & Runner, e: ToolCall): Promis
   const run = await readRun(io)
   const worker = run ? board.workerOf(run, e.agentId) : undefined
   if (!run || !worker) return retired.has(e.agentId) ? STOPPED_CALL : undefined
+  const path = editedPath(e)
+  const refusal = refusalOf(run, worker, path ? [path] : [])
+  if (refusal) return refusal
+  await recordCall(io, worker, describeCall(e))
+  return undefined
+}
+
+/** Why meld refuses what an ACP worker asks to do, or undefined: the rules of guardCall, for the paths of a call that changes files. */
+export async function acpRefusal(io: Board, agentId: string, ask: { kind: string; paths: readonly string[] }): Promise<string | undefined> {
+  const run = await readRun(io)
+  const worker = run ? board.workerOf(run, agentId) : undefined
+  if (!run || !worker) return STOPPED_CALL
+  return refusalOf(run, worker, ACP_EDIT_KINDS.has(ask.kind) ? ask.paths : [])
+}
+
+/** A tool call of an ACP worker becomes the activity of its worker, and counts as a call, as a tool call of a subagent does. */
+export async function recordActivity(io: Board & Clock & Runner, agentId: string, activity: string): Promise<void> {
+  const run = await readRun(io)
+  const worker = run ? board.workerOf(run, agentId) : undefined
+  if (worker) await recordCall(io, worker, activity)
+}
+
+/** A worker that meld mcp runs through ACP. */
+export function ownedByAcp(worker: Worker): boolean {
+  return isAcpSpec(worker.agent)
+}
+
+/** Why meld refuses a call of the worker, or undefined. A stopped worker or run, and a run with its final commit, refuse each call; an edit stays in the folder of the worker. */
+function refusalOf(run: Run, worker: Worker, edited: readonly string[]): string | undefined {
   if (worker.state === 'stopped' || run.state === 'stopped') return STOPPED_CALL
   if (run.state === 'ready' || run.state === 'delivered') return 'The meld run has its final commit. End your turn now.'
-  const path = editedPath(e)
-  if (path && !isInside(path, worker.path)) return `meld: you work in ${worker.path}. Edit ${moved(path, run.repo, worker.path)} instead.`
+  const outside = edited.find(path => !isInside(path, worker.path))
+  return outside ? `meld: you work in ${worker.path}. Edit ${moved(outside, run.repo, worker.path)} instead.` : undefined
+}
+
+/** Records a call as the activity of the worker and counts it; a worker with many calls on one task gets a nudge to split it. */
+async function recordCall(io: Board & Clock & Runner, worker: Worker, activity: string): Promise<void> {
   const now = await io.now()
   let nudge: Task | undefined
   await writeRun(io, current => {
-    const counted = countedCall(board.setActivity(current, worker.id, describeCall(e), now), worker.id, now)
+    const counted = countedCall(board.setActivity(current, worker.id, activity, now), worker.id, now)
     nudge = counted.task
     return counted.run
   })
   await sendNudge(io, worker.id, nudge)
-  return undefined
 }
 
 function editedPath(e: ToolCall): string | undefined {
@@ -693,14 +727,14 @@ type Restart = { worker: Worker; step: string }
  * Only hooks that no worker needs call it: an agent skips the hook that started it, and an agent that a clock or a
  * button closure starts skips every meld hook, the board and the edit guard included.
  */
-export async function restartIdleWorkers(io: Board & Clock & Runner & Surface): Promise<WorkerId[]> {
+export async function restartIdleWorkers(io: Board & Clock & Runner & Surface, owns: (worker: Worker) => boolean = everyWorker): Promise<WorkerId[]> {
   if (restarting) return []
   restarting = true
   try {
-    await settleEnded(io)
+    await settleEnded(io, owns)
     const run = await readRun(io)
     if (!run || run.state !== 'working' || run.nudges > NUDGE_LIMIT) return []
-    const restarts = restartsFor(run)
+    const restarts = restartsFor(run).filter(restart => owns(restart.worker))
     if (!restarts.length) return []
     await writeRun(io, board.countNudge)
     if (run.nudges === NUDGE_LIMIT) {
@@ -715,13 +749,17 @@ export async function restartIdleWorkers(io: Board & Clock & Runner & Surface): 
   }
 }
 
-async function settleEnded(io: Board & Clock & Runner): Promise<void> {
+async function settleEnded(io: Board & Clock & Runner, owns: (worker: Worker) => boolean): Promise<void> {
   const run = await readRun(io)
   if (!run || run.state !== 'working') return
   const agents = await io.agents()
   if (!agents) return
   const now = await io.now()
-  await writeRun(io, current => board.settleEnded(current, agents, now - LIVENESS_GRACE_MS, now))
+  await writeRun(io, current => board.settleEnded(current, agents, now - LIVENESS_GRACE_MS, now, owns))
+}
+
+function everyWorker(): boolean {
+  return true
 }
 
 /**
@@ -783,7 +821,7 @@ export async function steerRun(io: Board & Clock & Runner & Surface, instruction
   for (let tries = 1; steered.again && tries < STEER_TRIES; tries++) steered = await trySteer(io, instruction)
   const revision = steered.revision
   if (!revision) return steered.outcome
-  await settleEnded(io)
+  await settleEnded(io, everyWorker)
   const run = await readRun(io)
   if (!run) return NO_RUN_TO_STEER
   const step = wakeText(`The person changed the request (revision ${revision}): ${instruction}`)

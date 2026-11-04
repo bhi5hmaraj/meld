@@ -1,9 +1,10 @@
 import { Database } from 'bun:sqlite'
 
+import { ACP_AGENT_PREFIX } from '../core/options'
 import { LOCAL_PARTY, MEMBER_LEASE_MS, rowsOf } from '../core/party'
 import type { ContextRow, EventRow, Member, Members, Party, PartyRows, RowKey } from '../core/party'
 import type { Store } from '../core/ports'
-import type { Adopted, BoardRead, BoardSummary, Committed } from '../core/remote-store'
+import type { Action, Adopted, BoardRead, BoardSummary, Committed } from '../core/remote-store'
 import type { Run } from '../types'
 
 /** The version of the tables in the file. A meld that knows only an older version reads the file and writes nothing. */
@@ -13,9 +14,6 @@ export const LEASE_MS = 60_000
 /** How long a write waits for the write lock that another process holds. */
 const BUSY_MS = 5000
 const NEWER = 'a newer meld wrote this board file: restart the session, so it loads the newer meld'
-
-/** Work that only the leader of a board can do: a message to an agent, or a toast to the person. Each is taken once. */
-export type Action = { id: number; board: string; kind: 'send' | 'toast'; agent: string; text: string; at: number }
 
 /** A board as a client reads it, with the session that owns it. */
 export type BoardRow = BoardRead & { owner: string | null; ownerAt: number | null }
@@ -95,7 +93,10 @@ export class SqliteBoards {
   private readonly newer: boolean
 
   /** `now` is the time that a new file records for its local party. */
-  constructor(path: string, now = Date.now()) {
+  constructor(
+    readonly path: string,
+    now = Date.now(),
+  ) {
     this.db = new Database(path, { create: true })
     this.db.exec(`PRAGMA busy_timeout = ${BUSY_MS}`)
     this.db.exec('PRAGMA journal_mode = WAL')
@@ -219,13 +220,19 @@ export class SqliteBoards {
     this.db.query('INSERT INTO actions (board, kind, agent, text, at) VALUES (?, ?, ?, ?, ?)').run(action.board, action.kind, action.agent, action.text, action.at)
   }
 
-  /** The actions for the leader of a board, the oldest first. The transaction holds the write lock, so each action is taken once. */
-  takeActions(board: string): Action[] {
+  /**
+   * The actions for the leader of a board, the oldest first: for `acp`, the messages to the agents that meld mcp runs;
+   * for `engine`, the rest, which the plugin carries out. The transaction holds the write lock, so each is taken once.
+   */
+  takeActions(board: string, target: 'acp' | 'engine'): Action[] {
     if (this.newer) throw new Error(NEWER)
+    const toAcp = `kind = 'send' AND agent LIKE '${ACP_AGENT_PREFIX}%'`
+    const filter = target === 'acp' ? toAcp : `NOT (${toAcp})`
     return this.db
       .transaction((): Action[] => {
-        const actions = this.db.query('SELECT id, board, kind, agent, text, at FROM actions WHERE board = ? ORDER BY id').all(board) as Action[]
-        this.db.query('DELETE FROM actions WHERE board = ?').run(board)
+        const actions = this.db.query(`SELECT id, board, kind, agent, text, at FROM actions WHERE board = ? AND ${filter} ORDER BY id`).all(board) as Action[]
+        const last = actions.at(-1)?.id ?? 0
+        this.db.query(`DELETE FROM actions WHERE board = ? AND ${filter} AND id <= ?`).run(board, last)
         return actions
       })
       .immediate()

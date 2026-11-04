@@ -1,6 +1,7 @@
 import type { McpToolResult } from 'claude-code'
 
-import type { FactsStore, Store } from '../core/ports'
+import { ACP_PREFIX, isAcpAgent } from '../core/options'
+import type { FactsStore, Runner, Store } from '../core/ports'
 import { remoteStore } from '../core/remote-store'
 import type { Adopted, BoardServer } from '../core/remote-store'
 import type { Run } from '../types'
@@ -21,6 +22,7 @@ export const BOARD_STORE_TOOLS = /^mcp__plugin_meld_board__/
 const MELD = 'meld'
 const ONLY_MELD = 'Only meld calls the board store of meld mcp.'
 const RELOAD = 'This session loaded meld before its manifest listed meld mcp: /reload-plugins or a new session starts it.'
+const ACP_NEEDS_MCP = 'meld runs ACP agents such as Codex through meld mcp, which did not connect'
 
 type Verdict = { decision: 'allow' | 'deny'; reason: string }
 
@@ -32,6 +34,29 @@ export function sessionStore(session: SessionBoard, remote: BoardServer, local: 
   if (!session.server) return local
   const run = remoteStore(remote, copy => local.write(current => (sameRun(current, copy) ? current : copy)))
   return { ...run, readFacts: () => local.readFacts(), writeFacts: facts => local.writeFacts(facts) }
+}
+
+/**
+ * The runner of a hook: an ACP agent, such as Codex, through the runner of meld mcp; every other agent through the engine.
+ * The liveness is that of both, so the plugin settles each worker with what it knows.
+ */
+export function sessionRunner(session: SessionBoard, engine: Runner, acp: Runner): Runner {
+  const connected = session.server !== ''
+  return {
+    spawn: async args => {
+      if (!args.subagentType.startsWith(ACP_PREFIX)) return engine.spawn(args)
+      return connected ? acp.spawn(args) : { deny: `${ACP_NEEDS_MCP}: ${session.problem}` }
+    },
+    send: async (agentId, text) => {
+      if (!isAcpAgent(agentId)) return engine.send(agentId, text)
+      if (connected) return acp.send(agentId, text)
+    },
+    agents: async () => {
+      const states = await engine.agents()
+      if (!states || !connected) return states
+      return new Map([...states, ...((await acp.agents()) ?? [])])
+    },
+  }
 }
 
 /** The value of a tool of meld mcp: the JSON of its text. A failed call throws its text. */

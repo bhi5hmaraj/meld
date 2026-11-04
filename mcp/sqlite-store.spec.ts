@@ -55,14 +55,16 @@ test('a write through the Store port keeps the context entries of the run as row
   expect((await boards.partyStore().context(LOCAL_PARTY)).map(row => row.id)).toEqual([1])
 })
 
-test('an action for the leader of a board is taken once, oldest first', () => {
+test('an action for the leader of a board is taken once, oldest first, by the runner that reaches its agent', () => {
   const boards = new SqliteBoards(':memory:')
   boards.addAction({ board: 'b1', kind: 'send', agent: 'agent-2', text: 'one', at: NOW })
-  boards.addAction({ board: 'b1', kind: 'toast', agent: '', text: 'two', at: NOW + 1 })
+  boards.addAction({ board: 'b1', kind: 'send', agent: 'acp-3', text: 'to codex', at: NOW + 1 })
+  boards.addAction({ board: 'b1', kind: 'toast', agent: '', text: 'two', at: NOW + 2 })
   boards.addAction({ board: 'b2', kind: 'send', agent: 'agent-3', text: 'other', at: NOW })
-  expect(boards.takeActions('b1').map(action => action.text)).toEqual(['one', 'two'])
-  expect(boards.takeActions('b1')).toEqual([])
-  expect(boards.takeActions('b2')).toEqual([{ id: 3, board: 'b2', kind: 'send', agent: 'agent-3', text: 'other', at: NOW }])
+  expect(boards.takeActions('b1', 'engine').map(action => action.text)).toEqual(['one', 'two'])
+  expect(boards.takeActions('b1', 'engine')).toEqual([])
+  expect(boards.takeActions('b1', 'acp')).toEqual([{ id: 2, board: 'b1', kind: 'send', agent: 'acp-3', text: 'to codex', at: NOW + 1 }])
+  expect(boards.takeActions('b2', 'engine').map(action => action.text)).toEqual(['other'])
 })
 
 test('a new file holds the local party of the machine', () => {

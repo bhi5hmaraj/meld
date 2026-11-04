@@ -71,7 +71,7 @@ test('a permission request gets the verdict of the runner: an edit outside the f
   const updates: AcpUpdate[] = []
   const asks: PermissionAsk[] = []
   const agent = await started(folder, updates, asks)
-  expect(await agent.prompt('Edit outside')).toBe('end_turn')
+  expect(await agent.prompt('Edit [outside]')).toBe('end_turn')
   expect(asks).toEqual([{ title: 'Edit /etc/stub-agent.txt', kind: 'edit', paths: ['/etc/stub-agent.txt'] }])
   expect(updates).toContainEqual({ kind: 'tool_call_update', text: '', status: 'failed', toolCallId: 't1' })
 })
@@ -87,8 +87,8 @@ test('a second prompt continues the same session', async () => {
 test('a cancel ends the prompt as cancelled, and a prompt while another runs is refused', async () => {
   const updates: AcpUpdate[] = []
   const agent = await started(newFolder(), updates)
-  const waiting = agent.prompt('wait')
-  await until(() => texts(updates).includes('turn 1: wait'))
+  const waiting = agent.prompt('[wait]')
+  await until(() => texts(updates).includes('turn 1: [wait]'))
   expect(agent.state).toBe('busy')
   expect(await agent.prompt('again').then(() => 'ran', (error: unknown) => String(error))).toContain('runs a prompt')
   agent.cancel()
@@ -98,7 +98,7 @@ test('a cancel ends the prompt as cancelled, and a prompt while another runs is 
 test('an agent that exits ends its prompt with the exit code, and the runner is ended', async () => {
   const updates: AcpUpdate[] = []
   const agent = await started(newFolder(), updates)
-  expect(await agent.prompt('crash').then(() => 'ran', (error: unknown) => String(error))).toContain('exited with code 3')
+  expect(await agent.prompt('[crash]').then(() => 'ran', (error: unknown) => String(error))).toContain('exited with code 3')
   expect(agent.state).toBe('ended')
   expect(await agent.exited).toBe(3)
 })

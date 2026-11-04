@@ -3,12 +3,12 @@ import type { AgentStatus, Register } from 'claude-code'
 
 import { controlRun, countStep, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll } from '../core/actions'
 import { cleanFolders } from '../core/clean'
-import type { BoardRead, Boards, BoardSummary, Committed } from '../core/remote-store'
+import type { Action, BoardRead, Boards, BoardSummary, Committed } from '../core/remote-store'
 import { resumeRun } from '../core/resume'
 import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL, TOOL_PREFIX, TOOL_SPECS, WORKER_SYSTEM } from '../core/contract'
-import type { AgentState, FactsStore, Files, Io, Store } from '../core/ports'
+import type { AgentState, FactsStore, Files, Io, Spawned, Store } from '../core/ports'
 import { parseStart, WORKER_TYPE } from '../core/options'
-import { adoptedOf, BOARD_STORE_TOOLS, boardVerdict, problemOf, sessionStore, storeNote, valueOf, withNote } from './board-store'
+import { adoptedOf, BOARD_STORE_TOOLS, boardVerdict, problemOf, sessionRunner, sessionStore, storeNote, valueOf, withNote } from './board-store'
 import type { SessionBoard } from './board-store'
 import { DEFAULT_VIEW, paneTree } from './pane'
 
@@ -63,7 +63,6 @@ export const register: Register = on => {
       now: () => $.clock.now(),
       random: count => crypto.getRandomValues(new Uint8Array(count)),
       cost: async () => (await $.session.usage()).cost?.usd,
-      agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
       ...sessionStore(
         board,
@@ -74,12 +73,23 @@ export const register: Register = on => {
         sessionState,
       ),
       writeFile: (path, text) => $.fs.write(path, text),
-      spawn: async args => {
-        const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
-        return { agentId: spawned.agentId, deny: spawned.deny }
-      },
+      ...sessionRunner(
+        board,
+        {
+          spawn: async args => {
+            const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
+            return { agentId: spawned.agentId, deny: spawned.deny }
+          },
+          send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+          agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
+        },
+        {
+          spawn: async args => valueOf<Spawned>(await $.mcp.call(board.server, 'spawn_worker', { board: board.id, subagentType: args.subagentType, cwd: args.cwd, prompt: args.prompt, description: args.description })),
+          send: async (agentId, text) => valueOf(await $.mcp.call(board.server, 'send_worker', { agent: agentId, text })),
+          agents: async () => new Map(Object.entries(valueOf<{ agents: Record<string, AgentState> }>(await $.mcp.call(board.server, 'acp_agents', {})).agents)),
+        },
+      ),
       command: (name, args) => $.command.run({ command: name, args }),
-      send: (agentId, text) => $.session.send({ to: { agentId }, text }),
       toast: text => $.ui.toast(text),
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
     }
@@ -126,7 +136,6 @@ export const register: Register = on => {
       now: () => $.clock.now(),
       random: count => crypto.getRandomValues(new Uint8Array(count)),
       cost: async () => (await $.session.usage()).cost?.usd,
-      agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
       ...sessionStore(
         board,
@@ -142,12 +151,23 @@ export const register: Register = on => {
         },
       ),
       writeFile: (path, text) => $.fs.write(path, text),
-      spawn: async args => {
-        const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
-        return { agentId: spawned.agentId, deny: spawned.deny }
-      },
+      ...sessionRunner(
+        board,
+        {
+          spawn: async args => {
+            const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
+            return { agentId: spawned.agentId, deny: spawned.deny }
+          },
+          send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+          agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
+        },
+        {
+          spawn: async args => valueOf<Spawned>(await $.mcp.call(board.server, 'spawn_worker', { board: board.id, subagentType: args.subagentType, cwd: args.cwd, prompt: args.prompt, description: args.description })),
+          send: async (agentId, text) => valueOf(await $.mcp.call(board.server, 'send_worker', { agent: agentId, text })),
+          agents: async () => new Map(Object.entries(valueOf<{ agents: Record<string, AgentState> }>(await $.mcp.call(board.server, 'acp_agents', {})).agents)),
+        },
+      ),
       command: (name, args) => $.command.run({ command: name, args }),
-      send: (agentId, text) => $.session.send({ to: { agentId }, text }),
       toast: text => $.ui.toast(text),
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
       list: path => $.fs.list(path),
@@ -185,7 +205,6 @@ export const register: Register = on => {
       now: () => $.clock.now(),
       random: count => crypto.getRandomValues(new Uint8Array(count)),
       cost: async () => (await $.session.usage()).cost?.usd,
-      agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
       ...sessionStore(
         board,
@@ -201,12 +220,23 @@ export const register: Register = on => {
         },
       ),
       writeFile: (path, text) => $.fs.write(path, text),
-      spawn: async args => {
-        const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
-        return { agentId: spawned.agentId, deny: spawned.deny }
-      },
+      ...sessionRunner(
+        board,
+        {
+          spawn: async args => {
+            const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
+            return { agentId: spawned.agentId, deny: spawned.deny }
+          },
+          send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+          agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
+        },
+        {
+          spawn: async args => valueOf<Spawned>(await $.mcp.call(board.server, 'spawn_worker', { board: board.id, subagentType: args.subagentType, cwd: args.cwd, prompt: args.prompt, description: args.description })),
+          send: async (agentId, text) => valueOf(await $.mcp.call(board.server, 'send_worker', { agent: agentId, text })),
+          agents: async () => new Map(Object.entries(valueOf<{ agents: Record<string, AgentState> }>(await $.mcp.call(board.server, 'acp_agents', {})).agents)),
+        },
+      ),
       command: (name, args) => $.command.run({ command: name, args }),
-      send: (agentId, text) => $.session.send({ to: { agentId }, text }),
       toast: text => $.ui.toast(text),
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
     }
@@ -224,7 +254,6 @@ export const register: Register = on => {
         now: () => $.clock.now(),
         random: count => crypto.getRandomValues(new Uint8Array(count)),
         cost: async () => (await $.session.usage()).cost?.usd,
-        agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
         sleep: ms => $.clock.sleep(ms),
         ...sessionStore(
           board,
@@ -240,12 +269,23 @@ export const register: Register = on => {
           },
         ),
         writeFile: (path, text) => $.fs.write(path, text),
-        spawn: async args => {
-          const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
-          return { agentId: spawned.agentId, deny: spawned.deny }
-        },
+        ...sessionRunner(
+          board,
+          {
+            spawn: async args => {
+              const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
+              return { agentId: spawned.agentId, deny: spawned.deny }
+            },
+            send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+            agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
+          },
+          {
+            spawn: async args => valueOf<Spawned>(await $.mcp.call(board.server, 'spawn_worker', { board: board.id, subagentType: args.subagentType, cwd: args.cwd, prompt: args.prompt, description: args.description })),
+            send: async (agentId, text) => valueOf(await $.mcp.call(board.server, 'send_worker', { agent: agentId, text })),
+            agents: async () => new Map(Object.entries(valueOf<{ agents: Record<string, AgentState> }>(await $.mcp.call(board.server, 'acp_agents', {})).agents)),
+          },
+        ),
         command: (name, args) => $.command.run({ command: name, args }),
-        send: (agentId, text) => $.session.send({ to: { agentId }, text }),
         toast: text => $.ui.toast(text),
         openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
       }
@@ -261,7 +301,6 @@ export const register: Register = on => {
       now: () => $.clock.now(),
       random: count => crypto.getRandomValues(new Uint8Array(count)),
       cost: async () => (await $.session.usage()).cost?.usd,
-      agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
       ...sessionStore(
         board,
@@ -277,12 +316,23 @@ export const register: Register = on => {
         },
       ),
       writeFile: (path, text) => $.fs.write(path, text),
-      spawn: async args => {
-        const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
-        return { agentId: spawned.agentId, deny: spawned.deny }
-      },
+      ...sessionRunner(
+        board,
+        {
+          spawn: async args => {
+            const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
+            return { agentId: spawned.agentId, deny: spawned.deny }
+          },
+          send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+          agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
+        },
+        {
+          spawn: async args => valueOf<Spawned>(await $.mcp.call(board.server, 'spawn_worker', { board: board.id, subagentType: args.subagentType, cwd: args.cwd, prompt: args.prompt, description: args.description })),
+          send: async (agentId, text) => valueOf(await $.mcp.call(board.server, 'send_worker', { agent: agentId, text })),
+          agents: async () => new Map(Object.entries(valueOf<{ agents: Record<string, AgentState> }>(await $.mcp.call(board.server, 'acp_agents', {})).agents)),
+        },
+      ),
       command: (name, args) => $.command.run({ command: name, args }),
-      send: (agentId, text) => $.session.send({ to: { agentId }, text }),
       toast: text => $.ui.toast(text),
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
     }
@@ -300,7 +350,6 @@ export const register: Register = on => {
       now: () => $.clock.now(),
       random: count => crypto.getRandomValues(new Uint8Array(count)),
       cost: async () => (await $.session.usage()).cost?.usd,
-      agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
       ...sessionStore(
         board,
@@ -316,12 +365,23 @@ export const register: Register = on => {
         },
       ),
       writeFile: (path, text) => $.fs.write(path, text),
-      spawn: async args => {
-        const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
-        return { agentId: spawned.agentId, deny: spawned.deny }
-      },
+      ...sessionRunner(
+        board,
+        {
+          spawn: async args => {
+            const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
+            return { agentId: spawned.agentId, deny: spawned.deny }
+          },
+          send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+          agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
+        },
+        {
+          spawn: async args => valueOf<Spawned>(await $.mcp.call(board.server, 'spawn_worker', { board: board.id, subagentType: args.subagentType, cwd: args.cwd, prompt: args.prompt, description: args.description })),
+          send: async (agentId, text) => valueOf(await $.mcp.call(board.server, 'send_worker', { agent: agentId, text })),
+          agents: async () => new Map(Object.entries(valueOf<{ agents: Record<string, AgentState> }>(await $.mcp.call(board.server, 'acp_agents', {})).agents)),
+        },
+      ),
       command: (name, args) => $.command.run({ command: name, args }),
-      send: (agentId, text) => $.session.send({ to: { agentId }, text }),
       toast: text => $.ui.toast(text),
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
     }
@@ -336,7 +396,6 @@ export const register: Register = on => {
       now: () => $.clock.now(),
       random: count => crypto.getRandomValues(new Uint8Array(count)),
       cost: async () => (await $.session.usage()).cost?.usd,
-      agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
       ...sessionStore(
         board,
@@ -352,18 +411,34 @@ export const register: Register = on => {
         },
       ),
       writeFile: (path, text) => $.fs.write(path, text),
-      spawn: async args => {
-        const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
-        return { agentId: spawned.agentId, deny: spawned.deny }
-      },
+      ...sessionRunner(
+        board,
+        {
+          spawn: async args => {
+            const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
+            return { agentId: spawned.agentId, deny: spawned.deny }
+          },
+          send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+          agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
+        },
+        {
+          spawn: async args => valueOf<Spawned>(await $.mcp.call(board.server, 'spawn_worker', { board: board.id, subagentType: args.subagentType, cwd: args.cwd, prompt: args.prompt, description: args.description })),
+          send: async (agentId, text) => valueOf(await $.mcp.call(board.server, 'send_worker', { agent: agentId, text })),
+          agents: async () => new Map(Object.entries(valueOf<{ agents: Record<string, AgentState> }>(await $.mcp.call(board.server, 'acp_agents', {})).agents)),
+        },
+      ),
       command: (name, args) => $.command.run({ command: name, args }),
-      send: (agentId, text) => $.session.send({ to: { agentId }, text }),
       toast: text => $.ui.toast(text),
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
     }
     const completed = await next(e)
     await markWorker(io, e.agentId, 'idle')
     if (e.agentId === undefined) await restartIdleWorkers(io)
+    const actions = board.server ? await $.mcp.call(board.server, 'take_actions', { board: board.id }).then(result => valueOf<{ actions: Action[] }>(result).actions, () => []) : []
+    for (const action of actions) {
+      if (action.kind === 'toast') $.ui.toast(action.text)
+      else await $.session.send({ to: { agentId: action.agent }, text: action.text }).catch(() => undefined)
+    }
     return completed
   })
 
@@ -374,7 +449,6 @@ export const register: Register = on => {
       now: () => $.clock.now(),
       random: count => crypto.getRandomValues(new Uint8Array(count)),
       cost: async () => (await $.session.usage()).cost?.usd,
-      agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
       ...sessionStore(
         board,
@@ -390,12 +464,23 @@ export const register: Register = on => {
         },
       ),
       writeFile: (path, text) => $.fs.write(path, text),
-      spawn: async args => {
-        const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
-        return { agentId: spawned.agentId, deny: spawned.deny }
-      },
+      ...sessionRunner(
+        board,
+        {
+          spawn: async args => {
+            const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
+            return { agentId: spawned.agentId, deny: spawned.deny }
+          },
+          send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+          agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
+        },
+        {
+          spawn: async args => valueOf<Spawned>(await $.mcp.call(board.server, 'spawn_worker', { board: board.id, subagentType: args.subagentType, cwd: args.cwd, prompt: args.prompt, description: args.description })),
+          send: async (agentId, text) => valueOf(await $.mcp.call(board.server, 'send_worker', { agent: agentId, text })),
+          agents: async () => new Map(Object.entries(valueOf<{ agents: Record<string, AgentState> }>(await $.mcp.call(board.server, 'acp_agents', {})).agents)),
+        },
+      ),
       command: (name, args) => $.command.run({ command: name, args }),
-      send: (agentId, text) => $.session.send({ to: { agentId }, text }),
       toast: text => $.ui.toast(text),
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
     }
@@ -418,7 +503,6 @@ export const register: Register = on => {
       now: () => $.clock.now(),
       random: count => crypto.getRandomValues(new Uint8Array(count)),
       cost: async () => (await $.session.usage()).cost?.usd,
-      agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
       ...sessionStore(
         board,
@@ -434,12 +518,23 @@ export const register: Register = on => {
         },
       ),
       writeFile: (path, text) => $.fs.write(path, text),
-      spawn: async args => {
-        const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
-        return { agentId: spawned.agentId, deny: spawned.deny }
-      },
+      ...sessionRunner(
+        board,
+        {
+          spawn: async args => {
+            const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
+            return { agentId: spawned.agentId, deny: spawned.deny }
+          },
+          send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+          agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
+        },
+        {
+          spawn: async args => valueOf<Spawned>(await $.mcp.call(board.server, 'spawn_worker', { board: board.id, subagentType: args.subagentType, cwd: args.cwd, prompt: args.prompt, description: args.description })),
+          send: async (agentId, text) => valueOf(await $.mcp.call(board.server, 'send_worker', { agent: agentId, text })),
+          agents: async () => new Map(Object.entries(valueOf<{ agents: Record<string, AgentState> }>(await $.mcp.call(board.server, 'acp_agents', {})).agents)),
+        },
+      ),
       command: (name, args) => $.command.run({ command: name, args }),
-      send: (agentId, text) => $.session.send({ to: { agentId }, text }),
       toast: text => $.ui.toast(text),
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
     }
@@ -457,7 +552,6 @@ export const register: Register = on => {
       now: () => $.clock.now(),
       random: count => crypto.getRandomValues(new Uint8Array(count)),
       cost: async () => (await $.session.usage()).cost?.usd,
-      agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
       sleep: ms => $.clock.sleep(ms),
       ...sessionStore(
         board,
@@ -473,12 +567,23 @@ export const register: Register = on => {
         },
       ),
       writeFile: (path, text) => $.fs.write(path, text),
-      spawn: async args => {
-        const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
-        return { agentId: spawned.agentId, deny: spawned.deny }
-      },
+      ...sessionRunner(
+        board,
+        {
+          spawn: async args => {
+            const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
+            return { agentId: spawned.agentId, deny: spawned.deny }
+          },
+          send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+          agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
+        },
+        {
+          spawn: async args => valueOf<Spawned>(await $.mcp.call(board.server, 'spawn_worker', { board: board.id, subagentType: args.subagentType, cwd: args.cwd, prompt: args.prompt, description: args.description })),
+          send: async (agentId, text) => valueOf(await $.mcp.call(board.server, 'send_worker', { agent: agentId, text })),
+          agents: async () => new Map(Object.entries(valueOf<{ agents: Record<string, AgentState> }>(await $.mcp.call(board.server, 'acp_agents', {})).agents)),
+        },
+      ),
       command: (name, args) => $.command.run({ command: name, args }),
-      send: (agentId, text) => $.session.send({ to: { agentId }, text }),
       toast: text => $.ui.toast(text),
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
     }

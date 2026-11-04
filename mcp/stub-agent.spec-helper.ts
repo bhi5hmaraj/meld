@@ -1,7 +1,8 @@
 /**
  * An ACP agent for the specs of the ACP runner, over standard input and output. Each prompt reports its turn and the
- * text it got, edits one file after it asks for permission, and ends the turn. A prompt with "outside" edits a file
- * outside the folder of the session, one with "wait" ends only when the client cancels it, and one with "crash" exits.
+ * text it got, edits one file after it asks for permission, and ends the turn. A prompt with [outside] edits a file
+ * outside the folder of the session, one with [pause] ends after 300 ms, one with [wait] ends only when the client
+ * cancels it, and one with [crash] exits. The marks are in brackets, so no text of meld sets one off.
  */
 
 type Message = { id?: number; method?: string; params?: Record<string, unknown>; result?: Record<string, unknown> }
@@ -31,13 +32,14 @@ async function prompt(id: number, params: Record<string, unknown>): Promise<void
   const blocks = params.prompt as { type: string; text: string }[]
   const text = blocks.map(block => block.text).join('')
   update('agent_message_chunk', { content: { type: 'text', text: `turn ${turns}: ${text}` } })
-  if (text.includes('crash')) process.exit(3)
-  if (text.includes('wait')) {
+  if (text.includes('[crash]')) process.exit(3)
+  if (text.includes('[pause]')) await Bun.sleep(300)
+  if (text.includes('[wait]')) {
     await new Promise<void>(resolve => (cancelled = resolve))
     send({ id, result: { stopReason: 'cancelled' } })
     return
   }
-  const path = text.includes('outside') ? '/etc/stub-agent.txt' : `${cwd}/a.txt`
+  const path = text.includes('[outside]') ? '/etc/stub-agent.txt' : `${cwd}/a.txt`
   update('tool_call', { toolCallId: `t${turns}`, title: `Edit ${path}`, kind: 'edit', status: 'pending', locations: [{ path }] })
   const verdict = await ask('session/request_permission', {
     sessionId: 'stub-session',

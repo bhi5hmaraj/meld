@@ -13,7 +13,14 @@ const IDS: WorkerId[] = ['w1', 'w2']
 const TYPED = { origin: { kind: 'composer' as const }, presentation: { isFullscreen: false, columns: 80 } }
 
 type Call = { tool: string; args: Record<string, unknown> }
+type Action = { id: number; board: string; kind: 'send' | 'toast'; agent: string; text: string; at: number }
 type Row = { run: Run | null; version: number; owner: string | null; ownerAt: number | null }
+
+function gitAnswer(argv: readonly string[]): { value: { exitCode: number; stdout: string; stderr: string; isStdoutTruncated: boolean; isStderrTruncated: boolean } } {
+  const command = argv.join(' ')
+  const stdout = command === 'git rev-parse --show-toplevel' ? '/repo' : command === 'git rev-parse HEAD' ? HEAD : command === 'git version' ? 'git version 2.43.0' : ''
+  return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+}
 
 function runOf<T>(change: Change<T>): Run {
   if (isFailure(change)) throw new Error(`${change.error}: ${change.message}`)
@@ -31,6 +38,7 @@ function working(id = 'r1'): Run {
 class FakeMcp {
   boards: Record<string, Row> = {}
   calls: Call[] = []
+  actions: Action[] = []
 
   answer(tool: string, args: Record<string, unknown>): McpToolResult {
     this.calls.push({ tool, args })
@@ -58,6 +66,10 @@ class FakeMcp {
       this.boards[id] = { ...row, owner: String(args.owner), ownerAt: NOW, version: row.version + 1 }
       return { result: 'adopted' }
     }
+    if (tool === 'spawn_worker') return { agentId: 'acp-1' }
+    if (tool === 'send_worker') return { ok: true }
+    if (tool === 'acp_agents') return { agents: {} }
+    if (tool === 'take_actions') return { actions: this.actions.splice(0) }
     throw new Error(`meld mcp has no tool ${tool}`)
   }
 }
@@ -155,4 +167,50 @@ test('/meld-resume lists the run of another session from meld mcp, and a resume 
   expect(mcp.boards['old-session']?.run?.costAtStart).toBe(1.25)
   await $.command.run({ command: 'meld-stop', args: '', ...TYPED })
   expect(mcp.boards['old-session']?.run?.state).toBe('stopped')
+})
+
+test('a start with a codex worker asks meld mcp to start it in its folder, and binds the worker to its agent', async ($, on) => {
+  const mcp = new FakeMcp()
+  answerTheEngine(on, mcp)
+  on('state.get', () => ({ value: { value: undefined, version: 0 } }))
+  on('state.set', () => ({ value: { isSet: true, version: 1 } }))
+  on('process.run', ($, e) => gitAnswer(e.argv))
+  on('session.usage', () => ({ value: { startedAt: NOW, cost: { usd: 0 } } as never }))
+  on('agent.list', () => ({ value: [] }))
+  on('ui.open', () => ({ value: { isPlaced: false, reason: 'a test draws no pane' } }))
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  const replied = await $.command.run({ command: 'meld', args: '--agents codex --vcs git Add a greeting', ...TYPED })
+  expect(replied.text).toContain('workers on git')
+  const spawn = mcp.calls.find(call => call.tool === 'spawn_worker')
+  expect(spawn?.args).toMatchObject({ board: SESSION, subagentType: 'acp:codex', description: 'meld w1' })
+  expect(String(spawn?.args.cwd)).toMatch(/^\/tmp\/meld\/[0-9a-z]+\/w1$/)
+  expect(mcp.boards[SESSION]?.run?.workers[0]?.agentId).toBe('acp-1')
+})
+
+test('at the end of a turn, the plugin carries out what workers of meld mcp left: a message to a subagent, and a toast', async ($, on) => {
+  const mcp = new FakeMcp()
+  const sent: string[] = []
+  const toasts: string[] = []
+  answerTheEngine(on, mcp)
+  on('state.get', () => ({ value: { value: undefined, version: 0 } }))
+  on('state.set', () => ({ value: { isSet: true, version: 1 } }))
+  on('agent.list', () => ({ value: [] }))
+  on('session.send', ($, e) => {
+    sent.push(`${e.to}: ${e.text}`)
+    return { isDelivered: true as const }
+  })
+  on('ui.toast', ($, e) => {
+    toasts.push(String(e.text))
+    return { value: undefined }
+  })
+  on('turn.complete', ($, e) => ({ text: e.answer }))
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  mcp.boards[SESSION] = { run: working(), version: 1, owner: SESSION, ownerAt: NOW }
+  mcp.actions = [
+    { id: 1, board: SESSION, kind: 'send', agent: 'agent-2', text: 'There is open work on the board.', at: NOW },
+    { id: 2, board: SESSION, kind: 'toast', agent: '', text: 'meld: the result is ready.', at: NOW },
+  ]
+  await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  expect(sent).toEqual(['agent-2: There is open work on the board.'])
+  expect(toasts).toEqual(['meld: the result is ready.'])
 })

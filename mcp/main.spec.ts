@@ -9,7 +9,7 @@ import { Client } from './client.spec-helper'
 
 const HEAD = 'abc1234def5678abc1234def5678abc1234def56'
 const NOW = 1_800_000_000_000
-const TOOLS = ['read_board', 'commit_board', 'list_boards', 'adopt_board']
+const TOOLS = ['read_board', 'commit_board', 'list_boards', 'adopt_board', 'spawn_worker', 'send_worker', 'stop_worker', 'acp_agents', 'take_actions']
 
 function newRun(): Run {
   const workers = [{ id: 'w1' as const, path: '/tmp/meld/r1/w1', ref: 'meld/r1/w1', agent: { type: 'meld:worker' } }]
@@ -36,7 +36,7 @@ test('meld mcp answers initialize with its name and the tools capability, and li
   const listed = await client.request('tools/list')
   const tools = listed.result?.tools as { name: string; annotations?: { readOnlyHint?: boolean } }[]
   expect(tools.map(tool => tool.name)).toEqual(TOOLS)
-  expect(tools.filter(tool => tool.annotations?.readOnlyHint).map(tool => tool.name)).toEqual(['read_board', 'list_boards'])
+  expect(tools.filter(tool => tool.annotations?.readOnlyHint).map(tool => tool.name)).toEqual(['read_board', 'list_boards', 'acp_agents'])
   expect(await client.end()).toBe(0)
 })
 

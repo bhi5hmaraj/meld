@@ -534,8 +534,9 @@ export function boardFor(run: Run, by: WorkerId): { run: Run; view: BoardView } 
  * Working workers whose agents ended are idle: meld saw no end of their turn. An agent that the engine no longer lists
  * counts as ended only when its worker did nothing since `before`, as a new agent may not be listed yet.
  */
-export function settleEnded(run: Run, agents: ReadonlyMap<string, AgentState>, before: number, now: number): Run {
-  const ended = run.workers.filter(worker => worker.state === 'working' && worker.agentId && hasEnded(agents.get(worker.agentId), worker.activityAt < before))
+/** Each working worker of `owns` whose agent ended, or is unknown and quiet since `before`, becomes idle. */
+export function settleEnded(run: Run, agents: ReadonlyMap<string, AgentState>, before: number, now: number, owns: (worker: Worker) => boolean = () => true): Run {
+  const ended = run.workers.filter(worker => owns(worker) && worker.state === 'working' && worker.agentId && hasEnded(agents.get(worker.agentId), worker.activityAt < before))
   return ended.reduce((current, worker) => setWorkerState(current, worker.id, 'idle', now), run)
 }
 

@@ -57,6 +57,12 @@ Step 0b found these limits of the engine, in a live session:
 
 Step 0c adds the ports of a party in `core/party.ts`: `PartyRows` (the events and context entries of its runs, which are only added, and the outbox) and `Members` (the runners with their worker slots and a lease). They are not in `Io` yet, as no step of the core uses them. The ACP runner of 0.10 uses them.
 
+Step 10c divides the restarts between two hosts:
+
+- The plugin restarts each idle worker at the end of each turn of the main session. It knows the liveness of the agents of the engine and of the ACP agents of `meld mcp`.
+- `meld mcp` restarts only its ACP workers, at the end of each prompt. So a party of Codex workers continues while the main session waits.
+- The plugin does the actions for the engine (messages to Claude workers, and toasts) at the end of each turn of the main session. `meld mcp` sends the messages to its ACP agents every 500 ms.
+
 So 0.10 needs one more channel. The leader must read the board on a timer, as the workers of Codex write through their own `meld mcp`. Options: a Unix socket of `meld mcp` through `$.http.fetch`, or a permission rule that the person adds.
 
 ## Board addresses

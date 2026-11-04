@@ -86,7 +86,7 @@ test('a task that a worker adds wakes the other working worker through a row for
   const view = (await client.call('board', {})) as View
   expect(await client.call('add_tasks', { seen: view.taskList, tasks: [{ title: 'Add a greeting file' }] })).toMatchObject({ ok: true })
   await client.end()
-  const actions = new SqliteBoards(db).takeActions(BOARD)
+  const actions = new SqliteBoards(db).takeActions(BOARD, 'engine')
   expect(actions.map(action => [action.kind, action.agent])).toEqual([['send', 'agent-2']])
   expect(actions[0]?.text).toContain('open work')
 })
