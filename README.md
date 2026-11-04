@@ -72,6 +72,22 @@ The picture at the top of this page shows a run at work. meld reads the commits 
 
 What you type in the chat goes to Claude, not to the agents. To steer the agents, use the pane or `/meld-steer`, or ask Claude to steer them. The mobile app has no text field, so send `/meld-steer` and the instruction. The terminal draws the lanes and the bars in characters.
 
+## Control a run without the pane
+
+Some places show no meld pane, for example a cloud session in the Claude app. Each action of the pane has a command, and Claude has a tool for each one. Ask Claude, or send the command.
+
+| Command | Tool | What it does |
+|---|---|---|
+| `/meld-steer <instruction>` | `steer` | Gives every agent the instruction. |
+| `/meld-stop` | `stop` | Stops every agent. The workspaces stay. |
+| `/meld-deliver` | `deliver` | Merges the final commit into your branch, and removes the workspaces. |
+| `/meld-discard` | `discard` | Stops the run, and removes its workspaces with their commits. |
+| `/meld-add [agent]` | `add_worker` | Adds an agent to a run at work. |
+
+Only the main session uses these tools. An agent of the run that calls one gets `NOT_ALLOWED`.
+
+**A new agent.** `/meld-add` adds one agent to a run that starts or works, up to 8 agents. Its workspace starts from the head of the integration line, so it has the finished work, or from the base when no task finished. The agent starts at once and reads the board. Name its model or type as `/meld --agents` does: `opus`, `Explore`, or `general-purpose@haiku`. With no name, it takes the agent of w1.
+
 ## Deliver the result
 
 When the integration line holds every task, one agent runs one final build and the checks on it, and declares the final commit. Then the run is ready.
@@ -90,7 +106,7 @@ The result card shows the final commit, the changed files, the lines added and r
 
 **Old runs.** A stopped run keeps its workspaces until you deliver or discard it. A new start removes them when they hold no work, as after a start that started no agent. When they hold commits or uncommitted edits, or meld cannot read them, the start refuses. The reply names the run, its folder and its count of commits.
 
-`/meld-clean` lists the folders under `/tmp/meld/` that are not the run of your session. `/meld-clean <id>` removes a folder as Discard does, with the version control and the repository that its `board.json` names. meld takes the workspaces from the id of the folder, not from the paths in the file, so a removal touches only what meld made. With no `board.json` that meld can read, meld removes only the folder. `/meld-clean` never removes the run of your session: Discard removes it.
+`/meld-clean` lists the folders under `/tmp/meld/` that are not the run of your session. `/meld-clean <id>` removes a folder as Discard does, with the version control and the repository that its `board.json` names. meld takes the workspaces from the id of the folder, not from the paths in the file, so a removal touches only what meld made. With no `board.json` that meld can read, meld removes only the folder. `/meld-clean` never removes the run of your session: Discard or `/meld-discard` removes it.
 
 A folder is maybe live when its `board.json` changed in the last 24 hours, and says starting, working or ready, or cannot be read. A run of another session on this computer can use such a folder, so `--all` skips it, and its id removes it. The state alone shows nothing: a run that no session stores keeps the last state that it wrote.
 
@@ -186,13 +202,14 @@ The changes come from a review of one run: 22 tasks, 5 agents, 45 minutes, about
 - **A split with the task list version.** A stale split fails with `STALE_VERSION` and shows the current tasks, so that a part cannot need the wrong task.
 - **Runs that meld 0.7.0 stored keep working.** Their first board reply to each agent carries the current entries. A task with no size is M. A done task with no handover gives its commit. The finished tasks go into a new line at the next finish.
 
-Six fixes come from [issue 3](https://github.com/bhi5hmaraj/meld/issues/3):
+Seven changes come from [issue 3](https://github.com/bhi5hmaraj/meld/issues/3):
 
 - **A start over a stopped run.** A new start removes the workspaces of a stopped run when they hold no work, and refuses when they hold work. Before, the start saved over the stopped run, and its folder, jj config, worktrees and branches stayed. One such folder held 6.7 GB.
 - **`/meld-clean`.** It lists and removes the folders that other runs left under `/tmp/meld/`. Discard reads only the run of your session, so it cannot remove them. `--all` skips the maybe live folders, because the state in a `board.json` does not show that a session still uses the run. A removal now runs in `/tmp/meld/`. Before, it ran in the repository, so a run whose repository was gone kept its folder.
 - **The subject of Deliver.** The merge commit has the subject `meld: ` and the summary of the final commit, cut at a space to 72 characters, and the full request as its body. Before, the subject was the first 72 characters of the request, and a word could break at the cut. The commit had no body.
 - **Tokens at each model call.** meld adds the tokens of an agent at each model call, and the end of a turn adds none, so no call counts two times. An agent does a task in one long turn, and a count at the end of the turn showed 0 tokens for each agent of a run at work.
 - **One line for each turn.** An agent ends each turn with one line, for example `finished #4, commit 4a0bde04`. Your session gets the last message of each turn of an agent, and a new agent for each task makes more such messages. Two reports of one run had 450 and 500 words.
+- **Control a run without the pane.** `/meld-deliver`, `/meld-discard` and `/meld-add`, and a tool for each, do what the pane does. So Claude can deliver, discard and add an agent where no pane shows. Before, only the pane delivered or discarded a run, and a run kept the agents of its start.
 - **A steer reply in the singular.** For one agent, the reply says `1 running worker gets it`, not `1 running workers get it`. With no agent left, it says so, and not `All 0 workers`.
 
 ## What meld changes from DeLM

@@ -1,9 +1,9 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentStatus, Register } from 'claude-code'
 
-import { countStep, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll } from './actions'
+import { controlRun, countStep, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll } from './actions'
 import { cleanFolders } from './clean'
-import { BOARD_TOOLS, STEER_PRESETS, TOOL_SPECS, WORKER_SYSTEM } from './contract'
+import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL_SPECS, WORKER_SYSTEM } from './contract'
 import type { AgentState, Files, Io } from './io'
 import { parseStart, WORKER_TYPE } from './options'
 import { DEFAULT_VIEW, paneTree } from './pane'
@@ -70,6 +70,9 @@ export const register: Register = on => {
     await $.command.register({ name: 'meld-status', description: 'Open the meld pane', immediate: true })
     await $.command.register({ name: 'meld-stop', description: 'Stop the meld workers; their workspaces stay', immediate: true })
     await $.command.register({ name: 'meld-clean', description: 'List the folders of old meld runs, or remove them', argumentHint: '[<id>...] [--all]', immediate: true })
+    await $.command.register({ name: 'meld-deliver', description: 'Merge the final commit of the meld run into your branch', immediate: true })
+    await $.command.register({ name: 'meld-discard', description: 'Stop the meld run and remove its workspaces', immediate: true })
+    await $.command.register({ name: 'meld-add', description: 'Add a worker to the meld run', argumentHint: '[model | agent type | type@model]', immediate: true })
     $.clock.every(FACTS_MS, () => {
       if (refreshing) return
       refreshing = true
@@ -89,7 +92,7 @@ export const register: Register = on => {
     ($, e, next) => next(e),
   )
 
-  on('command.run', { command: ['meld', 'meld-steer', 'meld-status', 'meld-stop', 'meld-clean'] }, async ($, e) => {
+  on('command.run', { command: ['meld', 'meld-steer', 'meld-status', 'meld-stop', 'meld-clean', 'meld-deliver', 'meld-discard', 'meld-add'] }, async ($, e) => {
     const io: Io & Files = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
@@ -117,14 +120,14 @@ export const register: Register = on => {
       const options = parseStart(args)
       return 'error' in options ? { text: options.error } : startRun(io, sessionCwd, options)
     }
-    if (e.command === 'meld-steer') return { text: await steerRun(io, args) }
-    if (e.command === 'meld-stop') return { text: await stopAll(io) }
+    const control = COMMAND_CONTROLS[e.command as keyof typeof COMMAND_CONTROLS]
+    if (control) return { text: await controlRun(io, control, args) }
     if (e.command === 'meld-clean') return { text: await cleanFolders(io, args) }
     await io.openPane(true)
     return { text: 'The pane is open.' }
   })
 
-  on('tool.call', { tool: ['mcp__meld__start', 'mcp__meld__steer', 'mcp__meld__stop'] }, async ($, e) => {
+  on('tool.call', { tool: SESSION_TOOLS }, async ($, e) => {
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
@@ -146,7 +149,7 @@ export const register: Register = on => {
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
     }
     return serveTool(io, e, sessionCwd)
-  }).catch(($, e, next) => (next.called ? next(e) : { deny: 'meld: the run could not start, steer or stop. Try the call again.' }))
+  }).catch(($, e, next) => (next.called ? next(e) : { deny: 'meld: the control of the run failed. Try the call again.' }))
 
   on(
     'tool.call',

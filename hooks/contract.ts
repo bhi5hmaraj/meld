@@ -20,7 +20,32 @@ export const TOOL = {
   start: 'mcp__meld__start',
   stop: 'mcp__meld__stop',
   steer: 'mcp__meld__steer',
+  deliver: 'mcp__meld__deliver',
+  discard: 'mcp__meld__discard',
+  addWorker: 'mcp__meld__add_worker',
 } as const
+
+/** What the main session does to a run with a tool or a command, as the meld pane does. */
+export type Control = 'steer' | 'stop' | 'deliver' | 'discard' | 'add_worker'
+
+/** The tools of the main session. A worker that calls one gets NOT_ALLOWED. */
+export const SESSION_TOOLS = [TOOL.start, TOOL.steer, TOOL.stop, TOOL.deliver, TOOL.discard, TOOL.addWorker]
+
+export const CONTROL_TOOLS: ReadonlyMap<string, Control> = new Map<string, Control>([
+  [TOOL.steer, 'steer'],
+  [TOOL.stop, 'stop'],
+  [TOOL.deliver, 'deliver'],
+  [TOOL.discard, 'discard'],
+  [TOOL.addWorker, 'add_worker'],
+])
+
+export const COMMAND_CONTROLS = {
+  'meld-steer': 'steer',
+  'meld-stop': 'stop',
+  'meld-deliver': 'deliver',
+  'meld-discard': 'discard',
+  'meld-add': 'add_worker',
+} as const satisfies Record<string, Control>
 
 /** The tools of a worker, which the board hook serves. */
 export const BOARD_TOOLS = [
@@ -73,6 +98,26 @@ export const TOOL_SPECS: ToolSpec[] = [
     name: 'stop',
     description: 'Stop the meld run when the person asks: every worker ends its turn, and the workspaces stay for review. Only the main session stops a run.',
     inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'deliver',
+    description:
+      "Deliver the final commit of the meld run when the person asks: meld merges it into the branch of the person's checkout, with the subject 'meld: ' and the summary of the final commit, and removes the workspaces of the run. Only the main session delivers a run.",
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'discard',
+    description: 'Discard the meld run when the person asks: meld stops its workers and removes its workspaces, with their commits and edits. Only the main session discards a run.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'add_worker',
+    description:
+      'Add a worker to the meld run when the person asks: meld makes its workspace from the head of the integration line, or from the base when the run has no line, and starts its agent. A run has 8 workers at most. Only the main session adds a worker.',
+    inputSchema: {
+      type: 'object',
+      properties: { agent: { type: 'string', description: 'A model (opus), an agent type (Explore), or type@model. Default: the agent of w1.' } },
+    },
   },
   {
     name: 'start',

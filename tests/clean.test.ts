@@ -154,7 +154,7 @@ test('a folder whose repository is gone still goes, with the repository config o
 test('/meld-clean never removes the run of this session, not even by its id', async () => {
   const io = session()
   folder(io, 'aaa', { board: boardRun('aaa', 'stopped') })
-  expect(await cleanFolders(io, 'r1')).toBe('r1 is the run of this session: Discard it in the meld pane.')
+  expect(await cleanFolders(io, 'r1')).toBe('r1 is the run of this session: Discard it with /meld-discard or in the meld pane.')
   await cleanFolders(io, '--all')
   expect(io.ran('rm -rf -- /tmp/meld/r1')).toBe(false)
   expect(io.ran('git worktree remove --force /tmp/meld/r1')).toBe(false)

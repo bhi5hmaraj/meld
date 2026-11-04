@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { startRun } from '../hooks/board'
-import { BOARD_TOOLS, splitNudge, TOOL, TOOL_SPECS, workerPrompt, workerRules } from '../hooks/contract'
+import { BOARD_TOOLS, SESSION_TOOLS, splitNudge, TOOL, TOOL_SPECS, workerPrompt, workerRules } from '../hooks/contract'
 import type { Run, VcsKind, WorkerId } from '../types'
 
 const IDS: WorkerId[] = ['w1', 'w2', 'w3']
@@ -44,7 +44,7 @@ test('each meld tool has a spec', () => {
 })
 
 test('the board hook serves each tool of a worker, and no tool of the main session', () => {
-  const session = new Set<string>([TOOL.start, TOOL.steer, TOOL.stop])
+  const session = new Set<string>(SESSION_TOOLS)
   expect([...BOARD_TOOLS].sort()).toEqual(Object.values(TOOL).filter(tool => !session.has(tool)).sort())
 })
 

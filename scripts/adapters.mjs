@@ -33,6 +33,7 @@ const STEPS = [
   ['lanes', lanes],
   ['result', result],
   ['deliver', deliver],
+  ['join', addWorkers],
   ['remove', remove],
 ]
 
@@ -256,6 +257,24 @@ async function deliver(s) {
   same(sh(s.repo, ['git', 'ls-files', 'w*.txt']).split('\n'), IDS.map(id => `${id}.txt`), 'the delivered files')
   same(sh(s.repo, ['git', 'status', '--porcelain']), '', 'the status of the repository')
   return `a merge commit on main with ${short(s.final)} as its second parent`
+}
+
+/**
+ * A worker joins the live run: w4 from the head of the integration line, with the files of the three workers, and w5 from
+ * the base, with none. Both go on the board, so remove must drop them too.
+ */
+async function addWorkers(s) {
+  const lined = { ...s.run, line: { head: s.line, tasks: [] } }
+  const fromLine = await s.vcs.addWorkspace(io, lined, 'w4')
+  if ('error' in fromLine) throw new Error(fromLine.error)
+  same(IDS.filter(id => existsSync(join(fromLine.path, `${id}.txt`))), IDS, 'the files of the workers in w4')
+  const fromBase = await s.vcs.addWorkspace(io, s.run, 'w5')
+  if ('error' in fromBase) throw new Error(fromBase.error)
+  same(IDS.filter(id => existsSync(join(fromBase.path, `${id}.txt`))), [], 'the files of the workers in w5')
+  if (!existsSync(join(fromBase.path, 'README.md'))) throw new Error(`${fromBase.path} has no files of the base`)
+  for (const [id, made] of [['w4', fromLine], ['w5', fromBase]]) s.run = hooks.board.addWorker(s.run, { ...made, id, agent: { type: 'meld:worker' } }, Date.now())
+  same(s.run.workers.map(worker => worker.id), [...IDS, 'w4', 'w5'], 'the workers on the board')
+  return `w4 from the line ${short(s.line)} has the files of w1, w2 and w3; w5 from the base has none`
 }
 
 async function remove(s) {

@@ -2,10 +2,11 @@ import type { CommandRunResult, ToolCallInput, ToolCallResult, TurnUsage } from 
 
 import type { BoardView, Change, Facts, Failure, NewTask, PaneView, Run, Task, TaskSize, VcsKind, Worker, WorkerId, WorkerState } from '../types'
 import * as board from './board'
-import { HAND_BACK, integrateDetail, integrateStep, splitNudge, TOOL, wakeText, workerPrompt, workerRules } from './contract'
+import { CONTROL_TOOLS, HAND_BACK, integrateDetail, integrateStep, splitNudge, TOOL, wakeText, workerPrompt, workerRules } from './contract'
+import type { Control } from './contract'
 import { headCommit, isDirty, repoRoot } from './git'
 import type { Io, Spawned } from './io'
-import { agentsOf, parseStart } from './options'
+import { agentSpecOf, agentsOf, MAX_AGENTS, parseStart, WORKER_TYPE } from './options'
 import type { StartOptions } from './options'
 import { claimable } from './tasks'
 import { detectVcs, runHome, vcsFor } from './vcs'
@@ -72,7 +73,7 @@ function mirrorBoard(io: Io): Promise<void> {
 
 export async function startRun(io: Io, cwd: string, options: StartOptions): Promise<CommandRunResult> {
   const current = await readRun(io)
-  if (current && LIVE_STATES.has(current.state)) return { text: 'A run is active. Deliver, discard or stop it in the meld pane first.' }
+  if (current && LIVE_STATES.has(current.state)) return { text: 'A run is active. Deliver, discard or stop it first: /meld-deliver, /meld-discard or /meld-stop, or the meld pane.' }
   if (current?.state === 'stopped') {
     const kept = await keptWork(io, current)
     if (kept) return { text: kept }
@@ -122,13 +123,13 @@ async function keptWork(io: Io, run: Run): Promise<string | undefined> {
   const unread = lanes.filter(lane => lane.error !== undefined)
   if (unread.length) {
     const errors = unread.map(lane => `${lane.id}: ${lane.error?.split('\n')[0]}`).join('; ')
-    return `Run ${run.id} stopped, and meld cannot read its workspaces in ${home} (${errors}), so they can hold work. Discard in the meld pane removes them, then you can start again.`
+    return `Run ${run.id} stopped, and meld cannot read its workspaces in ${home} (${errors}), so they can hold work. /meld-discard or Discard in the meld pane removes them, then you can start again.`
   }
   const commits = new Set(lanes.flatMap(lane => lane.commits.map(fact => fact.commit))).size
   const edits = lanes.filter(lane => lane.edits).map(lane => lane.id)
   if (!commits && !edits.length) return undefined
   const edited = edits.length ? `, and uncommitted edits in ${listed(edits)}` : ''
-  return `Run ${run.id} stopped with work in ${home}: ${commits} commit${commits === 1 ? '' : 's'}${edited}. Discard in the meld pane removes its workspaces, then you can start again.`
+  return `Run ${run.id} stopped with work in ${home}: ${commits} commit${commits === 1 ? '' : 's'}${edited}. /meld-discard or Discard in the meld pane removes its workspaces, then you can start again.`
 }
 
 /** Names as a list in words: "w1", "w1 and w2", "w1, w2 and w3". */
@@ -153,9 +154,9 @@ async function namedRepo(io: Io, request: string): Promise<{ repo: string; task:
 }
 
 /** Starts each worker in its own folder and binds it by the agent id the engine answers. Returns the reasons of the refused spawns. */
-async function spawnWorkers(io: Io, run: Run): Promise<string[]> {
+async function spawnWorkers(io: Io, run: Run, workers: readonly Worker[] = run.workers): Promise<string[]> {
   const refused: string[] = []
-  for (const worker of run.workers) {
+  for (const worker of workers) {
     pendingSpawns += 1
     try {
       const spawned = await spawnOne(io, run, worker)
@@ -207,10 +208,12 @@ async function workerWithWait(io: Io, agentId: string | undefined): Promise<Work
 export async function serveTool(io: Io, e: ToolCallInput, cwd = ''): Promise<ToolCallResult> {
   const tool = String(e.tool)
   const worker = await workerWithWait(io, e.agentId)
-  if (tool === TOOL.start || tool === TOOL.stop || tool === TOOL.steer) {
-    if (e.agentId !== undefined) return reply({ error: 'NOT_ALLOWED', message: 'Only the main session starts, steers or stops a meld run.' })
-    if (tool === TOOL.start) return reply(await startFromTool(io, e as unknown as Args, cwd))
-    return reply({ text: tool === TOOL.stop ? await stopAll(io) : await steerRun(io, text((e as unknown as Args).text).trim()) })
+  const control = CONTROL_TOOLS.get(tool)
+  if (tool === TOOL.start || control) {
+    if (e.agentId !== undefined) return reply({ error: 'NOT_ALLOWED', message: 'Only the main session starts, steers, stops, delivers or discards a meld run, and adds its workers.' })
+    const args = e as unknown as Args
+    if (!control) return reply(await startFromTool(io, args, cwd))
+    return reply({ text: await controlRun(io, control, text(control === 'steer' ? args.text : args.agent)) })
   }
   if (!worker) return reply(tool === TOOL.board ? await overview(io) : { error: 'NOT_WORKER', message: 'The meld tools are for the meld workers.' })
   const now = await io.now()
@@ -453,7 +456,7 @@ async function afterChange(io: Io, by: WorkerId, tool: string): Promise<void> {
   }
   if (tool === TOOL.finish && run.state === 'ready') {
     for (const peer of peers) if (peer.state === 'working') tell(io, peer, 'The final commit is declared. End your turn now.')
-    io.toast('meld: the result is ready. Deliver it from the meld pane.')
+    io.toast('meld: the result is ready. Deliver it with /meld-deliver or from the meld pane.')
   }
 }
 
@@ -691,7 +694,7 @@ export async function stopAll(io: Io): Promise<string> {
   const run = await writeRun(io, current => board.stopRun(current, now))
   if (!run) return 'There is no run.'
   for (const worker of run.workers) tell(io, worker, 'meld stopped the run. End your turn now.')
-  return 'Stopped. The workspaces stay until you discard them in the meld pane.'
+  return 'Stopped. The workspaces stay until you discard them with /meld-discard or in the meld pane.'
 }
 
 export async function stopOne(io: Io, id: WorkerId): Promise<string> {
@@ -724,6 +727,42 @@ function cutAtSpace(text: string, limit: number): string {
   if (text.length <= limit) return text
   const space = text.slice(0, limit + 1).lastIndexOf(' ')
   return space > SUBJECT_PREFIX.length ? text.slice(0, space).trimEnd() : text.slice(0, limit)
+}
+
+const NO_RUN_AT_WORK = 'There is no meld run at work. A worker can join a run that starts or works.'
+
+/** What the main session does to a run with a tool or a command, as the meld pane does. */
+export function controlRun(io: Io, control: Control, input = ''): Promise<string> {
+  if (control === 'steer') return steerRun(io, input.trim())
+  if (control === 'stop') return stopAll(io)
+  if (control === 'deliver') return deliver(io)
+  if (control === 'discard') return discard(io)
+  return addWorker(io, input.trim())
+}
+
+/**
+ * A worker joins a live run: the next id, a workspace from the head of the integration line (or the base with no line),
+ * and its agent at once. The agent is the one that the person names, else the agent of w1.
+ */
+export async function addWorker(io: Io, agentText: string): Promise<string> {
+  const run = await readRun(io)
+  if (!run || !ACTIVE_RUN.has(run.state)) return NO_RUN_AT_WORK
+  if (run.workers.length >= MAX_AGENTS) return `A run has ${MAX_AGENTS} workers at most.`
+  const id = nextWorkerId(run)
+  const made = await vcsFor(run.vcs).addWorkspace(io, run, id)
+  if ('error' in made) return `meld could not make the workspace of ${id}: ${made.error}`
+  const agent = agentText ? agentSpecOf(agentText) : (run.workers[0]?.agent ?? { type: WORKER_TYPE })
+  const now = await io.now()
+  const joined = await writeRun(io, current => board.addWorker(current, { id, agent, path: made.path, ref: made.ref }, now))
+  const worker = joined?.workers.find(one => one.id === id)
+  if (!joined || !worker) return NO_RUN_AT_WORK
+  const refused = await spawnWorkers(io, joined, [worker])
+  if (refused.length) return `${id} joined the run, but its agent did not start: ${refused[0]}.`
+  return `${id} joined the run. Its workspace is ${made.path}, from ${run.line ? 'the integration line' : 'the base'}.`
+}
+
+function nextWorkerId(run: Run): WorkerId {
+  return `w${Math.max(0, ...run.workers.map(worker => Number(worker.id.slice(1)))) + 1}`
 }
 
 export async function deliver(io: Io): Promise<string> {

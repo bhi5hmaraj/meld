@@ -69,7 +69,7 @@ async function removeChosen(io: Io & Files, folders: Folder[], words: string[], 
   const chosen: Folder[] = []
   for (const id of ids) {
     const folder = folders.find(one => one.id === id)
-    if (id === stored) notes.push(`${id} is the run of this session: Discard it in the meld pane.`)
+    if (id === stored) notes.push(`${id} is the run of this session: Discard it with /meld-discard or in the meld pane.`)
     else if (folder) chosen.push(folder)
     else notes.push(`There is no folder ${id} under ${MELD_ROOT}.`)
   }

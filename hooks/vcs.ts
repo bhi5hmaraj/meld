@@ -51,6 +51,8 @@ export type Vcs = {
   mergeIntoLine(io: Io, run: Run, commit: string, message: string): Promise<LineMerge>
   deliver(io: Io, run: Run, commit: string, message: string): Promise<CommandResult>
   remove(io: Io, run: RunPlace): Promise<void>
+  /** The workspace of a worker that joins a live run: from the head of the integration line, or from the base when the run has no line. */
+  addWorkspace(io: Io, run: Run, id: WorkerId): Promise<Workspace | { error: string }>
 }
 
 export function runHome(id: string): string {
@@ -174,6 +176,12 @@ const GIT: Vcs = {
     return { workspaces: made }
   },
 
+  async addWorkspace(io, run, id) {
+    const workspace = workspaceOf('git', run.id, id)
+    const added = await git(io, run.repo, ['worktree', 'add', '-b', workspace.ref, workspace.path, run.line?.head ?? run.base])
+    return added.ok ? workspace : { error: added.err || added.out }
+  },
+
   async resolve(io, run, worker, revision) {
     const found = await git(io, worker.path, ['rev-parse', '--verify', '--quiet', `${revision}^{commit}`])
     return found.ok && FULL_COMMIT.test(found.out) ? { commit: found.out, conflict: false } : undefined
@@ -233,6 +241,12 @@ const JJ: Vcs = {
       workspaces.push(workspace)
     }
     return { workspaces }
+  },
+
+  async addWorkspace(io, run, id) {
+    const workspace = workspaceOf('jj', run.id, id)
+    const added = await command(io, run.repo, ['jj', '-R', jjRepoOf(run.id), 'workspace', 'add', '--name', id, '-r', run.line?.head ?? BASE_BOOKMARK, workspace.path])
+    return added.ok ? workspace : { error: added.err || added.out }
   },
 
   async resolve(io, run, worker, revision) {

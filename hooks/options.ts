@@ -27,7 +27,7 @@ export function parseStart(text: string): StartOptions | Refusal {
     const [whole, name = '', value = ''] = flag
     rest = rest.slice(whole.length)
     if (name === 'agents' && /^\d+$/.test(value)) count = Number(value)
-    else if (name === 'agents') list = value.split(',').filter(Boolean).map(specOf)
+    else if (name === 'agents') list = value.split(',').filter(Boolean).map(agentSpecOf)
     else if (name === 'model' && value) model = value
     else if (name === 'vcs' && VCS_CHOICES.has(value)) vcs = value as VcsChoice
     else if (name === 'vcs') return { error: 'Use --vcs auto, jj or git.' }
@@ -50,7 +50,8 @@ export function agentsOf(count: number, model?: string): AgentSpec[] {
   return Array.from({ length: count }, () => withModel({ type: WORKER_TYPE }, model))
 }
 
-function specOf(item: string): AgentSpec {
+/** One agent as /meld --agents names it: a model (opus), an agent type (Explore), or type@model. */
+export function agentSpecOf(item: string): AgentSpec {
   const cut = item.lastIndexOf(MODEL_SEPARATOR)
   if (cut > 0) return { type: item.slice(0, cut), model: item.slice(cut + 1) }
   return isModel(item) ? { type: WORKER_TYPE, model: item } : { type: item }

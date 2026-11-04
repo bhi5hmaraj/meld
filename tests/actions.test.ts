@@ -180,7 +180,7 @@ test('a run does not start outside a git repository', async () => {
 test('a second run waits until the first one ends', async () => {
   const io = ioWith(working())
   expect((await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'git' })).text).toBe(
-    'A run is active. Deliver, discard or stop it in the meld pane first.',
+    'A run is active. Deliver, discard or stop it first: /meld-deliver, /meld-discard or /meld-stop, or the meld pane.',
   )
 })
 
@@ -219,7 +219,7 @@ test('a start over a stopped run with commits refuses, and names the run, its fo
   io.answers[`git log --format=%H%x09%P%x09%s -n 40 ${HEAD}..meld/r1/w1`] = `${FULL}\t${other} ${HEAD}\tMerge w2\n${other}\t${HEAD}\tAdd add()`
   io.answers[`git log --format=%H%x09%P%x09%s -n 40 ${HEAD}..meld/r1/w2`] = `${other}\t${HEAD}\tAdd add()`
   const result = await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'git' })
-  expect(result.text).toBe('Run r1 stopped with work in /tmp/meld/r1: 2 commits. Discard in the meld pane removes its workspaces, then you can start again.')
+  expect(result.text).toBe('Run r1 stopped with work in /tmp/meld/r1: 2 commits. /meld-discard or Discard in the meld pane removes its workspaces, then you can start again.')
   expect(io.ran('git worktree')).toBe(false)
   expect(io.ran('rm')).toBe(false)
   expect(io.spawned).toHaveLength(0)
@@ -231,7 +231,7 @@ test('a start over a stopped run with uncommitted edits refuses, and names the w
   io.dirty = true
   const result = await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'git' })
   expect(result.text).toBe(
-    'Run r1 stopped with work in /tmp/meld/r1: 0 commits, and uncommitted edits in w1 and w2. Discard in the meld pane removes its workspaces, then you can start again.',
+    'Run r1 stopped with work in /tmp/meld/r1: 0 commits, and uncommitted edits in w1 and w2. /meld-discard or Discard in the meld pane removes its workspaces, then you can start again.',
   )
   expect(io.ran('rm')).toBe(false)
 })
@@ -240,7 +240,7 @@ test('a start over a stopped jj run reads each workspace in its folder, so edits
   const io = ioWith(stopRun(working(3, 'jj'), NOW))
   io.answers[jjFreshLog('r1', 'w2')] = `${FULL}\t1\t--\tw2@\t\n`
   const result = await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'auto' })
-  expect(result.text).toBe('Run r1 stopped with work in /tmp/meld/r1: 0 commits, and uncommitted edits in w2. Discard in the meld pane removes its workspaces, then you can start again.')
+  expect(result.text).toBe('Run r1 stopped with work in /tmp/meld/r1: 0 commits, and uncommitted edits in w2. /meld-discard or Discard in the meld pane removes its workspaces, then you can start again.')
   expect(io.commands.filter(command => command.includes(' log '))).toEqual(['w1', 'w2', 'w3'].map(id => jjFreshLog('r1', id as WorkerId)))
   expect(io.ran('rm')).toBe(false)
 })
@@ -250,7 +250,7 @@ test('a start over a stopped run whose workspaces meld cannot read refuses, and 
   io.failing = [`git log --format=%H%x09%P%x09%s -n 40 ${HEAD}..meld/r1/w2`]
   const result = await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'git' })
   expect(result.text).toBe(
-    'Run r1 stopped, and meld cannot read its workspaces in /tmp/meld/r1 (w2: git: failed), so they can hold work. Discard in the meld pane removes them, then you can start again.',
+    'Run r1 stopped, and meld cannot read its workspaces in /tmp/meld/r1 (w2: git: failed), so they can hold work. /meld-discard or Discard in the meld pane removes them, then you can start again.',
   )
   expect(io.ran('rm')).toBe(false)
   expect(io.current?.id).toBe('r1')
@@ -261,7 +261,7 @@ test('a start over a stopped run that meld 0.7.0 stored counts the commit of its
   const toggle = STORED_BY_0_7_0.tasks[1]?.commit ?? ''
   io.answers[jjFreshLog('r070', 'w3')] = `${FULL}\t1\t-e\tw3@\t\n${toggle}\t1\t--\t\tDark toggle\n`
   const result = await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'git' })
-  expect(result.text).toBe('Run r070 stopped with work in /tmp/meld/r070: 1 commit. Discard in the meld pane removes its workspaces, then you can start again.')
+  expect(result.text).toBe('Run r070 stopped with work in /tmp/meld/r070: 1 commit. /meld-discard or Discard in the meld pane removes its workspaces, then you can start again.')
 })
 
 test('a start over a stopped run that meld 0.7.0 stored, with no work, removes its workspaces and starts', async () => {
@@ -469,7 +469,7 @@ test('a final commit tells the other workers to stop and the person that the res
   await serveTool(io, call({ tool: 'mcp__meld__finish', commit: 'fff0000', summary: 'Done', agentId: 'agent-2' }))
   expect(io.current?.state).toBe('ready')
   expect(io.sent).toEqual(['agent-1: The final commit is declared. End your turn now.', 'agent-3: The final commit is declared. End your turn now.'])
-  expect(io.toasts).toContain('meld: the result is ready. Deliver it from the meld pane.')
+  expect(io.toasts).toContain('meld: the result is ready. Deliver it with /meld-deliver or from the meld pane.')
 })
 
 test('a steer reaches every live worker', async () => {
@@ -850,7 +850,7 @@ test('a worker cannot start a run', async () => {
 test('the main session stops a run with the stop tool', async () => {
   const io = ioWith(working())
   const replied = await serveTool(io, call({ tool: 'mcp__meld__stop' }))
-  expect(parsed(replied.result)).toEqual({ text: 'Stopped. The workspaces stay until you discard them in the meld pane.' })
+  expect(parsed(replied.result)).toEqual({ text: 'Stopped. The workspaces stay until you discard them with /meld-discard or in the meld pane.' })
   expect(io.current?.state).toBe('stopped')
 })
 

@@ -72,20 +72,7 @@ export function startRun(input: StartInput): Run {
     base: input.base,
     startedAt: input.now,
     costAtStart: input.costAtStart,
-    workers: input.workers.map(worker => ({
-      id: worker.id,
-      agent: worker.agent,
-      path: worker.path,
-      ref: worker.ref,
-      state: 'starting',
-      briefed: false,
-      seenRevision: 1,
-      seenEntry: 0,
-      activity: 'starting',
-      activityAt: input.now,
-      tokens: 0,
-      calls: 0,
-    })),
+    workers: input.workers.map(worker => newWorker(worker, input.now)),
     tasks: [],
     log: [],
     context: [],
@@ -589,6 +576,17 @@ function findWorker(run: Run, id: WorkerId): Worker {
 
 function replaceWorker(run: Run, worker: Worker): Run {
   return { ...run, workers: run.workers.map(one => (one.id === worker.id ? worker : one)) }
+}
+
+/** A worker as meld makes it: no agent yet, nothing read, nothing counted. */
+function newWorker(worker: StartInput['workers'][number], now: number): Worker {
+  return { id: worker.id, agent: worker.agent, path: worker.path, ref: worker.ref, state: 'starting', briefed: false, seenRevision: 1, seenEntry: 0, activity: 'starting', activityAt: now, tokens: 0, calls: 0 }
+}
+
+/** A worker joins a run that starts or works, when the person asks. A run that ended, or that has the id, stays as it is. */
+export function addWorker(run: Run, worker: StartInput['workers'][number], now: number): Run {
+  if (!ACTIVE.has(run.state) || run.workers.some(one => one.id === worker.id)) return run
+  return withEntry({ ...run, workers: [...run.workers, newWorker(worker, now)] }, { at: now, by: 'you', kind: 'event', text: `${worker.id} joined the run` })
 }
 
 function withEntry(run: Run, entry: Omit<Entry, 'id'> & { by: Author }): Run {
