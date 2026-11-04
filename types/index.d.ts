@@ -78,6 +78,8 @@ export type Task = {
   calls?: number
   /** meld told its owner to split it or finish it. */
   nudged?: boolean
+  /** The task whose commit this task brings into the integration line: meld adds "integrate #N" when that merge conflicts. */
+  integrates?: number
 }
 
 export type Entry = {
@@ -115,6 +117,9 @@ export type ContextView = Omit<ContextEntry, 'at'>
 
 export type Final = { commit: string; summary: string; by: WorkerId }
 
+/** The integration line: meld merges the commit of each finished task into it, with no agent. Its head, and the tasks it holds. */
+export type Line = { head: string; tasks: number[] }
+
 export type Run = {
   id: string
   request: string
@@ -134,6 +139,8 @@ export type Run = {
   context?: ContextEntry[]
   integrator?: WorkerId
   final?: Final
+  /** Absent before the first merge, and in a run that meld 0.7.0 or older stored. */
+  line?: Line
   nudges: number
   taskList: number
 }

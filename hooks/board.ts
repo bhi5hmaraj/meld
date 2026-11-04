@@ -10,6 +10,7 @@ import type {
   ErrorCode,
   Failure,
   Final,
+  Line,
   NewTask,
   Notice,
   Run,
@@ -304,6 +305,38 @@ export function finishTask(
   ].reduce(withContext, run)
   const done: Task = { ...checked, state: 'done', commit, summary, version: checked.version + 1, doneAt: now }
   return updateTask({ ...handed, nudges: 0 }, done, by, now, `finished #${id}: ${summary}`, commit)
+}
+
+/**
+ * The finished tasks whose commits the integration line does not hold, in the order they were done: done leaves with a
+ * commit, and no task "integrate #N" for them. A run that meld 0.7.0 stored has no line, so all its finished tasks are here.
+ */
+export function unmergedTasks(run: Run): Task[] {
+  const held = new Set(run.line?.tasks ?? [])
+  const integrated = new Set(run.tasks.map(task => task.integrates))
+  return run.tasks
+    .filter(task => task.state === 'done' && task.commit && !isParent(run.tasks, task.id) && !held.has(task.id) && !integrated.has(task.id))
+    .sort((a, b) => (a.doneAt ?? 0) - (b.doneAt ?? 0) || a.id - b.id)
+}
+
+/** meld merged the commit of #id into the line: the line moves to `head`, and holds #id and each task that #id integrates. */
+export function lineMerged(run: Run, id: number, head: string, now: number): Run {
+  const held = [...(run.line?.tasks ?? [])]
+  for (let task = taskOf(run.tasks, id); task && !held.includes(task.id); task = taskOf(run.tasks, task.integrates)) held.push(task.id)
+  if (!held.includes(id)) held.push(id)
+  const line: Line = { head, tasks: held }
+  return withEntry({ ...run, line }, { at: now, by: 'you', kind: 'event', text: `merged #${id} into the integration line`, commit: head })
+}
+
+/** The commit of #id does not merge into the line: meld adds a task "integrate #id" of size S, open for any worker. */
+export function addIntegrateTask(run: Run, id: number, detail: string, now: number): Change<Task> {
+  const ended = endedFailure(run)
+  if (ended) return ended
+  const added = newTasks(run.tasks, [{ title: `integrate #${id}`, detail, size: 'S' }], now)
+  if (!Array.isArray(added) || !added[0]) return Array.isArray(added) ? failure('INVALID', `#${id} has nothing to integrate.`) : added
+  const task: Task = { ...added[0], integrates: id }
+  const text = `added #${task.id} ${task.title}`
+  return { run: withEntry({ ...run, tasks: [...run.tasks, task], taskList: run.taskList + 1 }, { at: now, by: 'you', kind: 'task', text }), value: task }
 }
 
 export function addNote(run: Run, by: WorkerId, text: string, commit: string | undefined, now: number): Change<Entry> {

@@ -1,7 +1,9 @@
 import type { ToolSpec } from 'claude-code'
 
-import type { Run, Worker, WorkerId } from '../types'
+import type { Run, Task, Worker, WorkerId } from '../types'
 import { CONTEXT_KINDS, CONTEXT_TEXT_LIMIT } from './board'
+import { vcsFor } from './vcs'
+import type { LineMerge } from './vcs'
 
 export const TOOL = {
   board: 'mcp__meld__board',
@@ -215,6 +217,7 @@ ${run.request}`
 
 export function workerRules(run: Run, id: WorkerId): string {
   const you = workerIn(run, id)
+  const line = vcsFor(run.vcs).lineName(run)
   const peers = run.workers.filter(worker => worker.id !== id)
   return `You are ${id}, one of ${run.workers.length} meld workers in run ${run.id}. Together you make one result for this request of the person:
 
@@ -228,25 +231,26 @@ The rules for a meld worker:
 3. Give each task a title in plain words, 8 words at most, with no file paths. Give needs when a task needs the result of another task. Until those tasks are done, a claim of that task fails with WAITING. Split a task that has more than one deliverable with ${TOOL.split}: you keep the first part, and the other parts are open. A task with parts has no commit of its own. It is done when all its parts are done.
 4. Commit after each step. When a task is done, call ${TOOL.finishTask} with the commit and a one-line summary. Give the contracts that other tasks use in interfaces, and the work that you did not do in unfinished. Tell the other workers about each decision with ${TOOL.note}.
 5. Each board reply carries the shared context, newest first: the first reply to you carries the current entries, 20 at most, and each later reply only the entries that are new since your last reply. Read it before you start a task, and do not try the approach of a fail. Share with ${TOOL.share}: a fact when a peer can use it, a fail when an approach did not work, and an interface before a peer depends on it. Give a fact with its evidence, a fail with its reason, and an interface as a name and its shape. To correct an entry, share a new entry with replaces and the id of the old entry.
-6. Use the work of the other workers through version control, as below. Do not do again what another worker did.
+6. Use the work of the other workers through version control, as below. Merge the branch of a peer only when your own task needs that code: meld merges the commit of each finished task into the integration line ${line}. Do not do again what another worker did.
 7. Record each test or build you run with ${TOOL.check}, with the commit it ran on.
-8. When every task is done, one worker integrates: it calls ${TOOL.integrate}, merges the work of every worker into its own, runs the checks, then calls ${TOOL.finish} with the final commit and a summary. While another worker integrates, review its commits, add tests, or fix what the checks show.
+8. meld merges the commit of each finished task into the integration line ${line}, with no agent. Do not move or rewrite the line. When a merge conflicts, meld adds a task integrate #N: its owner merges the line and the commit of #N in its folder, fixes the conflicts, runs the checks, commits, and finishes the task. When every task is done, one worker integrates: it calls ${TOOL.integrate}, starts from the line, runs one final build and the checks, then calls ${TOOL.finish} with the final commit and a summary. While another worker integrates, review its commits, add tests, or fix what the checks show.
 9. A board reply can carry a notice: the person changed the request. Follow the newest instruction.
 10. Do not wait with sleep or loops. When nothing is left for you, end your run with a short report. When there is new work, meld starts a new agent for you in your folder, and it reads the board to go on.
 11. A board error (STALE_VERSION, TAKEN, NOT_OWNER, WAITING, CONFLICT, INVALID) fails only that call. Read the board again, fix the call, and go on. WAITING names the task that the claim waits for. Claim another task.
 
-${run.vcs === 'jj' ? jjGuide(you, peers) : gitGuide(you, peers)}`
+${run.vcs === 'jj' ? jjGuide(you, peers, line) : gitGuide(you, peers, line)}`
 }
 
-function gitGuide(you: Worker, peers: Worker[]): string {
+function gitGuide(you: Worker, peers: Worker[], line: string): string {
   const branches = peers.map(peer => peer.ref).join(', ') || 'none'
   return `Version control: git. Your folder is a git worktree on branch ${you.ref}.
 - Commit: git add the files, then git commit -m "<message>". Give HEAD or the commit hash to the board tools.
 - Take the work of another worker: git merge <its branch>, or git cherry-pick <hash>. Their branches: ${branches}.
-- Integrate: merge the branch of every other worker into yours, one at a time, fix the conflicts, commit, and give that commit to finish.`
+- The integration line is the branch ${line}. To integrate #N: git merge ${line}, then git merge <the commit of #N>, fix the conflicts, commit, and finish the task with HEAD.
+- Final integration: git merge ${line}, run one final build and the checks, commit what they need, and give HEAD to finish.`
 }
 
-function jjGuide(you: Worker, peers: Worker[]): string {
+function jjGuide(you: Worker, peers: Worker[], line: string): string {
   const lasts = peers.map(peer => `${peer.id}@-`)
   return `Version control: jj. Your folder is a jj workspace with no branch: jj names your working copy ${you.ref}, and the last commit of each other worker is ${lasts.join(', ') || 'none'}.
 - Each jj command records your edits in ${you.ref}. Commit: jj commit -m "<message>". The commit is then @-, and ${you.ref} is a new empty change on top. Give @- or its id (jj log -r @- --no-graph -T commit_id) to the board tools.
@@ -255,12 +259,43 @@ function jjGuide(you: Worker, peers: Worker[]): string {
 - A conflict does not stop jj: jj st lists the files with conflicts. Edit the files to remove the conflict markers; the next jj command records the fix. A commit with a conflict cannot be the final commit.
 - Do not rewrite a commit that you gave to the board or that another worker uses: no jj describe, squash, rebase or abandon on it. Make a new commit on top.
 - If jj says the working copy is stale, run jj workspace update-stale.
-- Integrate: commit your work, then jj new ${['@-', ...lasts].join(' ')} -m "meld: integrate", fix the conflicts, run the checks, jj commit -m "meld: integrate", and give @- to finish.`
+- The integration line is the bookmark ${line}. To integrate #N: jj new ${line} <the commit of #N> -m "integrate #N", fix the conflicts, run the checks, jj commit -m "integrate #N", and finish the task with @-.
+- Final integration: commit your work, then jj new ${line} -m "meld: integrate", run one final build and the checks, jj commit -m "meld: integrate", and give @- to finish.`
 }
 
 /** What meld tells the owner of a leaf after SPLIT_CALLS tool calls on it, with no finish and no split. */
 export function splitNudge(task: number): string {
   return `Split #${task} into smaller tasks, or finish it.`
+}
+
+/** The longest reason of a failed merge that the detail of a task "integrate #N" quotes. */
+const MERGE_ERROR_CHARS = 200
+
+/** The detail of a task "integrate #N": why the commit of #N is not in the integration line, and the steps in the folder of a worker. */
+export function integrateDetail(run: Run, task: Task, merge: Exclude<LineMerge, { state: 'merged' }>): string {
+  const line = vcsFor(run.vcs).lineName(run)
+  const commit = task.commit ?? ''
+  const why =
+    merge.state === 'conflict'
+      ? `The commit ${commit} of #${task.id} (${task.title}) conflicts with the integration line ${line}${merge.files.length ? ` in ${merge.files.join(', ')}` : ''}.`
+      : `meld could not merge the commit ${commit} of #${task.id} (${task.title}) into the integration line ${line}: ${merge.error.slice(0, MERGE_ERROR_CHARS)}.`
+  const steps =
+    run.vcs === 'jj'
+      ? `jj new ${line} ${commit} -m "integrate #${task.id}", fix the conflicts, run the checks, jj commit -m "integrate #${task.id}", and finish this task with @-.`
+      : `git merge ${line}, then git merge ${commit}, fix the conflicts, commit, run the checks, and finish this task with HEAD.`
+  return `${why} In your folder: ${steps}`
+}
+
+/**
+ * What meld asks of the lead when every task is done. With a line: start from it, merge the commits it lacks, run one
+ * final build and finish. A run that meld 0.7.0 stored has no line: merge the work of every worker, as 0.7.0 did.
+ */
+export function integrateStep(run: Run, unmerged: readonly Task[]): string {
+  if (!run.line) return `All tasks are done. Integrate: call ${TOOL.integrate}, merge the work of every worker into yours, run the checks, then call ${TOOL.finish}.`
+  const line = vcsFor(run.vcs).lineName(run)
+  const start = run.vcs === 'jj' ? `jj new ${line} -m "meld: integrate"` : `git merge ${line}`
+  const lacks = unmerged.length ? ` The line lacks ${unmerged.map(task => `#${task.id} (${(task.commit ?? '').slice(0, 12)})`).join(', ')}: merge those commits too.` : ''
+  return `All tasks are done, and the integration line ${line} holds them at ${run.line.head.slice(0, 12)}. Integrate: call ${TOOL.integrate}, start from the line (${start}).${lacks} Run one final build and the checks, commit, then call ${TOOL.finish} with that commit.`
 }
 
 export function wakeText(reason: string): string {

@@ -2,7 +2,7 @@ import type { CommandRunResult, ToolCallInput, ToolCallResult, TurnUsage } from 
 
 import type { BoardView, Change, Facts, NewTask, PaneView, Run, Task, TaskSize, VcsKind, Worker, WorkerId, WorkerState } from '../types'
 import * as board from './board'
-import { splitNudge, TOOL, wakeText, workerPrompt, workerRules } from './contract'
+import { integrateDetail, integrateStep, splitNudge, TOOL, wakeText, workerPrompt, workerRules } from './contract'
 import { headCommit, isDirty, repoRoot } from './git'
 import type { Io, Spawned } from './io'
 import { agentsOf, parseStart } from './options'
@@ -17,6 +17,7 @@ const HANDBACK_TOOL = 'SubagentHandback'
 const COMMIT_TOOLS = new Set<string>([TOOL.finishTask, TOOL.check, TOOL.finish])
 const OPEN_WORK_TOOLS = new Set<string>([TOOL.addTasks, TOOL.split, TOOL.release])
 const LIVE_STATES = new Set(['starting', 'working', 'ready'])
+const ACTIVE_RUN = new Set(['starting', 'working'])
 const BIND_POLL_MS = 200
 const BIND_POLLS = 100
 const NUDGE_LIMIT = 3
@@ -31,6 +32,7 @@ type Refused = { error: string; message: string }
 let pendingSpawns = 0
 let restarting = false
 let mirroring: Promise<void> = Promise.resolve()
+let merging: Promise<void> = Promise.resolve()
 
 export async function readRun(io: Io): Promise<Run | null> {
   return (await io.read()) ?? null
@@ -193,8 +195,37 @@ export async function serveTool(io: Io, e: ToolCallInput, cwd = ''): Promise<Too
     return counted.run
   })
   await afterChange(io, worker.id, tool)
+  if (tool === TOOL.finishTask) await mergeFinished(io, worker.id)
   await sendNudge(io, worker.id, nudge)
   return reply(answer)
+}
+
+/**
+ * Merges the commit of each finished task that the integration line does not hold into the line, oldest first, with no
+ * agent. A merge that conflicts or fails adds a task "integrate #N", and the working peers of the finisher hear of it.
+ * One merge runs at a time, as the line moves only from the head that a merge read.
+ */
+function mergeFinished(io: Io, by: WorkerId): Promise<void> {
+  merging = merging.then(() => mergeUnmerged(io, by)).catch(() => undefined)
+  return merging
+}
+
+async function mergeUnmerged(io: Io, by: WorkerId): Promise<void> {
+  const run = await readRun(io)
+  if (!run || !ACTIVE_RUN.has(run.state)) return
+  const vcs = vcsFor(run.vcs)
+  let added = false
+  for (const task of board.unmergedTasks(run)) {
+    const merged = await vcs.mergeIntoLine(io, run, task.commit ?? '', `meld: integrate #${task.id} ${task.title}`)
+    const now = await io.now()
+    await writeRun(io, current => {
+      if (merged.state === 'merged') return board.lineMerged(current, task.id, merged.head, now)
+      return runOf(board.addIntegrateTask(current, task.id, integrateDetail(current, task, merged), now), current)
+    })
+    added ||= merged.state !== 'merged'
+  }
+  const after = added ? await readRun(io) : null
+  for (const peer of after?.workers ?? []) if (peer.id !== by && peer.state === 'working') tell(io, peer, wakeText('There is open work on the board.'))
 }
 
 /** A tool call of a worker: the worker works, and the call counts. A call can bring a leaf of the worker to its nudge. */
@@ -561,7 +592,7 @@ function leadStep(run: Run, lead: Worker): string {
   const steer = lead.seenRevision < run.revision ? board.steersOf(run).at(-1) : undefined
   if (steer !== undefined) return `The person changed the request (revision ${run.revision}): ${steer}`
   if (!run.tasks.length && !run.integrator) return `There are no tasks yet. Split the request into tasks with ${TOOL.addTasks}, then claim one.`
-  return `All tasks are done. Integrate: call ${TOOL.integrate}, merge the work of every worker into yours, run the checks, then call ${TOOL.finish}.`
+  return integrateStep(run, board.unmergedTasks(run))
 }
 
 export async function steerRun(io: Io, instruction: string): Promise<string> {

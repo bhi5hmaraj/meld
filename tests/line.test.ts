@@ -129,7 +129,7 @@ test('on jj the task "integrate #N" names the bookmark of the line and the commi
 
 test('a finish merges the done tasks that the line does not hold yet, in the order they were done', async () => {
   const io = ioWith(finished(planned(), 2, 'w2', OTHER))
-  io.failing = [`git rev-parse --verify --quiet ${GIT_LINE}`]
+  io.failing = [`git rev-parse --verify --quiet ${GIT_LINE}`, `git merge-base --is-ancestor ${OTHER} `, `git merge-base --is-ancestor ${FULL} `]
   await serveTool(io, call(FINISH_1))
   const merged = io.commands.filter(command => command.startsWith('git merge-tree') || command.startsWith('git update-ref'))
   expect(merged[0]).toContain(OTHER)
