@@ -573,7 +573,7 @@ test('a steer of a ready run starts the integrator again with the steer', async 
 test('a steer goes as a message to the running workers, and waits for the ended ones', async () => {
   const io = ioWith(working(3))
   await markWorker(io, 'agent-2', 'idle')
-  expect(await steerRun(io, 'Use the brand colours')).toBe('Revision 2: 2 running workers get it; the others see it when meld starts them again.')
+  expect(await steerRun(io, 'Use the brand colours')).toBe('Revision 2: 2 running workers get it; the other sees it when meld starts it again.')
   expect(io.sent.map(message => message.split(':')[0])).toEqual(['agent-1', 'agent-3'])
   expect(io.spawned).toHaveLength(0)
 })
@@ -633,7 +633,7 @@ test('deliver refuses a checkout with uncommitted changes', async () => {
 test('deliver merges the final commit, then removes the workspaces', async () => {
   const io = ioWith(runOf(declareFinal(runOf(takeIntegration(working(), 'w2', NOW)), 'w2', FULL, 'Done', NOW)))
   expect(await deliver(io)).toBe(`Merged ${FULL.slice(0, 7)} into your branch.`)
-  expect(io.commands).toContain(`git merge --no-ff -m meld: Add a dark theme ${FULL}`)
+  expect(io.commands).toContain(`git merge --no-ff -m meld: Done\n\nAdd a dark theme ${FULL}`)
   expect(io.commands).toContain('git worktree remove --force /tmp/meld/r1/w2')
   expect(io.current?.state).toBe('delivered')
 })

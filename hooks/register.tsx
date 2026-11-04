@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentStatus, Register } from 'claude-code'
 
+import { countStep, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll } from './actions'
 import { cleanFolders } from './clean'
-import { freshTokens, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll } from './actions'
 import { BOARD_TOOLS, STEER_PRESETS, TOOL_SPECS, WORKER_SYSTEM } from './contract'
 import type { AgentState, Files, Io } from './io'
 import { parseStart, WORKER_TYPE } from './options'
@@ -205,6 +205,35 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
 
+  /** Each model call of a worker adds its tokens at once: a worker does a task in one long turn. */
+  on('turn.step', async function* ($, e, next) {
+    const response = yield* next(e)
+    if (e.agentId === undefined) return response
+    const io: Io = {
+      run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
+      now: () => $.clock.now(),
+      cost: async () => (await $.session.usage()).cost?.usd,
+      agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
+      sleep: ms => $.clock.sleep(ms),
+      read: () => read($, runRef),
+      write: change => update($, runRef, change),
+      readFacts: () => read($, factsRef),
+      writeFacts: facts => update($, factsRef, () => facts),
+      writeFile: (path, text) => $.fs.write(path, text),
+      spawn: async args => {
+        const spawned = await $.agent.spawn(args.model ? args : { prompt: args.prompt, description: args.description, subagentType: args.subagentType, cwd: args.cwd })
+        return { agentId: spawned.agentId, deny: spawned.deny }
+      },
+      command: (name, args) => $.command.run({ command: name, args }),
+      send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+      toast: text => $.ui.toast(text),
+      openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
+    }
+    await countStep(io, e.agentId, response.usage).catch(() => undefined)
+    return response
+  })
+
+
   on('turn.complete', async ($, e, next) => {
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
@@ -227,7 +256,7 @@ export const register: Register = on => {
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
     }
     const completed = await next(e)
-    await markWorker(io, e.agentId, 'idle', freshTokens(e.usage))
+    await markWorker(io, e.agentId, 'idle')
     if (e.agentId === undefined) await restartIdleWorkers(io)
     return completed
   })

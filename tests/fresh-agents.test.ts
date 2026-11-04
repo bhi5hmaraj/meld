@@ -57,7 +57,7 @@ async function serve(io: FakeIo, input: Record<string, unknown>): Promise<Record
 
 test('the rules tell a worker to hand back after finish_task, and to claim no next task', () => {
   expect(workerRules(working(), 'w2')).toContain(
-    `After ${TOOL.finishTask}, hand back: end your run with a short report. Do not claim the next task: meld starts a new agent for you when a task is ready.`,
+    `After ${TOOL.finishTask}, hand back: end your run. Do not claim the next task: meld starts a new agent for you when a task is ready.`,
   )
 })
 
