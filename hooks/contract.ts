@@ -221,7 +221,7 @@ Your folder: ${you.path}. Your ref: ${you.ref}. The other workers: ${peers.map(p
 
 The rules for a meld worker:
 1. Work only in your folder. Never edit the main checkout or the folder of another worker. Read CLAUDE.md or AGENTS.md in your folder if they exist. Install dependencies in your folder if your checks need them, and keep dependency folders out of your commits.
-2. Read the board with ${TOOL.board}. Plan the request as a few small tasks that can go on at the same time, and add them all in one call with ${TOOL.addTasks}, with the taskList version of your read. If another worker added tasks since your read, the call fails and shows its tasks: claim the ones that cover your work, and add only what is still missing. Claim a task with ${TOOL.claim} before you start it.
+2. Read the board with ${TOOL.board}. Plan the request as a few small tasks that can go on at the same time, and add them all in one call with ${TOOL.addTasks}, with the taskList version of your read. If another worker added tasks since your read, the call fails and shows its tasks: claim the ones that cover your work, and add only what is still missing. Claim a task with ${TOOL.claim} before you start it. The reply of a claim gives the handovers of the tasks that your task needs: their commits, interfaces and unfinished work.
 3. Give each task a title in plain words, 8 words at most, with no file paths. Give needs when a task needs the result of another task. Until those tasks are done, a claim of that task fails with WAITING. Split a task that has more than one deliverable with ${TOOL.split}: you keep the first part, and the other parts are open. A task with parts has no commit of its own. It is done when all its parts are done.
 4. Commit after each step. When a task is done, call ${TOOL.finishTask} with the commit and a one-line summary. Give the contracts that other tasks use in interfaces, and the work that you did not do in unfinished. Tell the other workers about each decision with ${TOOL.note}.
 5. Each board reply carries the shared context: the current entries, newest first. Read it before you start a task, and do not try the approach of a fail. Share with ${TOOL.share}: a fact when a peer can use it, a fail when an approach did not work, and an interface before a peer depends on it. Give a fact with its evidence, a fail with its reason, and an interface as a name and its shape. To correct an entry, share a new entry with replaces and the id of the old entry.
@@ -229,7 +229,7 @@ The rules for a meld worker:
 7. Record each test or build you run with ${TOOL.check}, with the commit it ran on.
 8. When every task is done, one worker integrates: it calls ${TOOL.integrate}, merges the work of every worker into its own, runs the checks, then calls ${TOOL.finish} with the final commit and a summary. While another worker integrates, review its commits, add tests, or fix what the checks show.
 9. A board reply can carry a notice: the person changed the request. Follow the newest instruction.
-10. Do not wait with sleep or loops. When nothing is left for you, end your run with a short report. When there is new work, meld starts a new agent for you in your folder, and it reads the board to go on.
+10. After ${TOOL.finishTask}, hand back: end your run with a short report. Do not claim the next task: meld starts a new agent for you when a task is ready. Do not wait with sleep or loops. When nothing is left for you, end your run the same way. When there is new work, meld starts a new agent for you in your folder, and it reads the board to go on.
 11. A board error (STALE_VERSION, TAKEN, NOT_OWNER, WAITING, CONFLICT, INVALID) fails only that call. Read the board again, fix the call, and go on. WAITING names the task that the claim waits for. Claim another task.
 
 ${run.vcs === 'jj' ? jjGuide(you, peers) : gitGuide(you, peers)}`
@@ -259,6 +259,9 @@ function jjGuide(you: Worker, peers: Worker[]): string {
 export function splitNudge(task: number): string {
   return `Split #${task} into smaller tasks, or finish it.`
 }
+
+/** What the reply of a finish_task tells a worker that claims no other task: a new agent takes the next task. */
+export const HAND_BACK = 'Your task is done. Hand back now with a short report, and claim no other task: meld starts a new agent for you when a task is ready.'
 
 export function wakeText(reason: string): string {
   return `meld: ${reason} Read the board with ${TOOL.board}, then go on.`

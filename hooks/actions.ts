@@ -1,8 +1,8 @@
 import type { CommandRunResult, ToolCallInput, ToolCallResult, TurnUsage } from 'claude-code'
 
-import type { BoardView, Change, Facts, NewTask, PaneView, Run, Task, TaskSize, VcsKind, Worker, WorkerId, WorkerState } from '../types'
+import type { BoardView, Change, Facts, Failure, NewTask, PaneView, Run, Task, TaskSize, VcsKind, Worker, WorkerId, WorkerState } from '../types'
 import * as board from './board'
-import { splitNudge, TOOL, wakeText, workerPrompt, workerRules } from './contract'
+import { HAND_BACK, splitNudge, TOOL, wakeText, workerPrompt, workerRules } from './contract'
 import { headCommit, isDirty, repoRoot } from './git'
 import type { Io, Spawned } from './io'
 import { agentsOf, parseStart } from './options'
@@ -27,6 +27,8 @@ export const LEADING_CD = /^(?:\s*cd\s+\S+\s*(?:&&|;)\s*)+/
 
 type Args = Record<string, unknown>
 type Refused = { error: string; message: string }
+/** The change of a tool call, with what its reply gives beside the value. */
+type Made = { run: Run; value: unknown; extra?: object } | Failure
 
 let pendingSpawns = 0
 let restarting = false
@@ -208,10 +210,10 @@ async function sendNudge(io: Io, by: WorkerId, task: Task | undefined): Promise<
 }
 
 /** A refusal leaves the run as it was; a change answers with its value and the steers that the worker has not seen. */
-function answered(run: Run, by: WorkerId, change: Change<unknown> | Refused): { run: Run; answer: object } {
+function answered(run: Run, by: WorkerId, change: Made | Refused): { run: Run; answer: object } {
   if ('error' in change) return { run, answer: change }
   const taken = board.takeNotice(change.run, by)
-  return { run: taken.run, answer: { ok: true, value: change.value, notice: taken.notice } }
+  return { run: taken.run, answer: { ok: true, value: change.value, ...change.extra, notice: taken.notice } }
 }
 
 /** The start tool reads its fields as /meld reads its options, so both refuse the same input. */
@@ -244,19 +246,19 @@ async function withResolvedCommit(io: Io, tool: string, args: Args, worker: Work
   return { args: { ...args, commit: found.commit } }
 }
 
-function mutate(run: Run, by: WorkerId, tool: string, args: Args, now: number): Change<unknown> {
+function mutate(run: Run, by: WorkerId, tool: string, args: Args, now: number): Made {
   switch (tool) {
     case TOOL.addTasks:
       return board.addTasks(run, by, { seen: Number(args.seen), tasks: newTasks(args.tasks) }, now)
     case TOOL.claim:
-      return board.claimTask(run, by, Number(args.task), Number(args.version), now)
+      return withHandovers(board.claimTask(run, by, Number(args.task), Number(args.version), now))
     case TOOL.split:
       return board.splitTask(run, by, Number(args.task), Number(args.version), newTasks(args.tasks), now)
     case TOOL.release:
       return board.releaseTask(run, by, Number(args.task), Number(args.version), text(args.note), now)
     case TOOL.finishTask: {
       const shared = { interfaces: optionalText(args.interfaces), unfinished: optionalText(args.unfinished) }
-      return board.finishTask(run, by, Number(args.task), Number(args.version), text(args.commit), text(args.summary), now, shared)
+      return withHandBack(board.finishTask(run, by, Number(args.task), Number(args.version), text(args.commit), text(args.summary), now, shared), by)
     }
     case TOOL.note:
       return board.addNote(run, by, text(args.text), args.commit === undefined ? undefined : text(args.commit), now)
@@ -273,6 +275,17 @@ function mutate(run: Run, by: WorkerId, tool: string, args: Args, now: number): 
     default:
       return { error: 'NOT_FOUND', message: `meld has no tool ${tool}.` }
   }
+}
+
+/** A claim answers with the handovers of the done tasks that the claimed task needs, for an agent that starts fresh. */
+function withHandovers(change: Change<Task>): Made {
+  return board.isFailure(change) ? change : { ...change, extra: board.nonEmpty('handovers', board.handoversFor(change.run, change.value.id)) }
+}
+
+/** A finish tells a worker that claims no other task to hand back: meld starts a new agent for the next task. */
+function withHandBack(change: Change<Task>, by: WorkerId): Made {
+  if (board.isFailure(change) || change.run.tasks.some(task => task.state === 'claimed' && task.owner === by)) return change
+  return { ...change, extra: { next: HAND_BACK } }
 }
 
 function newTasks(value: unknown): NewTask[] {
@@ -486,10 +499,10 @@ export async function markWorker(io: Io, agentId: string | undefined, state: Wor
 type Restart = { worker: Worker; step: string }
 
 /**
- * One beat of the clock. The run of an idle worker has ended (the engine drops a spawned agent at its hand-back), so
- * meld starts a new agent for it when there is work for it: news on the board that it has not read, with an open task
- * or a task of its own; or, with every worker idle, the owners of unfinished tasks, then idle workers for open tasks,
- * else the lead to plan, steer or integrate. Each beat that starts a worker counts; a finished task or a steer resets
+ * One beat of the clock. The run of an idle worker has ended (the engine drops a spawned agent at its hand-back, and an
+ * agent hands back after each task), so meld starts a new agent for it when there is work for it: a task that it can
+ * claim, one worker for each such task; news on the board that it has not read, for a task of its own; or, with every
+ * worker idle, the owners of unfinished tasks, then idle workers for open tasks, else the lead to plan, steer or integrate. Each beat that starts a worker counts; a finished task or a steer resets
  * the count, so after three beats that finish nothing meld stops and tells the person once. One beat runs at a time.
  *
  * Only hooks that no worker needs call it: an agent skips the hook that started it, and an agent that a clock or a
@@ -530,10 +543,9 @@ function restartsFor(run: Run): Restart[] {
   const live = run.workers.filter(worker => worker.state !== 'stopped')
   const idle = live.filter(worker => worker.state === 'idle')
   const everyoneIdle = idle.length === live.length
-  const ready = everyoneIdle ? idle : idle.filter(worker => hasNews(run, worker))
   const open = claimable(run.tasks)
-  const owners = ready.filter(worker => claimsOf(run, worker).length)
-  const takers = ready.filter(worker => !claimsOf(run, worker).length).slice(0, open.length)
+  const owners = idle.filter(worker => claimsOf(run, worker).length && (everyoneIdle || hasNews(run, worker)))
+  const takers = idle.filter(worker => !claimsOf(run, worker).length).slice(0, open.length)
   const restarts = [
     ...owners.map(worker => ({ worker, step: `Your task is not done: ${titles(claimsOf(run, worker))}. Go on with it, or release it with a note.` })),
     ...takers.map(worker => ({ worker, step: `These tasks are open: ${titles(open)}. Claim one and do it.` })),

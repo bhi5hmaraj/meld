@@ -55,6 +55,8 @@ export type Task = {
   version: number
   commit?: string
   summary?: string
+  /** What the finish left for the tasks that need this task; absent when it left nothing, and in a run that meld 0.7.0 stored. */
+  handover?: Handover
   /** The task that this task is a part of; absent for a top-level task. */
   parent?: number
   /** M when absent. */
@@ -74,6 +76,12 @@ export type Task = {
   /** meld told its owner to split it or finish it. */
   nudged?: boolean
 }
+
+/** What a finished task leaves for the tasks that need it: the contracts it made, and the work it did not do. */
+export type Handover = { interfaces?: string; unfinished?: string }
+
+/** The handover of one done task that a task needs, as a claim reply and a board read give it to a new agent. */
+export type HandoverView = Handover & { task: number; title: string; commit?: string }
 
 export type Entry = {
   id: number
@@ -155,6 +163,8 @@ export type BoardView = {
   context: ContextView[]
   integrator?: WorkerId
   final?: Final
+  /** The handovers of the done tasks that the claims of the reader need; absent when there are none. */
+  handovers?: HandoverView[]
 }
 
 /** A commit of one worker since the base, as the version control has it. */

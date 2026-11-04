@@ -10,6 +10,8 @@ import type {
   ErrorCode,
   Failure,
   Final,
+  Handover,
+  HandoverView,
   NewTask,
   Notice,
   Run,
@@ -49,8 +51,7 @@ export type CheckInput = { command: string; commit: string; passed: boolean; out
 
 export type ShareInput = { kind: string; text: string; commit?: string; files?: string[]; replaces?: number }
 
-/** What a finished task leaves for the other tasks: the interfaces it made, and the part it did not do. */
-export type Handover = { interfaces?: string; unfinished?: string }
+export type { Handover }
 
 export function startRun(input: StartInput): Run {
   return {
@@ -296,8 +297,39 @@ export function finishTask(
     ...(interfaces ? [{ at: now, kind: 'interface' as const, by, text: `#${id}: ${interfaces}`, commit, files: [] }] : []),
     ...(unfinished ? [{ at: now, kind: 'fact' as const, by, text: `#${id} unfinished: ${unfinished}`, commit, files: [] }] : []),
   ].reduce(withContext, run)
-  const done: Task = { ...checked, state: 'done', commit, summary, version: checked.version + 1, doneAt: now }
+  const kept: Handover = { ...(interfaces ? { interfaces } : {}), ...(unfinished ? { unfinished } : {}) }
+  const done: Task = { ...checked, state: 'done', commit, summary, ...(interfaces || unfinished ? { handover: kept } : {}), version: checked.version + 1, doneAt: now }
   return updateTask({ ...handed, nudges: 0 }, done, by, now, `finished #${id}: ${summary}`, commit)
+}
+
+/**
+ * The handovers that a new agent needs for a task: of each done task that it needs, through its needs and the needs of
+ * its ancestors. A need with parts has no commit of its own, so it gives the handovers of its done parts.
+ */
+export function handoversFor(run: Run, id: number): HandoverView[] {
+  const needs = ancestorsOf(run.tasks, id).flatMap(one => taskOf(run.tasks, one)?.needs ?? [])
+  const done = [...new Set(needs.flatMap(need => leavesOf(run.tasks, need)))]
+  return done.flatMap(leaf => {
+    const task = taskOf(run.tasks, leaf)
+    return task?.state === 'done' ? [{ task: task.id, title: task.title, ...(task.commit ? { commit: task.commit } : {}), ...task.handover }] : []
+  })
+}
+
+/** The handovers that the claims of a worker need, each done task one time. */
+function handoversOfClaims(run: Run, by: WorkerId): HandoverView[] {
+  const handovers = run.tasks.filter(task => isClaimedBy(task, by)).flatMap(task => handoversFor(run, task.id))
+  return handovers.filter((handover, index) => handovers.findIndex(one => one.task === handover.task) === index)
+}
+
+/** The task, or the leaves under it when it has parts. */
+function leavesOf(tasks: readonly Task[], id: number): number[] {
+  const parts = childrenOf(tasks, id)
+  return parts.length ? parts.flatMap(part => leavesOf(tasks, part.id)) : [id]
+}
+
+/** A task as a reply to a worker shows it: its handover goes only to the agents of the tasks that need it. */
+function taskView({ handover: _handover, ...task }: Task): Task {
+  return task
 }
 
 export function addNote(run: Run, by: WorkerId, text: string, commit: string | undefined, now: number): Change<Entry> {
@@ -409,11 +441,12 @@ export function boardFor(run: Run, by: WorkerId): { run: Run; view: BoardView } 
     state: run.state,
     notice: steers.length ? { revision: run.revision, steers } : undefined,
     taskList: run.taskList,
-    tasks: run.tasks,
+    tasks: run.tasks.map(taskView),
     news,
     context: passed.context,
     integrator: run.integrator,
     final: run.final,
+    ...nonEmpty('handovers', handoversOfClaims(run, by)),
   }
   const seen: Worker = { ...you, seenRevision: run.revision, seenEntry: run.log.at(-1)?.id ?? 0 }
   return { run: replaceWorker(passed.run, seen), view }
@@ -467,6 +500,11 @@ export function markDelivered(run: Run, now: number): Run {
 
 function unseenSteers(run: Run, worker: Worker): string[] {
   return run.log.filter(entry => entry.kind === 'steer' && (entry.revision ?? 0) > worker.seenRevision).map(entry => entry.text)
+}
+
+/** The field with its list, or no field when the list is empty, so a reply carries no empty list. */
+export function nonEmpty<K extends string, T>(key: K, list: T[]): { [P in K]?: T[] } {
+  return (list.length ? { [key]: list } : {}) as { [P in K]?: T[] }
 }
 
 function failure(error: ErrorCode, message: string): Failure {

@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
 import { markWorker, restartIdleWorkers, serveTool } from '../hooks/actions'
-import { addTasks, bindWorker, boardFor, claimTask, finishTask, handoversFor, isFailure, splitTask, startRun, steer } from '../hooks/board'
+import { addTasks, bindWorker, boardFor, claimTask, finishTask, handoversFor, isFailure, startRun, steer } from '../hooks/board'
 import { HAND_BACK, TOOL, workerRules } from '../hooks/contract'
 import type { Change, NewTask, Run, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
@@ -139,14 +139,19 @@ test('a need with no handover still gives its commit', () => {
 })
 
 test('a part gets the handovers of what its parent needs, and a need with parts gives the handovers of its parts', () => {
-  const planned = withTasks([{ title: 'Theme' }, { title: 'Toggle', needs: [1] }, { title: 'Docs' }])
-  const split = runOf(splitTask(runOf(claimTask(planned, 'w1', 1, 1, NOW)), 'w1', 1, 2, [{ title: 'Tokens' }, { title: 'Print styles' }], NOW))
-  const tokens = runOf(finishTask(split, 'w1', 4, 1, 'aaa1111', 'Tokens added', NOW, { interfaces: '--bg in theme.css' }))
-  const print = runOf(finishTask(runOf(claimTask(tokens, 'w2', 5, 1, NOW)), 'w2', 5, 2, 'bbb2222', 'Print styles', NOW, { unfinished: 'Dark print' }))
-  const toggled = runOf(splitTask(runOf(claimTask(print, 'w3', 2, 1, NOW)), 'w3', 2, 2, [{ title: 'Button' }, { title: 'Shortcut' }], NOW))
-  expect(handoversFor(toggled, 6)).toEqual([
-    { task: 4, title: 'Tokens', commit: 'aaa1111', interfaces: '--bg in theme.css' },
-    { task: 5, title: 'Print styles', commit: 'bbb2222', unfinished: 'Dark print' },
+  const planned = withTasks([
+    { title: 'Theme' },
+    { title: 'Toggle', needs: [1] },
+    { title: 'Tokens', parent: 1 },
+    { title: 'Print styles', parent: 1 },
+    { title: 'Button', parent: 2 },
+  ])
+  const tokens = runOf(finishTask(runOf(claimTask(planned, 'w1', 3, 1, NOW)), 'w1', 3, 2, 'aaa1111', 'Tokens added', NOW, { interfaces: '--bg in theme.css' }))
+  const print = runOf(finishTask(runOf(claimTask(tokens, 'w2', 4, 1, NOW)), 'w2', 4, 2, 'bbb2222', 'Print styles', NOW, { unfinished: 'Dark print' }))
+  expect(print.tasks[0]?.state).toBe('done')
+  expect(handoversFor(print, 5)).toEqual([
+    { task: 3, title: 'Tokens', commit: 'aaa1111', interfaces: '--bg in theme.css' },
+    { task: 4, title: 'Print styles', commit: 'bbb2222', unfinished: 'Dark print' },
   ])
 })
 
