@@ -285,7 +285,7 @@ The tests use a fake `Io` and mount the pane on each surface. A test holds each 
 
 ## Design notes
 
-[docs/design](docs/design/README.md) holds draft notes for a hosted meld service: one core with many hosts, SQLite for solo and Postgres for team, how a solo session joins a team, the shared context store, and the build plan. None of it is built.
+[docs/design](docs/design/README.md) holds draft notes for a hosted meld service: one core with many hosts, SQLite for solo and Postgres for team, pods, how a solo session joins a team, the shared context store, and the build plan. None of it is built.
 
 ## License
 

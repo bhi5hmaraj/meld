@@ -1,6 +1,6 @@
 # Storage: SQLite for solo, Postgres for team
 
-Status: the split and the store interface are agreed. The details are proposals.
+Status: the split, the store interface and Bun are agreed. The details are proposals.
 
 ## The split
 
@@ -15,6 +15,8 @@ Nothing above this interface knows the engine. `openStore` picks the adapter fro
 
 ```ts
 interface Store {
+  readPod(id: PodId): Promise<Pod | null>
+  readyRuns(pod: PodId): Promise<RunSummary[]>
   readRun(id: RunId): Promise<VersionedRun | null>
   commitRun(change: RunChange): Promise<'committed' | 'stale'>
   addContextIfAbsent(entries: ContextEntry[]): Promise<void>
@@ -32,10 +34,12 @@ Search is the one part that differs: SQLite uses FTS5, and Postgres uses `pg_trg
 
 | Table | Rows | Rule |
 |---|---|---|
-| `runs` | one row per run: the Run JSON and a version | write with `UPDATE ... WHERE version = ?` |
+| `pods` | one row per pod: name and policies | changed by admins |
+| `members` | the runners that staff a pod: slots and repositories | each member holds a lease |
+| `runs` | one row per run: its pod, the Run JSON and a version | write with `UPDATE ... WHERE version = ?` |
 | `events` | what happened: claims, merges, restarts, checks | rows are only added |
-| `context` | what was learned: fact, fail, interface, done | rows are only added, except for changes of trust, retractions and hard deletes |
-| `leases` | owners of runs, of claims and of runner slots | take and renew with compare-and-set |
+| `context` | what was learned, in the partition of a pod: fact, fail, interface, done | rows are only added, except for changes of trust, retractions and hard deletes |
+| `leases` | owners of runs, of claims and of worker slots | take and renew with compare-and-set |
 
 **One row per run, not a task table.** The rules work on the whole Run: needs, parents and the version of the task list. A task table needs a mapping layer that drifts from the plugin. With a JSON row, the shape migrations of the plugin (the `run-4` shape today) also upgrade the rows of the service.
 
@@ -47,11 +51,11 @@ Search is the one part that differs: SQLite uses FTS5, and Postgres uses `pg_trg
 2. **Shared rows are only added.** Events and context entries go to another store with "insert if absent". A repeated upload does no harm.
 3. **Ids that do not collide.** Today a run id is the start time in milliseconds, in base 36 (`hooks/actions.ts`). Two runs that start in the same millisecond get the same id. Add random characters before a run reaches a shared store. Then the run id and the entry number make a key that is unique in every store.
 4. **One schema.** Both stores hold the same Run JSON and the same rows.
-5. **An outbox.** A context entry made in solo mode has an "uploaded" mark. It goes up when the user shares the project.
+5. **An outbox.** A context entry made in solo mode has an "uploaded" mark. It goes up when the user shares the local pod with a hosted pod.
 
 ## Several sessions on one machine
 
-- All runs live in `~/.meld/meld.db`, in WAL mode. Each session starts its own `meld serve` child, and all the children open the same file. There is no daemon.
+- All runs live in `~/.meld/meld.db`, in WAL mode. Each editor session starts its own `meld mcp` process, and all the processes open the same file. There is no daemon.
 - SQLite allows one writer at a time and many readers. Each board write is one short transaction: read the run, apply the rule, write with `WHERE version = ?`. A write that lost a race fails and tries again.
 - The session that starts a run owns it, with a lease of about 60 s. Only the owner starts workers, delivers or discards.
 - Other sessions see every run on the machine. A steer from another session goes into the run, and the owner applies it at its next check.
@@ -75,14 +79,18 @@ A local Postgres is a server that each user must install and keep running. A SQL
 
 PGlite (Postgres in WASM) gives one dialect, but only one process at a time can open its data folder, so two sessions cannot share it. SQLite is the better local choice.
 
-## The local runtime
+## The runtime: Bun
 
-The hooks module of Claude Code cannot run Node code, so SQLite needs a child process:
+Agreed: `meld mcp` and `meld serve` are one TypeScript program that runs on Bun. `bun:sqlite` gives SQLite, and `bun build --compile` makes one binary for each platform. The hooks module of Claude Code cannot run this code, so meld runs as a separate MCP process.
 
-- Node with `node:sqlite`, which is a release candidate since Node 25.7 and shows no experimental warning ([pull request](https://github.com/nodejs/node/pull/61262)), or
-- a Bun binary, with SQLite built in.
+Node with `node:sqlite` was the other option. It is a release candidate since Node 25.7 ([pull request](https://github.com/nodejs/node/pull/61262)), but it gives no single binary.
 
-Today meld needs only git. Proposal: start with Node, and ship a binary if installs cause problems. This choice is open.
+Proposed distribution:
+
+- First: both editors run a pinned npm version of meld with `bunx`. This needs Bun on the machine.
+- Later: compiled binaries for each platform in the GitHub releases of meld, fetched once by a launcher that checks a pinned checksum. This needs nothing on the machine.
+
+Today meld needs only git. Bun is the one new requirement.
 
 ## Dolt audit
 
@@ -108,4 +116,4 @@ Proposal: stay in TypeScript.
 2. The proposal plans the hosted service in TypeScript, so the core runs in the same process.
 3. Speed does not limit meld. In the measured 0.7.0 runs, model time was 46 to 65% of worker time, and 142 board calls took about 0.1 s each, in runs of about 35 minutes.
 4. The tools that chose Go did so for a CLI that agents start hundreds of times, one static binary for each machine, and embedded Dolt. None of these applies to meld.
-5. If meld needs one binary, Bun compiles TypeScript into one file and includes SQLite.
+5. Bun compiles the TypeScript into one binary for each platform, and includes SQLite.
