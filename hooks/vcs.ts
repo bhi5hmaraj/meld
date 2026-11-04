@@ -10,6 +10,8 @@ export const JJ_LANE_TEMPLATE =
 
 const JJ_MIN_MINOR = 40
 const LANE_LIMIT = '40'
+/** What jj warns, and still exits 0, when a snapshot leaves out a new file, as one over snapshot.max-new-file-size (1 MiB). */
+const JJ_REFUSED = 'Refused to snapshot'
 /** A run id: lowercase letters and digits only, so a path made of it stays in the folder of meld. */
 export const SAFE_ID = /^[0-9a-z]+$/
 const FULL_COMMIT = /^[0-9a-f]{40}$/
@@ -37,10 +39,16 @@ export type Vcs = {
   resolve(io: Io, run: Run, worker: Worker, revision: string): Promise<Resolved | undefined>
   /**
    * The commits of each worker since the base, and its uncommitted edits. jj records the files of a workspace only when a
-   * jj command runs there, so a lane shows them as of that command; with snapshot, jj first records them. git reads the files.
+   * jj command runs there, so a lane shows them as of that command; with snapshot, jj first records them. git reads the
+   * files, new files too. A lane that meld cannot read, or whose snapshot left out a new file, names the error.
    */
-  lanes(io: Io, run: Run, read?: LaneRead): Promise<LaneFacts[]>
+  lanes(io: Io, run: LanePlace, read?: LaneRead): Promise<LaneFacts[]>
   result(io: Io, run: Run, commit: string): Promise<ResultFacts>
+  /**
+   * The commits of `commits` that `final` does not hold, as git merge-base --is-ancestor reads them: in the repository of
+   * the person for git, in the store of the run for jj. A commit that git cannot read counts as missing.
+   */
+  missing(io: Io, run: Run, final: string, commits: readonly string[]): Promise<string[]>
   /** The integration line as a worker names it in its folder: a branch for git, a bookmark for jj. */
   lineName(run: Run): string
   /**
@@ -49,6 +57,11 @@ export type Vcs = {
    * moves only from the head that the merge read, so a merge that lost a race fails and changes nothing.
    */
   mergeIntoLine(io: Io, run: Run, commit: string, message: string): Promise<LineMerge>
+  /**
+   * Moves the integration line to `commit`, from wherever it is, and makes it when the run has none. A steer of a ready run
+   * moves it to the final commit, so the merges after the steer and the next final build on that commit.
+   */
+  setLine(io: Io, run: Run, commit: string): Promise<CommandResult>
   deliver(io: Io, run: Run, commit: string, message: string): Promise<CommandResult>
   remove(io: Io, run: RunPlace): Promise<void>
   /** The workspace of a worker that joins a live run: from the head of the integration line, or from the base when the run has no line. */
@@ -90,9 +103,28 @@ export function vcsFor(kind: VcsKind): Vcs {
 /** What a removal needs of a run: its id, the repository of the person, and the workspace of each worker. */
 export type RunPlace = { id: string; repo: string; workers: readonly Workspace[] }
 
+/** What a read of the lanes needs of a run: its id, the repository of the person, the base, and each worker with its workspace. */
+export type LanePlace = { id: string; repo: string; base: string; workers: readonly (Workspace & { id: WorkerId })[] }
+
+/** The work in the workspaces of a run: its commits since the base, the workers with uncommitted edits, and the lanes that meld cannot read. */
+export type HeldWork = { commits: number; edits: WorkerId[]; unread: LaneFacts[] }
+
 /** The workspace of a worker of the run `id`: the folder and the ref that prepare makes for it. */
 export function workspaceOf(kind: VcsKind, id: string, worker: WorkerId): Workspace {
   return { path: workspacePath(id, worker), ref: kind === 'jj' ? `${worker}@` : `meld/${id}/${worker}` }
+}
+
+/**
+ * Reads the work in the workspaces of a run that no agent works in. jj first records the files of each workspace, as a
+ * worker can stop after an edit and before its next jj command. A commit that two lanes hold counts once.
+ */
+export async function heldWork(io: Io, run: LanePlace & { vcs: VcsKind }): Promise<HeldWork> {
+  const lanes = await vcsFor(run.vcs).lanes(io, run, { snapshot: true })
+  return {
+    commits: new Set(lanes.flatMap(lane => lane.commits.map(fact => fact.commit))).size,
+    edits: lanes.filter(lane => lane.edits).map(lane => lane.id),
+    unread: lanes.filter(lane => lane.error !== undefined),
+  }
 }
 
 /**
@@ -158,6 +190,13 @@ function gitCommits(out: string): CommitFact[] {
     })
 }
 
+/** The commits of `commits` that `final` does not hold in the git store `gitDir`, each one time, in their order. */
+async function missingIn(io: Io, gitDir: string, final: string, commits: readonly string[]): Promise<string[]> {
+  const missing: string[] = []
+  for (const commit of new Set(commits)) if (!(await git(io, gitDir, ['merge-base', '--is-ancestor', commit, final])).ok) missing.push(commit)
+  return missing
+}
+
 const GIT: Vcs = {
   kind: 'git',
   commitHint: 'Commit your work, then give HEAD or the commit hash.',
@@ -187,11 +226,15 @@ const GIT: Vcs = {
     return found.ok && FULL_COMMIT.test(found.out) ? { commit: found.out, conflict: false } : undefined
   },
 
+  /**
+   * git status lists each new file: with status.showUntrackedFiles=no, a plain git status --porcelain hides them, and a
+   * workspace whose only work is new files would read as one with no work.
+   */
   async lanes(io, run) {
     const lanes: LaneFacts[] = []
     for (const worker of run.workers) {
       const log = await git(io, run.repo, ['log', '--format=%H%x09%P%x09%s', '-n', LANE_LIMIT, `${run.base}..${worker.ref}`])
-      const status = await git(io, worker.path, ['status', '--porcelain'])
+      const status = await git(io, worker.path, ['status', '--porcelain', '--untracked-files=all'])
       const lane = { id: worker.id, commits: log.ok ? gitCommits(log.out) : [], edits: status.ok && status.out.length > 0 }
       const failed = [log, status].find(read => !read.ok)
       lanes.push(failed ? { ...lane, error: failed.err || failed.out } : lane)
@@ -201,9 +244,13 @@ const GIT: Vcs = {
 
   result: (io, run, commit) => gitChange(io, run.repo, run.base, commit),
 
+  missing: (io, run, final, commits) => missingIn(io, run.repo, final, commits),
+
   lineName: gitLine,
 
   mergeIntoLine: (io, run, commit, message) => mergeInGit(io, run.repo, `refs/heads/${gitLine(run)}`, run.base, commit, message),
+
+  setLine: (io, run, commit) => git(io, run.repo, ['update-ref', `refs/heads/${gitLine(run)}`, commit]),
 
   deliver: (io, run, commit, message) => mergeInto(io, run.repo, commit, message),
 
@@ -256,18 +303,27 @@ const JJ: Vcs = {
     return FULL_COMMIT.test(commit) ? { commit, conflict: state === 'conflict' } : undefined
   },
 
-  /** A lane with snapshot runs jj in the folder of the worker, which records its files first; else jj reads the repository as it is. */
+  /**
+   * A lane with snapshot runs jj in the folder of the worker, which records its files first; else jj reads the repository
+   * as it is. A snapshot that left out a new file, as one over snapshot.max-new-file-size, makes the lane not readable:
+   * jj still exits 0, and the working copy shows no edit for that file.
+   */
   async lanes(io, run, read) {
     const lanes: LaneFacts[] = []
     for (const worker of run.workers) {
       const from = read?.snapshot ? [worker.path] : [jjRepoOf(run.id), '--ignore-working-copy']
       const log = await command(io, run.repo, ['jj', '-R', ...from, 'log', '--no-graph', '--limit', LANE_LIMIT, '-r', `${BASE_BOOKMARK}..${worker.id}@`, '-T', JJ_LANE_TEMPLATE])
-      lanes.push(log.ok ? jjLane(worker.id, log.out) : { ...jjLane(worker.id, ''), error: log.err || log.out })
+      const lane = jjLane(worker.id, log.ok ? log.out : '')
+      const error = log.ok ? refusedSnapshot(log.err) : log.err || log.out
+      lanes.push(error === undefined ? lane : { ...lane, error })
     }
     return lanes
   },
 
   result: (io, run, commit) => gitChange(io, storeOf(run.id), run.base, commit),
+
+  /** jj keeps each commit in the git store of the run, so git reads the ancestors there. */
+  missing: (io, run, final, commits) => missingIn(io, storeOf(run.id), final, commits),
 
   lineName: () => LINE_BOOKMARK,
 
@@ -285,6 +341,13 @@ const JJ: Vcs = {
     if (merged.state !== 'merged') return merged
     const imported = await command(io, run.repo, ['jj', '-R', jjRepoOf(run.id), '--ignore-working-copy', 'git', 'import'])
     return imported.ok ? merged : { state: 'failed', error: `the line moved to ${merged.head}, but jj did not import it: ${imported.err || imported.out}` }
+  },
+
+  /** The ref of the line in the store moves, and jj imports it, so each workspace sees the bookmark at `commit`. */
+  async setLine(io, run, commit) {
+    const moved = await git(io, storeOf(run.id), ['update-ref', `refs/heads/${LINE_BOOKMARK}`, commit])
+    if (!moved.ok) return moved
+    return command(io, run.repo, ['jj', '-R', jjRepoOf(run.id), '--ignore-working-copy', 'git', 'import'])
   },
 
   async deliver(io, run, commit, message) {
@@ -342,6 +405,20 @@ async function removeJj(io: Io, id: string): Promise<void> {
   const folder = config.ok ? JJ_CONFIG_FOLDER.exec(config.out)?.[1] : undefined
   if (folder) await command(io, MELD_ROOT, ['rm', '-rf', '--', folder])
   await removeFolder(io, id)
+}
+
+/**
+ * Why a snapshot of jj left out new files, in one line: the warning, and the files that jj names under it with an indent.
+ * Undefined when jj left out none, so the lane shows each file of the workspace.
+ */
+function refusedSnapshot(err: string): string | undefined {
+  const lines = err.split('\n')
+  const at = lines.findIndex(line => line.includes(JJ_REFUSED))
+  if (at < 0) return undefined
+  const after = lines.slice(at + 1)
+  const end = after.findIndex(line => !/^\s/.test(line))
+  const files = (end < 0 ? after : after.slice(0, end)).map(line => line.trim()).filter(Boolean)
+  return [(lines[at] ?? '').replace(/^Warning:\s*/, '').trim(), files.join(', ')].filter(Boolean).join(' ')
 }
 
 function jjLane(id: WorkerId, out: string): LaneFacts {

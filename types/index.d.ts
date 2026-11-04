@@ -21,6 +21,10 @@ export type ErrorCode =
   | 'CONFLICT'
   | 'INVALID'
   | 'WAITING'
+  /** The final commit lacks the commit of a done task. */
+  | 'MISSING_WORK'
+  /** A steer of a ready run whose integration line meld has not moved to its final commit. */
+  | 'LINE_NOT_MOVED'
 
 /** What runs one worker: an agent type (`meld:worker`, `general-purpose`, a plugin's agent) and an optional model. */
 export type AgentSpec = { type: string; model?: string }

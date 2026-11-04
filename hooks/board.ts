@@ -311,7 +311,7 @@ export function lackingTasks(run: Run): Task[] {
     .sort((a, b) => (a.doneAt ?? 0) - (b.doneAt ?? 0) || a.id - b.id)
 }
 
-/** The tasks that meld merges into the line next: the lacking tasks with no task "integrate #N" for them. */
+/** The lacking tasks with no task "integrate #N" for them. A finish_task merges its own task into the line when it is one of them. */
 export function unmergedTasks(run: Run): Task[] {
   const integrated = new Set(run.tasks.map(task => task.integrates))
   return lackingTasks(run).filter(task => !integrated.has(task.id))
@@ -443,6 +443,14 @@ export function takeIntegration(run: Run, by: WorkerId, now: number): Change<Wor
   return { run: withEntry({ ...run, integrator: by }, { at: now, by, kind: 'event', text: `${by} integrates` }), value: by }
 }
 
+/**
+ * The work that the final commit must hold: each done task with a commit, as a part, an integrate task or a task that
+ * finished after the merge of the line. A parent has no commit of its own.
+ */
+export function doneWork(run: Run): Task[] {
+  return run.tasks.filter(task => task.state === 'done' && Boolean(task.commit))
+}
+
 export function declareFinal(run: Run, by: WorkerId, commit: string, summary: string, now: number): Change<Final> {
   const ended = endedFailure(run)
   if (ended) return ended
@@ -454,10 +462,25 @@ export function declareFinal(run: Run, by: WorkerId, commit: string, summary: st
   return { run: ready, value: final }
 }
 
-export function steer(run: Run, text: string, now: number): Change<number> {
+/**
+ * The person changes the request, and a ready run works again with no final commit. `lineAt` is the commit that meld
+ * moved the integration line to first. A ready run takes the steer only when that is its final commit: the line then
+ * holds the done tasks at that commit, so the work of the final commit stays in the next one, and the merges after the
+ * steer build on it. Else the steer fails with LINE_NOT_MOVED, as when the integrator declared the final commit after
+ * the steer read a working run.
+ */
+export function steer(run: Run, text: string, now: number, lineAt?: string): Change<number> {
   if (!STEERABLE.has(run.state)) return failure('RUN_ENDED', `The run is ${run.state}.`)
+  const final = run.state === 'ready' ? run.final?.commit : undefined
+  if (final && lineAt !== final) {
+    return failure(
+      'LINE_NOT_MOVED',
+      `The run is ready, and the integration line is not at its final commit ${final.slice(0, 7)}, so a steer now would lose the work of that commit. Steer again: meld moves the line first.`,
+    )
+  }
   const revision = run.revision + 1
-  const reopened: Run = { ...run, revision, state: run.state === 'ready' ? 'working' : run.state, final: undefined, nudges: 0 }
+  const kept = final ? { line: { head: final, tasks: run.tasks.filter(task => task.state === 'done').map(task => task.id) } } : {}
+  const reopened: Run = { ...run, ...kept, revision, state: run.state === 'ready' ? 'working' : run.state, final: undefined, nudges: 0 }
   return { run: withEntry(reopened, { at: now, by: 'you', kind: 'steer', text, revision }), value: revision }
 }
 

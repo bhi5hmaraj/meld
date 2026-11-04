@@ -70,7 +70,10 @@ export const STEER_PRESETS = [
   { key: 'integrate', label: 'Integrate now', text: 'Start no new work. One worker integrates what is done now and declares the final commit.' },
 ] as const
 
-export const WORKER_SYSTEM = `You are a meld worker: one of several agents that make one result together, each in its own folder, through a shared board. Call ${TOOL.board} first. Its first reply holds your rules, your folder, the other workers and the tasks. Follow those rules, and keep each message short.`
+/** The end of each turn of a worker goes to the session of the person: the system prompt and the spawn prompt ask for one line. */
+const LAST_MESSAGE = 'Your last message goes to the session of the person. Make it one line, for example: finished #4, commit 4a0bde04. The board keeps the detail.'
+
+export const WORKER_SYSTEM = `You are a meld worker: one of several agents that make one result together, each in its own folder, through a shared board. Call ${TOOL.board} first. Its first reply holds your rules, your folder, the other workers and the tasks. Follow those rules, and keep each message short. ${LAST_MESSAGE}`
 
 const TASK_VERSION = {
   task: { type: 'number', description: 'The task number, #n on the board.' },
@@ -252,12 +255,15 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
 ]
 
-/** What meld gives each worker at its spawn: who it is and where to start. Its rules come with its first board read. */
-export function workerPrompt(run: Run, id: WorkerId): string {
+/** What meld gives each worker at its spawn: who it is, where to start, what meld asks of it now, and how to end. Its rules come with its first board read. */
+export function workerPrompt(run: Run, id: WorkerId, step?: string): string {
+  const asked = step ? `\n\nWhat meld asks of you now: ${step}` : ''
   return `You are meld worker ${id} of run ${run.id}. Call ${TOOL.board} first: its reply gives your rules, your folder, the other workers and the tasks.
 
 The request of the person:
-${run.request}`
+${run.request}${asked}
+
+${LAST_MESSAGE}`
 }
 
 export function workerRules(run: Run, id: WorkerId): string {
@@ -329,6 +335,20 @@ export function integrateDetail(run: Run, task: Task, merge: Exclude<LineMerge, 
       ? `jj new ${line} ${commit} -m "integrate #${task.id}", fix the conflicts, run the checks, jj commit -m "integrate #${task.id}", and finish this task with @-.`
       : `git merge ${line}, then git merge ${commit}, fix the conflicts, commit, run the checks, and finish this task with HEAD.`
   return `${why} In your folder: ${steps}`
+}
+
+/**
+ * Why finish refuses a final commit: the done tasks whose commits it lacks, with their commits, and the steps that merge
+ * them in the folder of the integrator. git merges one commit at a time, as an octopus merge stops at a conflict.
+ */
+export function missingWorkText(run: Run, final: string, missing: readonly Task[]): string {
+  const commits = missing.map(task => task.commit ?? '')
+  const tasks = missing.map(task => `#${task.id} ${task.title} (${(task.commit ?? '').slice(0, 12)})`).join(', ')
+  const steps =
+    run.vcs === 'jj'
+      ? `jj new ${final} ${commits.join(' ')} -m "meld: integrate", fix the conflicts, run the checks, jj commit -m "meld: integrate", and finish with @-.`
+      : `git merge ${commits.join(', then git merge ')}, fix the conflicts, run the checks, commit, and finish with HEAD.`
+  return `The final commit ${final.slice(0, 12)} lacks the commits of done tasks: ${tasks}. In your folder: ${steps}`
 }
 
 /**

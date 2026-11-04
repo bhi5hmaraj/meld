@@ -2,7 +2,9 @@
 /**
  * A check of the git and the jj adapter of hooks/vcs.ts with real processes. tsc compiles hooks/ into CommonJS in a
  * temporary folder. Each adapter goes through a run in a temporary git repository: three workspaces, a commit in
- * each, the integration line, the integration, resolve, lanes, result, deliver and remove. HOME is a temporary folder, so the check reads and
+ * each, the integration line, the integration, the commits that the final commit lacks, resolve, lanes (and the work that a
+ * plain read hides), result, deliver and remove. HOME is a
+ * temporary folder, so the check reads and
  * changes no git or jj config of the person. Run: node scripts/adapters.mjs
  */
 import { spawnSync } from 'node:child_process'
@@ -29,11 +31,14 @@ const STEPS = [
   ['commit', commit],
   ['line', line],
   ['integrate', integrate],
+  ['missing', missing],
   ['resolve', resolve],
   ['lanes', lanes],
+  ['hidden work', hiddenWork],
   ['result', result],
   ['deliver', deliver],
   ['join', addWorkers],
+  ['line to final', lineToFinal],
   ['remove', remove],
 ]
 
@@ -162,6 +167,7 @@ async function line(s) {
   const other = otherW1(s)
   same(await s.vcs.mergeIntoLine(io, s.run, other, 'meld: integrate #4'), { state: 'conflict', head, files: ['w1.txt'] }, 'a merge with a conflict')
   s.line = head
+  s.other = other
   return `${name} moves to ${short(s.commits.w1)}, then merges w2 and w3 into ${short(head)}; a conflict in w1.txt leaves it there`
 }
 
@@ -194,6 +200,15 @@ async function integrate(s) {
     s.final = sh(first.path, ['git', 'rev-parse', 'HEAD'])
   }
   return `w1 merges w2 and w3 into ${short(s.final)}`
+}
+
+/** The final commit holds the commit of each worker, and lacks a commit that no worker merged; a commit that git cannot read counts as lacking. */
+async function missing(s) {
+  same(await s.vcs.missing(io, s.run, s.final, IDS.map(id => s.commits[id])), [], 'the commits that the final commit lacks')
+  const unknown = '0'.repeat(40)
+  same(await s.vcs.missing(io, s.run, s.final, [s.commits.w2, s.other, unknown]), [s.other, unknown], 'the commits that the final commit lacks, with two it does not hold')
+  same(await s.vcs.missing(io, s.run, s.line, IDS.map(id => s.commits[id])), [], 'the commits that the line lacks')
+  return `${short(s.final)} holds the commits of ${IDS.join(', ')}, and lacks ${short(s.other)} and a commit that git cannot read`
 }
 
 async function resolve(s) {
@@ -240,6 +255,36 @@ async function lanes(s) {
   return 'w1 has the merge and the three commits; w2 and w3 have one commit; w2 has edits; with a snapshot, w3 has its new edit'
 }
 
+/**
+ * A read with a snapshot does not miss work that a plain read hides. git counts the new files of w2 and w3 also when
+ * status.showUntrackedFiles=no hides them from git status. jj refuses to snapshot a new file over snapshot.max-new-file-size
+ * (1 MiB) and still exits 0 with the working copy empty, so the lane of a workspace with such a file is not readable.
+ */
+async function hiddenWork(s) {
+  const expected = [['w1', false, undefined], ['w2', true, undefined], ['w3', true, undefined]]
+  if (s.kind === 'git') {
+    sh(s.repo, ['git', 'config', 'status.showUntrackedFiles', 'no'])
+    try {
+      const read = await s.vcs.lanes(io, s.run, { snapshot: true })
+      same(read.map(lane => [lane.id, lane.edits, lane.error]), expected, 'the lanes and their edits with status.showUntrackedFiles=no')
+    } finally {
+      sh(s.repo, ['git', 'config', '--unset', 'status.showUntrackedFiles'])
+    }
+    return 'with status.showUntrackedFiles=no, the new files of w2 and w3 still count as edits'
+  }
+  const big = join(s.run.workers[0].path, 'big.bin')
+  writeFileSync(big, Buffer.alloc(1024 * 1024 + 1))
+  try {
+    const read = await s.vcs.lanes(io, s.run, { snapshot: true })
+    same(read.map(lane => [lane.id, lane.error === undefined]), [['w1', false], ['w2', true], ['w3', true]], 'the lanes that meld can read with big.bin in w1')
+    if (!/Refused to snapshot.*big\.bin/.test(read[0].error)) throw new Error(`the error of w1 is ${JSON.stringify(read[0].error)}`)
+  } finally {
+    rmSync(big)
+  }
+  same((await s.vcs.lanes(io, s.run, { snapshot: true })).map(lane => [lane.id, lane.edits, lane.error]), expected, 'the lanes once big.bin is gone')
+  return 'a new file of 1 MiB and 1 byte in w1, which jj refuses to snapshot, makes its lane not readable; once the file is gone, meld reads it again'
+}
+
 async function result(s) {
   const change = await s.vcs.result(io, s.run, s.final)
   same([change.commit, change.fileCount, change.added, change.removed], [s.final, 3, 3, 0], 'the commit, files, added and removed lines')
@@ -275,6 +320,21 @@ async function addWorkers(s) {
   for (const [id, made] of [['w4', fromLine], ['w5', fromBase]]) s.run = hooks.board.addWorker(s.run, { ...made, id, agent: { type: 'meld:worker' } }, Date.now())
   same(s.run.workers.map(worker => worker.id), [...IDS, 'w4', 'w5'], 'the workers on the board')
   return `w4 from the line ${short(s.line)} has the files of w1, w2 and w3; w5 from the base has none`
+}
+
+/**
+ * A steer of a ready run moves the integration line to the final commit, which the line does not hold. A workspace sees
+ * the line there under its name, and a commit that the final commit holds merges into it with no change.
+ */
+async function lineToFinal(s) {
+  const name = s.vcs.lineName(s.run)
+  const moved = await s.vcs.setLine(io, s.run, s.final)
+  if (!moved.ok) throw new Error(moved.err || moved.out)
+  const path = s.run.workers[2].path
+  const seen = s.kind === 'jj' ? sh(path, ['jj', 'log', '--no-graph', '-r', name, '-T', 'commit_id']) : sh(path, ['git', 'rev-parse', name])
+  same(seen, s.final, `${name} in the folder of w3`)
+  same(await s.vcs.mergeIntoLine(io, s.run, s.commits.w3, 'meld: integrate #3 again'), { state: 'merged', head: s.final }, 'a merge of w3 into the moved line')
+  return `${name} moves from ${short(s.line)} to the final commit ${short(s.final)}, which holds w3`
 }
 
 async function remove(s) {

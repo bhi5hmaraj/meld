@@ -279,10 +279,10 @@ test('a steer of a stopped run is refused', () => {
   expect(steer(stopRun(working(), NOW), 'More', NOW)).toMatchObject({ error: 'RUN_ENDED' })
 })
 
-test('a steer of a ready run asks for changes and the run works again', () => {
+test('a steer of a ready run whose line meld moved to the final commit asks for changes and the run works again', () => {
   const integrating = runOf(takeIntegration(working(), 'w2', NOW))
   const ready = runOf(declareFinal(integrating, 'w2', 'fff0000', 'All done', NOW))
-  const changed = runOf(steer(ready, 'Rename the toggle', NOW))
+  const changed = runOf(steer(ready, 'Rename the toggle', NOW, 'fff0000'))
   expect(changed.state).toBe('working')
   expect(changed.final).toBeUndefined()
   expect(changed.integrator).toBe('w2')
