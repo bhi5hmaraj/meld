@@ -185,7 +185,11 @@ async function folderOf(io: Files, id: string): Promise<Folder> {
   return board ? { id, changedAt: file.mtimeMs, board } : { id, changedAt: file.mtimeMs }
 }
 
-/** What a board.json tells of the run of the folder `id`; undefined when it is not JSON of a run with that id and a commit id as its base. */
+/**
+ * What a board.json tells of the run of the folder `id`; undefined when it is not JSON of a run with that id, a commit
+ * id as its base, and workers that meld names. A list with no workers, or with an entry that is not a worker of meld,
+ * would leave workspaces of the folder out of the work check, so --all would find no work in them and remove them.
+ */
 function boardOf(id: string, text: string): Board | undefined {
   let value: unknown
   try {
@@ -196,7 +200,9 @@ function boardOf(id: string, text: string): Board | undefined {
   if (!isRecord(value) || value.id !== id || typeof value.state !== 'string' || typeof value.repo !== 'string' || !value.repo.startsWith('/')) return undefined
   if ((value.vcs !== 'git' && value.vcs !== 'jj') || !Array.isArray(value.workers)) return undefined
   if (typeof value.base !== 'string' || !COMMIT_ID.test(value.base)) return undefined
-  const workers = value.workers.flatMap(worker => (isRecord(worker) && typeof worker.id === 'string' && WORKER_ID.test(worker.id) ? [worker.id as WorkerId] : []))
+  const entries: unknown[] = value.workers
+  const workers = entries.flatMap(worker => (isRecord(worker) && typeof worker.id === 'string' && WORKER_ID.test(worker.id) ? [worker.id as WorkerId] : []))
+  if (!workers.length || workers.length < entries.length) return undefined
   return { state: value.state, vcs: value.vcs, repo: value.repo, base: value.base, workers }
 }
 
