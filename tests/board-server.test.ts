@@ -73,6 +73,7 @@ class FakeMcp {
       return { result: 'adopted' }
     }
     if (tool === 'board_channel') return { socketPath: this.channel }
+    if (tool === 'lead_board') return { ok: true }
     if (tool === 'spawn_worker') return { agentId: 'acp-1' }
     if (tool === 'send_worker') return { ok: true }
     if (tool === 'acp_agents') return { agents: {} }
@@ -190,6 +191,13 @@ test('without meld mcp, a command keeps the run in the session state, as meld 0.
   expect(written).toContain('run stopped')
 })
 
+test('at its start, the plugin makes its meld mcp the leader of the ACP workers of the board of the session', async ($, on) => {
+  const mcp = new FakeMcp()
+  answerTheEngine(on, mcp)
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  expect(mcp.calls.filter(call => call.tool === 'lead_board').map(call => call.args)).toEqual([{ board: SESSION, owner: SESSION }])
+})
+
 test('the permission check refuses a model call of a tool of the board store, as only meld calls it', async ($, on) => {
   answerTheEngine(on, new FakeMcp())
   await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
@@ -217,6 +225,7 @@ test('/meld-resume lists the run of another session from meld mcp, and a resume 
   expect(resumed.text).toContain('Resumed run r0')
   expect(pointed).toEqual(['old-session'])
   expect(mcp.boards['old-session']).toMatchObject({ owner: SESSION })
+  expect(mcp.calls.filter(call => call.tool === 'lead_board').map(call => call.args.board)).toEqual([SESSION, 'old-session'])
   expect(mcp.boards['old-session']?.run?.costAtStart).toBe(1.25)
   await $.command.run({ command: 'meld-stop', args: '', ...TYPED })
   expect(mcp.boards['old-session']?.run?.state).toBe('stopped')

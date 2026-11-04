@@ -83,6 +83,7 @@ test(
     const repo = await repository(folder)
     const boards = new SqliteBoards(join(folder, 'meld.db'))
     const runner = new AcpRunner(boards, { commands: STUB_WORKER, pollMs: 20 })
+    runner.lead(BOARD, BOARD)
     runners.push(runner)
     const engine = new Engine()
     const io: Io = { ...mcpIo(boards, BOARD), ...sessionRunner(SESSION, engine, runner.runnerFor(BOARD)) }

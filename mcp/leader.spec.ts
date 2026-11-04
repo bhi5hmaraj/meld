@@ -3,15 +3,20 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { bindWorker, isFailure, startRun } from '../core/board'
-import type { Change, Run } from '../types'
+import { addTasks, bindWorker, isFailure, startRun } from '../core/board'
+import type { Change, Run, WorkerId } from '../types'
 import type { AcpUpdate } from './acp'
 import { AcpRunner } from './leader'
 import { SqliteBoards } from './sqlite-store'
 
+type WorkerKind = { id: WorkerId; agent: { type: string } }
+
 const BOARD = 'leader-session'
 const STUB = { stub: ['bun', join(import.meta.dir, 'stub-agent.spec-helper.ts')] }
 const NUDGES_AT_THE_LIMIT = 4
+const ACP_WORKER: WorkerKind = { id: 'w1', agent: { type: 'acp:stub' } }
+const CLAUDE_WORKER: WorkerKind = { id: 'w2', agent: { type: 'meld:worker' } }
+const QUIET_MS = 200
 const runners: AcpRunner[] = []
 const folders: string[] = []
 
@@ -22,15 +27,16 @@ function runOf<T>(change: Change<T>): Run {
   return change.run
 }
 
-/** A board with a run of one worker, w1, that the stub ACP agent runs in a folder of its own. */
-async function setup(): Promise<Setup> {
+/** A board that the runner leads, with a run of w1, which the stub ACP agent runs in a folder of its own, and the given peers. */
+async function setup(kinds: readonly WorkerKind[] = [ACP_WORKER]): Promise<Setup> {
   const folder = mkdtempSync(join(tmpdir(), 'meld-leader-'))
   folders.push(folder)
   const boards = new SqliteBoards(':memory:')
-  const workers = [{ id: 'w1' as const, path: folder, ref: 'meld/r1/w1', agent: { type: 'acp:stub' } }]
+  const workers = kinds.map(kind => ({ id: kind.id, path: kind === ACP_WORKER ? folder : `${folder}/${kind.id}`, ref: `meld/r1/${kind.id}`, agent: kind.agent }))
   await boards.board(BOARD).write(() => startRun({ id: 'r1', request: 'Add a greeting', repo: folder, base: 'a'.repeat(40), vcs: 'git', now: Date.now(), workers }))
   const updates: AcpUpdate[] = []
   const runner = new AcpRunner(boards, { commands: STUB, onUpdate: (_, update) => updates.push(update), pollMs: 20 })
+  runner.lead(BOARD, BOARD)
   runners.push(runner)
   return { boards, folder, runner, updates }
 }
@@ -88,6 +94,28 @@ test('a message of a worker of meld mcp to an ACP agent reaches it, and the plug
   one.boards.addAction({ board: BOARD, kind: 'send', agent: 'agent-9', text: 'For a Claude worker', at: Date.now() })
   await until(() => texts(one.updates).includes('turn 2: News from w2'))
   expect(one.boards.takeActions(BOARD, 'engine').map(action => action.text)).toEqual(['For a Claude worker'])
+})
+
+test('on its beat, the leader starts an idle ACP worker again when another worker adds work for it, and stops the old agent', async () => {
+  const one = await setup([ACP_WORKER, CLAUDE_WORKER])
+  await one.boards.board(BOARD).write(run => run && runOf(bindWorker(run, 'w2', 'agent-2', Date.now())))
+  const first = await spawnBound(one, 'Read the board')
+  await until(() => one.boards.read(BOARD).run?.workers[0]?.state === 'idle')
+  const tasks = [{ title: 'Add the theme' }, { title: 'Add the toggle' }]
+  await one.boards.board(BOARD).write(run => run && runOf(addTasks(run, 'w2', { seen: run.taskList, tasks }, Date.now())))
+  await until(() => one.boards.read(BOARD).run?.workers[0]?.agentId !== first)
+  await until(() => one.runner.states().get(first) === undefined)
+  await until(() => texts(one.updates).some(text => text.includes('These tasks are open: #1 Add the theme; #2 Add the toggle')))
+})
+
+test('the leader starts no ACP worker again on a board that another session owns', async () => {
+  const one = await setup()
+  one.boards.adopt(BOARD, 'session-2', Date.now())
+  const first = await spawnBound(one, 'Read the board')
+  await until(() => one.boards.read(BOARD).run?.workers[0]?.state === 'idle')
+  await Bun.sleep(QUIET_MS)
+  expect(one.boards.read(BOARD).run?.workers[0]?.agentId).toBe(first)
+  expect(one.boards.read(BOARD).run?.nudges).toBe(0)
 })
 
 test('a stop ends the agent of an ACP worker', async () => {

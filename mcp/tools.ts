@@ -60,6 +60,15 @@ export function channelTool(socketPath: string): ServedTool {
 export function runnerTools(runner: AcpRunner, boards: SqliteBoards): ServedTool[] {
   return [
     {
+      name: 'lead_board',
+      description: `${ONLY_MELD} Makes this process the leader of the ACP workers of a board, while the session owner owns it: it starts them again when work waits for them.`,
+      inputSchema: schema({ board: BOARD, owner: OWNER }),
+      answer: args => {
+        runner.lead(text(args, 'board'), text(args, 'owner'))
+        return { ok: true }
+      },
+    },
+    {
       name: 'spawn_worker',
       description: `${ONLY_MELD} Starts an ACP agent, such as Codex, for a worker of a board, in the folder of the worker. Answers with the agent id, or why it did not start.`,
       inputSchema: schema({ board: BOARD, subagentType: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, description: { type: 'string' } }),

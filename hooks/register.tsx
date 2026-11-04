@@ -53,6 +53,7 @@ export const register: Register = on => {
     board.channel = board.server ? await $.mcp.call(board.server, 'board_channel', {}).then(result => valueOf<{ socketPath: string }>(result).socketPath, () => '') : ''
     board.owner = await $.session.id()
     board.id = (await read($, boardRef)) ?? board.owner
+    if (board.server) await $.mcp.call(board.server, 'lead_board', { board: board.id, owner: board.owner }).catch(() => undefined)
     const sessionState: Store & FactsStore = {
       read: () => read($, runRef),
       write: change => update($, runRef, change),
@@ -194,6 +195,7 @@ export const register: Register = on => {
             use: async id => {
               board.id = id
               await update($, boardRef, () => id)
+              await $.mcp.call(board.server, 'lead_board', { board: id, owner: board.owner }).catch(() => undefined)
             },
           }
         : undefined

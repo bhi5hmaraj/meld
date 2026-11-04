@@ -57,11 +57,15 @@ Step 0b found these limits of the engine, in a live session:
 
 Step 0c adds the ports of a party in `core/party.ts`: `PartyRows` (the events and context entries of its runs, which are only added, and the outbox) and `Members` (the runners with their worker slots and a lease). They are not in `Io` yet, as no step of the core uses them. The ACP runner of 0.10 uses them.
 
-Step 10c divides the restarts between two hosts:
+Step 10c divides the restarts between two hosts. Each worker has one host that restarts it, so no worker gets two agents:
 
-- The plugin restarts each idle worker at the end of each turn of the main session. It knows the liveness of the agents of the engine and of the ACP agents of `meld mcp`.
-- `meld mcp` restarts only its ACP workers, at the end of each prompt. So a party of Codex workers continues while the main session waits.
+- The plugin restarts the Claude workers at the end of each turn of the main session.
+- `meld mcp` restarts the ACP workers at the end of each prompt, and on a beat of 500 ms. A Claude worker can add work for an idle Codex worker while no prompt ends.
+- `meld mcp` restarts the ACP workers of one board: the board that the plugin names with `lead_board`, at the start of the session and after a resume. It does so only while that session owns the board.
+- A restart gives the worker a new agent, and the leader stops the old agent. A beat with nothing to do writes nothing.
 - The plugin does the actions for the engine (messages to Claude workers, and toasts) at the end of each turn of the main session. `meld mcp` sends the messages to its ACP agents every 500 ms.
+
+Before this rule, both hosts restarted ACP workers. Both could read the same idle Codex worker and start an agent for it, and the second binding won.
 
 The pane needs one more channel: the workers of Codex write to the board through their own `meld mcp`, and no hook of the main session sees it. Step 10c built it:
 

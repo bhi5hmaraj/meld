@@ -624,9 +624,14 @@ export async function recordActivity(io: Board & Clock & Runner, agentId: string
   if (worker) await recordCall(io, worker, activity)
 }
 
-/** A worker that meld mcp runs through ACP. */
+/** A worker that meld mcp runs through ACP: only meld mcp starts it again. */
 export function ownedByAcp(worker: Worker): boolean {
   return isAcpSpec(worker.agent)
+}
+
+/** A worker that the engine of the main session runs, such as a Claude subagent: only the main session starts it again. */
+export function ownedByEngine(worker: Worker): boolean {
+  return !isAcpSpec(worker.agent)
 }
 
 /** Why meld refuses a call of the worker, or undefined. A stopped worker or run, and a run with its final commit, refuse each call; an edit stays in the folder of the worker. */
@@ -726,8 +731,11 @@ type Restart = { worker: Worker; step: string }
  *
  * Only hooks that no worker needs call it: an agent skips the hook that started it, and an agent that a clock or a
  * button closure starts skips every meld hook, the board and the edit guard included.
+ *
+ * Each worker has one host that starts it again, so no worker gets two agents: the main session starts the workers of
+ * its engine, and meld mcp starts its ACP workers (`owns`).
  */
-export async function restartIdleWorkers(io: Board & Clock & Runner & Surface, owns: (worker: Worker) => boolean = everyWorker): Promise<WorkerId[]> {
+export async function restartIdleWorkers(io: Board & Clock & Runner & Surface, owns: (worker: Worker) => boolean = ownedByEngine): Promise<WorkerId[]> {
   if (restarting) return []
   restarting = true
   try {
@@ -749,13 +757,16 @@ export async function restartIdleWorkers(io: Board & Clock & Runner & Surface, o
   }
 }
 
+/** Marks the owned workers whose agents ended as idle. A beat where no agent ended writes nothing. */
 async function settleEnded(io: Board & Clock & Runner, owns: (worker: Worker) => boolean): Promise<void> {
   const run = await readRun(io)
   if (!run || run.state !== 'working') return
   const agents = await io.agents()
   if (!agents) return
   const now = await io.now()
-  await writeRun(io, current => board.settleEnded(current, agents, now - LIVENESS_GRACE_MS, now, owns))
+  const before = now - LIVENESS_GRACE_MS
+  if (board.settleEnded(run, agents, before, now, owns) === run) return
+  await writeRun(io, current => board.settleEnded(current, agents, before, now, owns))
 }
 
 function everyWorker(): boolean {

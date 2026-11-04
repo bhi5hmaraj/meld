@@ -10,7 +10,7 @@ import type { AcpUpdate, McpServerSpec, PermissionAsk } from './acp'
 import { mcpIo } from './io'
 import type { SqliteBoards } from './sqlite-store'
 
-/** How often the runner takes the messages that workers of meld mcp left for its ACP agents. */
+/** How often the runner takes the messages that workers of meld mcp left for its ACP agents, and starts idle ACP workers again. */
 const POLL_MS = 500
 /** How long the first prompt of an agent waits for the bind of its worker on the board. */
 const BIND_WAIT_MS = 10_000
@@ -25,25 +25,36 @@ export type RunnerOptions = {
 }
 
 type Held = { agent: AcpAgent; board: string; started: boolean; queue: string[] }
+/** The board whose ACP workers this runner keeps going, for the session that owns it. */
+type Lead = { board: string; owner: string }
 /** A board whose restarts run now, and whether another prompt ended in the meantime. */
 type Restarting = { again: boolean }
 
 /**
  * The ACP runner of the leader. It starts an ACP agent for each worker that the plugin or a restart asks for, each with
- * its own `meld mcp --worker` as its MCP server, and drives its prompts. At the end of a prompt the worker is idle, and
- * meld starts the idle ACP workers again with their next step, as the plugin does for subagents.
+ * its own `meld mcp --worker` as its MCP server, and drives its prompts. At the end of a prompt the worker is idle.
+ *
+ * Only the leader starts ACP workers again, as only the plugin starts its subagents again. It does so for the board that
+ * it leads, while the session that asked for it owns that board: at the end of each prompt, and on its beat, as work for
+ * an idle ACP worker can come from a Claude worker while no prompt ends.
  */
 export class AcpRunner {
   private readonly held = new Map<string, Held>()
   private readonly restarting = new Map<string, Restarting>()
   private readonly poll: ReturnType<typeof setInterval>
+  private leading: Lead | undefined
   private closed = false
 
   constructor(
     private readonly boards: SqliteBoards,
     private readonly options: RunnerOptions = {},
   ) {
-    this.poll = setInterval(() => void this.deliverMessages(), options.pollMs ?? POLL_MS)
+    this.poll = setInterval(() => void this.beat(), options.pollMs ?? POLL_MS)
+  }
+
+  /** From now on, this runner keeps the ACP workers of the board going, while the session `owner` owns it. */
+  lead(board: string, owner: string): void {
+    this.leading = { board, owner }
   }
 
   /** Starts an agent for a worker of the board. Its first prompt waits for the bind of the worker to the returned agent id. */
@@ -147,8 +158,12 @@ export class AcpRunner {
     if (held.agent.state === 'ended' || !run || !workerOf(run, agentId)) await this.stop(agentId)
   }
 
-  /** Starts the idle ACP workers of the board again, one round at a time: a prompt that ends during a round gets one more round. */
+  /**
+   * Starts the idle ACP workers of the board again, one round at a time: a prompt that ends during a round gets one more
+   * round. After each round, the agents that a restart left with no worker stop.
+   */
   private async restartIdle(board: string): Promise<void> {
+    if (!this.leads(board)) return
     const running = this.restarting.get(board)
     if (running) {
       running.again = true
@@ -160,10 +175,31 @@ export class AcpRunner {
       while (round.again && !this.closed) {
         round.again = false
         await restartIdleWorkers(mcpIo(this.boards, board, this.runnerFor(board)), ownedByAcp)
+        await this.stopUnbound(board)
       }
     } finally {
       this.restarting.delete(board)
     }
+  }
+
+  /** The runner leads the board, and no other session owns it. */
+  private leads(board: string): boolean {
+    if (this.leading?.board !== board) return false
+    const owner = this.boards.read(board).owner
+    return owner === null || owner === this.leading.owner
+  }
+
+  /** Stops each agent of the board that started, runs no prompt, and holds no worker. */
+  private async stopUnbound(board: string): Promise<void> {
+    const run = this.boards.read(board).run
+    for (const [agentId, held] of [...this.held]) {
+      if (held.board === board && held.started && held.agent.state !== 'busy' && !(run && workerOf(run, agentId))) await this.stop(agentId)
+    }
+  }
+
+  private async beat(): Promise<void> {
+    await this.deliverMessages()
+    if (this.leading) await this.restartIdle(this.leading.board)
   }
 
   private updated(board: string, agentId: string, update: AcpUpdate): void {
@@ -182,7 +218,8 @@ export class AcpRunner {
   }
 
   private async deliverMessages(): Promise<void> {
-    for (const board of new Set([...this.held.values()].map(held => held.board))) {
+    const boards = [...this.held.values()].map(held => held.board)
+    for (const board of new Set(this.leading ? [...boards, this.leading.board] : boards)) {
       for (const action of this.boards.takeActions(board, 'acp')) await this.send(action.agent, action.text)
     }
   }

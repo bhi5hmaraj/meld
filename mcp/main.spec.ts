@@ -9,7 +9,7 @@ import { Client } from './client.spec-helper'
 
 const HEAD = 'abc1234def5678abc1234def5678abc1234def56'
 const NOW = 1_800_000_000_000
-const TOOLS = ['read_board', 'commit_board', 'list_boards', 'adopt_board', 'board_channel', 'spawn_worker', 'send_worker', 'stop_worker', 'acp_agents', 'take_actions']
+const TOOLS = ['read_board', 'commit_board', 'list_boards', 'adopt_board', 'board_channel', 'lead_board', 'spawn_worker', 'send_worker', 'stop_worker', 'acp_agents', 'take_actions']
 
 function newRun(): Run {
   const workers = [{ id: 'w1' as const, path: '/tmp/meld/r1/w1', ref: 'meld/r1/w1', agent: { type: 'meld:worker' } }]

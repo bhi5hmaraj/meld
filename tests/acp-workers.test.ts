@@ -27,6 +27,16 @@ function idleWithTasks(): Run {
   return setWorkerState(setWorkerState(tasked, 'w1', 'idle', NOW), 'w2', 'idle', NOW)
 }
 
+/** A FakeIo that counts the writes of the run. */
+class CountingIo extends FakeIo {
+  writes = 0
+
+  override async write(change: (run: Run | null) => Run | null): Promise<Run | null> {
+    this.writes += 1
+    return super.write(change)
+  }
+}
+
 function ioWith(run: Run): FakeIo {
   const io = new FakeIo()
   io.current = run
@@ -42,13 +52,25 @@ test('codex in --agents is the ACP agent codex, which runs through the codex-acp
   expect(acpCommandOf({ type: 'meld:worker' })).toBeUndefined()
 })
 
-test('meld mcp starts only its ACP workers again, and the plugin starts each idle worker', async () => {
+test('the plugin starts only the workers of its engine again, and meld mcp only its ACP workers, so no worker gets two agents', async () => {
   const acp = ioWith(idleWithTasks())
   await restartIdleWorkers(acp, ownedByAcp)
   expect(acp.spawned.map(spawn => [spawn.description, spawn.subagentType])).toEqual([['meld w2', 'acp:codex']])
   const plugin = ioWith(idleWithTasks())
   await restartIdleWorkers(plugin)
-  expect(plugin.spawned.map(spawn => spawn.description)).toEqual(['meld w1', 'meld w2'])
+  expect(plugin.spawned.map(spawn => [spawn.description, spawn.subagentType])).toEqual([['meld w1', 'meld:worker']])
+})
+
+test('a beat with no ended agent and no work for an idle worker writes nothing', async () => {
+  const io = new CountingIo()
+  io.current = mixed()
+  io.agentStates = new Map([
+    ['agent-1', 'live'],
+    ['acp-2', 'live'],
+  ])
+  await restartIdleWorkers(io, ownedByAcp)
+  await restartIdleWorkers(io)
+  expect(io.writes).toBe(0)
 })
 
 test('meld mcp settles only its ACP workers, as it knows only the agents that it runs', async () => {
