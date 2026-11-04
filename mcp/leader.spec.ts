@@ -118,6 +118,21 @@ test('the leader starts no ACP worker again on a board that another session owns
   expect(one.boards.read(BOARD).run?.nudges).toBe(0)
 })
 
+test('an idle ACP worker whose agent reports a small context goes on in the same session, with the step of meld', async () => {
+  const one = await setup()
+  const first = await spawnBound(one, 'Read the board [small]')
+  await until(() => texts(one.updates).some(text => text.startsWith('turn 2: meld: There are no tasks yet.')))
+  expect(one.boards.read(BOARD).run?.workers[0]).toMatchObject({ agentId: first, context: { used: 20_000, size: 200_000 } })
+})
+
+test('an ACP worker whose agent reports a full context gets a fresh agent, and the old agent stops', async () => {
+  const one = await setup()
+  const first = await spawnBound(one, 'Read the board [full]')
+  await until(() => one.boards.read(BOARD).run?.workers[0]?.agentId !== first)
+  await until(() => one.runner.states().get(first) === undefined)
+  expect(texts(one.updates).some(text => text.startsWith('turn 2:'))).toBe(false)
+})
+
 test('a stop ends the agent of an ACP worker', async () => {
   const one = await setup()
   const agentId = await spawnBound(one, 'Read the board [wait]')

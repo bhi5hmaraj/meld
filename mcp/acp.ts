@@ -1,5 +1,6 @@
 import type { Subprocess } from 'bun'
 
+import type { AgentContext } from '../types'
 import { Peer, readLines } from './json-rpc'
 
 /** The Agent Client Protocol: meld is the client of an agent process such as `codex-acp`, over standard input and output. */
@@ -12,7 +13,8 @@ const ERROR_TAIL = 400
 export type StopReason = 'end_turn' | 'max_tokens' | 'max_turn_requests' | 'refusal' | 'cancelled'
 
 /** One update of a session, as meld reads it: its kind (`agent_message_chunk`, `tool_call`, ...), a text, and for a tool call its id and status. */
-export type AcpUpdate = { kind: string; text: string; status?: string; toolCallId?: string }
+/** An update of the session; a usage update gives the tokens in the context of the agent and the size of its window. */
+export type AcpUpdate = { kind: string; text: string; status?: string; toolCallId?: string; usage?: AgentContext }
 
 /** What an agent asks to do: the title and kind of the tool call, and the paths that it touches. */
 export type PermissionAsk = { title: string; kind: string; paths: string[] }
@@ -157,6 +159,7 @@ function updateOf(update: Record<string, unknown>): AcpUpdate {
     text,
     ...(typeof update.status === 'string' && { status: update.status }),
     ...(typeof update.toolCallId === 'string' && { toolCallId: update.toolCallId }),
+    ...(typeof update.used === 'number' && typeof update.size === 'number' && update.size > 0 && { usage: { used: update.used, size: update.size } }),
   }
 }
 

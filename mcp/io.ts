@@ -17,6 +17,7 @@ export function mcpIo(boards: SqliteBoards, board: string, acp?: Runner): Io {
     spawn: async args => (acp ? acp.spawn(args) : { deny: 'a worker of meld mcp starts no agent: the leader does' }),
     send: async (agent, text) => (acp && isAcpAgent(agent) ? acp.send(agent, text) : forPlugin('send', agent, text)),
     agents: async () => acp?.agents(),
+    resume: async (agent, text) => (acp?.resume ? acp.resume(agent, text) : false),
     now: async () => Date.now(),
     sleep: ms => Bun.sleep(ms),
     random: count => crypto.getRandomValues(new Uint8Array(count)),

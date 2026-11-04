@@ -22,6 +22,10 @@ export class FakeIo extends MemoryStore implements Io, Files {
   spawned: SpawnArgs[] = []
   ranCommands: string[] = []
   sent: string[] = []
+  /** The prompts that resume gave to agents in their own sessions. */
+  resumed: string[] = []
+  /** Agents that resume cannot reach. */
+  gone: string[] = []
   toasts: string[] = []
   usd: number | undefined = undefined
   agentStates: Map<string, AgentState> | undefined = undefined
@@ -104,6 +108,12 @@ export class FakeIo extends MemoryStore implements Io, Files {
   async send(agentId: string, text: string): Promise<unknown> {
     this.sent.push(`${agentId}: ${text}`)
     return undefined
+  }
+
+  async resume(agentId: string, text: string): Promise<boolean> {
+    if (this.gone.includes(agentId)) return false
+    this.resumed.push(`${agentId}: ${text}`)
+    return true
   }
 
   toast(text: string): unknown {

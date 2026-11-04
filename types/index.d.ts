@@ -51,7 +51,14 @@ export type Worker = {
    * reply to each new agent, and in a run that meld 0.7.0 or older stored: that reply carries the current entries.
    */
   seenContext?: number
+  /** The context window of the agent of this worker at its last report. Absent for a new agent, and for an agent that reports none. */
+  context?: AgentContext
+  /** When meld last gave the agent of this worker a new prompt in its own session. Absent for a new agent. */
+  resumedAt?: number
 }
+
+/** The tokens in the context of an agent, and the size of the window of its model. */
+export type AgentContext = { used: number; size: number }
 
 /**
  * A task of the board. A task that other tasks name as their parent is a parent: it is open until all its children are

@@ -83,6 +83,7 @@ export const register: Register = on => {
             return { agentId: spawned.agentId, deny: spawned.deny }
           },
           send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+          resume: async (agentId, text) => (await $.session.send({ to: { agentId }, text })).isDelivered,
           agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
         },
         {
@@ -164,6 +165,7 @@ export const register: Register = on => {
             return { agentId: spawned.agentId, deny: spawned.deny }
           },
           send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+          resume: async (agentId, text) => (await $.session.send({ to: { agentId }, text })).isDelivered,
           agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
         },
         {
@@ -234,6 +236,7 @@ export const register: Register = on => {
             return { agentId: spawned.agentId, deny: spawned.deny }
           },
           send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+          resume: async (agentId, text) => (await $.session.send({ to: { agentId }, text })).isDelivered,
           agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
         },
         {
@@ -283,6 +286,7 @@ export const register: Register = on => {
               return { agentId: spawned.agentId, deny: spawned.deny }
             },
             send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+            resume: async (agentId, text) => (await $.session.send({ to: { agentId }, text })).isDelivered,
             agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
           },
           {
@@ -330,6 +334,7 @@ export const register: Register = on => {
             return { agentId: spawned.agentId, deny: spawned.deny }
           },
           send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+          resume: async (agentId, text) => (await $.session.send({ to: { agentId }, text })).isDelivered,
           agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
         },
         {
@@ -379,6 +384,7 @@ export const register: Register = on => {
             return { agentId: spawned.agentId, deny: spawned.deny }
           },
           send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+          resume: async (agentId, text) => (await $.session.send({ to: { agentId }, text })).isDelivered,
           agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
         },
         {
@@ -391,7 +397,8 @@ export const register: Register = on => {
       toast: text => $.ui.toast(text),
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
     }
-    await countStep(io, e.agentId, response.usage).catch(() => undefined)
+    const window = await $.session.usage().then(usage => usage.context?.window, () => undefined)
+    await countStep(io, e.agentId, response.usage, window).catch(() => undefined)
     return response
   })
 
@@ -425,6 +432,7 @@ export const register: Register = on => {
             return { agentId: spawned.agentId, deny: spawned.deny }
           },
           send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+          resume: async (agentId, text) => (await $.session.send({ to: { agentId }, text })).isDelivered,
           agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
         },
         {
@@ -478,6 +486,7 @@ export const register: Register = on => {
             return { agentId: spawned.agentId, deny: spawned.deny }
           },
           send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+          resume: async (agentId, text) => (await $.session.send({ to: { agentId }, text })).isDelivered,
           agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
         },
         {
@@ -532,6 +541,7 @@ export const register: Register = on => {
             return { agentId: spawned.agentId, deny: spawned.deny }
           },
           send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+          resume: async (agentId, text) => (await $.session.send({ to: { agentId }, text })).isDelivered,
           agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
         },
         {
@@ -581,6 +591,7 @@ export const register: Register = on => {
             return { agentId: spawned.agentId, deny: spawned.deny }
           },
           send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+          resume: async (agentId, text) => (await $.session.send({ to: { agentId }, text })).isDelivered,
           agents: () => $.agent.list().then(list => new Map(list.map(agent => [agent.id, stateOf(agent.status)])), () => undefined),
         },
         {

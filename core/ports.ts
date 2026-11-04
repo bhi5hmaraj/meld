@@ -56,6 +56,8 @@ export type Runner = {
   send(agentId: string, text: string): Promise<unknown>
   /** The agents that the host lists, by id; undefined when it cannot list them. */
   agents(): Promise<Map<string, AgentState> | undefined>
+  /** Gives an agent that ended its turn a new prompt in its own session. False when the host cannot reach the agent. A host that cannot do it has no resume. */
+  resume?(agentId: string, text: string): Promise<boolean>
 }
 
 /** Random bytes, for ids that must not collide: two runs that start in one millisecond, on one machine or on two. */
@@ -94,4 +96,4 @@ export type ToolReply = { result: string }
 export type CommandReply = { text?: string }
 
 /** The tokens of one model call. */
-export type TokenUsage = { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number }
+export type TokenUsage = { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens?: number }

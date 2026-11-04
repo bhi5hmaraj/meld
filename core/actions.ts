@@ -1,4 +1,4 @@
-import type { BoardView, Change, Facts, Failure, Final, NewTask, PaneView, Run, Task, TaskSize, VcsKind, Worker, WorkerId, WorkerState } from '../types'
+import type { AgentContext, BoardView, Change, Facts, Failure, Final, NewTask, PaneView, Run, Task, TaskSize, VcsKind, Worker, WorkerId, WorkerState } from '../types'
 import * as board from './board'
 import { CONTROL_TOOLS, HAND_BACK, integrateDetail, integrateStep, missingWorkText, splitNudge, TOOL, wakeText, workerPrompt, workerRules } from './contract'
 import type { Control } from './contract'
@@ -574,6 +574,7 @@ function retire(io: Runner, agentId: string): void {
 async function restart(io: Board & Clock & Runner & Surface, worker: Worker, step: string): Promise<boolean> {
   const run = await readRun(io)
   if (!run) return false
+  if (await resumed(io, run, worker, step)) return true
   pendingSpawns += 1
   try {
     const spawned = await spawnOne(io, run, worker, step)
@@ -596,9 +597,29 @@ async function restart(io: Board & Clock & Runner & Surface, worker: Worker, ste
   }
 }
 
-/** A deny reason for a tool call of a worker, or undefined; records the call as the worker's activity. */
+/**
+ * Affinity: the agent of an idle worker goes on in its own session with the step, while its context leaves room for one
+ * more task (board.keepsSession). Else, or when the host cannot reach the agent, the worker gets a fresh agent, and its
+ * claim gives that agent the handovers of the tasks that it needs.
+ */
+async function resumed(io: Board & Clock & Runner, run: Run, worker: Worker, step: string): Promise<boolean> {
+  if (!worker.agentId || !board.keepsSession(worker) || !io.resume) return false
+  if (!(await io.resume(worker.agentId, step).catch(() => false))) return false
+  const now = await io.now()
+  await writeRunOf(io, run.id, current => runOf(board.resumeWorker(current, worker.id, now), current))
+  return true
+}
+
+/**
+ * A deny reason for a tool call of a worker, or undefined; records the call as the worker's activity. A hand-back ends
+ * the turn of the agent: its worker is idle at once, as meld does not see the end of a turn that a restart started.
+ */
 export async function guardCall(io: Board & Clock & Runner, e: ToolCall): Promise<string | undefined> {
-  if (e.agentId === undefined || String(e.tool) === HANDBACK_TOOL) return undefined
+  if (e.agentId === undefined) return undefined
+  if (String(e.tool) === HANDBACK_TOOL) {
+    await markWorker(io, e.agentId, 'idle')
+    return undefined
+  }
   const run = await readRun(io)
   const worker = run ? board.workerOf(run, e.agentId) : undefined
   if (!run || !worker) return retired.has(e.agentId) ? STOPPED_CALL : undefined
@@ -697,17 +718,33 @@ export function freshTokens(usage: TokenUsage | undefined): number {
   return usage.input_tokens + usage.cache_creation_input_tokens + usage.output_tokens
 }
 
+/** The tokens in the context of a model call: its whole input, the cached part too. */
+function contextTokens(usage: TokenUsage): number {
+  return usage.input_tokens + usage.cache_creation_input_tokens + (usage.cache_read_input_tokens ?? 0)
+}
+
 /**
  * One model call of an agent: its fresh tokens add up on its worker at once. A worker does a task in one long turn, so
- * a count at the end of the turn showed 0 tokens while it worked. The main session and agents that are no worker count nothing.
+ * a count at the end of the turn showed 0 tokens while it worked. With the window of the model of the agent, the call
+ * also gives the context of the agent. The main session and agents that are no worker count nothing.
  */
-export async function countStep(io: Board, agentId: string | undefined, usage: TokenUsage | null | undefined): Promise<void> {
+export async function countStep(io: Board, agentId: string | undefined, usage: TokenUsage | null | undefined, window?: number): Promise<void> {
   const tokens = freshTokens(usage ?? undefined)
-  if (agentId === undefined || !tokens) return
+  if (agentId === undefined || !usage || !tokens) return
   const run = await readRun(io)
   const worker = run ? board.workerOf(run, agentId) : undefined
   if (!worker) return
-  await writeRun(io, current => board.addTokens(current, worker.id, tokens))
+  await writeRun(io, current => {
+    const counted = board.addTokens(current, worker.id, tokens)
+    return window ? board.setContext(counted, worker.id, { used: contextTokens(usage), size: window }) : counted
+  })
+}
+
+/** An ACP agent reported its context window. */
+export async function recordContext(io: Board, agentId: string, context: AgentContext): Promise<void> {
+  const run = await readRun(io)
+  const worker = run ? board.workerOf(run, agentId) : undefined
+  if (worker) await writeRun(io, current => board.setContext(current, worker.id, context))
 }
 
 /** A worker's turn ended: it is idle. Its tokens added up at each model call (countStep). The clock of meld starts workers again (see restartIdleWorkers). */

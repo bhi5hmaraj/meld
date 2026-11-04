@@ -29,6 +29,11 @@ class RecordingRunner implements Runner {
   async agents(): Promise<Map<string, AgentState>> {
     return this.states
   }
+
+  async resume(agentId: string): Promise<boolean> {
+    this.calls.push(`${this.name} resume ${agentId}`)
+    return true
+  }
 }
 
 test('the permission check allows a call of meld itself of a tool of meld mcp, as meld keeps its board there', () => {
@@ -74,11 +79,20 @@ test('the runner of a hook gives the ACP spawns and messages to meld mcp, the re
   ])
 })
 
+test('the runner of a hook gives the resume of a Claude agent to the engine, and of an ACP agent to meld mcp', async () => {
+  const calls: string[] = []
+  const runner = sessionRunner({ server: SERVER, id: 's1', owner: 's1', problem: '', channel: '' }, new RecordingRunner('engine', new Map(), calls), new RecordingRunner('acp', new Map(), calls))
+  expect(await runner.resume?.('agent-1', 'Go on')).toBe(true)
+  expect(await runner.resume?.('acp-1', 'Go on')).toBe(true)
+  expect(calls).toEqual(['engine resume agent-1', 'acp resume acp-1'])
+})
+
 test('without meld mcp, an ACP worker does not start and says why, and the liveness is that of the engine', async () => {
   const calls: string[] = []
   const runner = sessionRunner({ server: '', id: 's1', owner: 's1', problem: 'bun: not found', channel: '' }, new RecordingRunner('engine', new Map([['agent-1', 'live']]), calls), new RecordingRunner('acp', new Map(), calls))
   expect(await runner.spawn({ ...SPAWN, subagentType: 'acp:codex' })).toEqual({ deny: 'meld runs ACP agents such as Codex through meld mcp, which did not connect: bun: not found' })
   await runner.send('acp-1', 'Go on')
+  expect(await runner.resume?.('acp-1', 'Go on')).toBe(false)
   expect(calls).toEqual([])
   expect([...((await runner.agents()) ?? [])]).toEqual([['agent-1', 'live']])
 })

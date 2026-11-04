@@ -2,13 +2,17 @@
  * An ACP agent for the specs of the ACP runner, over standard input and output. Each prompt reports its turn and the
  * text it got, edits one file after it asks for permission, and ends the turn. A prompt with [outside] edits a file
  * outside the folder of the session, one with [pause] ends after 300 ms, one with [wait] ends only when the client
- * cancels it, and one with [crash] exits. The marks are in brackets, so no text of meld sets one off.
+ * cancels it, and one with [crash] exits. A prompt with [small] or [full] ends with a usage update: a context that fills a
+ * tenth of the window, or three quarters of it. The marks are in brackets, so no text of meld sets one off.
  */
 import { Peer, readLines } from './json-rpc'
 
 const SESSION = 'stub-session'
 const PAUSE_MS = 300
 const CRASH_CODE = 3
+const WINDOW = 200_000
+const SMALL_CONTEXT = 20_000
+const FULL_CONTEXT = 150_000
 const OPTIONS = [
   { optionId: 'yes', name: 'Allow', kind: 'allow_once' },
   { optionId: 'no', name: 'Reject', kind: 'reject_once' },
@@ -56,6 +60,8 @@ async function prompt(params: Record<string, unknown>): Promise<object> {
   update('tool_call', { ...toolCall, status: 'pending' })
   const verdict = (await client.request('session/request_permission', { sessionId: SESSION, toolCall, options: OPTIONS })) as { outcome: { optionId?: string } }
   update('tool_call_update', { toolCallId: toolCall.toolCallId, status: verdict.outcome.optionId === 'yes' ? 'completed' : 'failed' })
+  if (text.includes('[small]')) update('usage_update', { used: SMALL_CONTEXT, size: WINDOW })
+  if (text.includes('[full]')) update('usage_update', { used: FULL_CONTEXT, size: WINDOW })
   return { stopReason: 'end_turn' }
 }
 

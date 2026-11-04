@@ -90,6 +90,14 @@ test('a verdict that comes later still answers the permission request', async ()
   expect(updates).toContainEqual({ kind: 'tool_call_update', text: '', status: 'completed', toolCallId: 't1' })
 })
 
+test('a usage update of the agent gives the tokens in its context and the size of its window', async () => {
+  const folder = newFolder()
+  const updates: AcpUpdate[] = []
+  const agent = await started(folder, updates)
+  await agent.prompt('Add a file [small]')
+  expect(updates).toContainEqual({ kind: 'usage_update', text: '', usage: { used: 20_000, size: 200_000 } })
+})
+
 test('a second prompt continues the same session', async () => {
   const updates: AcpUpdate[] = []
   const agent = await started(newFolder(), updates)

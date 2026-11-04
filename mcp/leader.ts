@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 
-import { acpRefusal, markWorker, ownedByAcp, recordActivity, restartIdleWorkers } from '../core/actions'
+import { acpRefusal, markWorker, ownedByAcp, recordActivity, recordContext, restartIdleWorkers } from '../core/actions'
 import { workerOf } from '../core/board'
 import { WORKER_SYSTEM } from '../core/contract'
 import { ACP_AGENT_PREFIX, ACP_AGENTS, ACP_PREFIX } from '../core/options'
@@ -90,6 +90,14 @@ export class AcpRunner {
     else if (held.agent.state === 'idle') void this.run(agentId, text)
   }
 
+  /** Gives an idle agent its next prompt in its own session. False when the runner holds no such agent, or its process ended. */
+  async resume(agentId: string, text: string): Promise<boolean> {
+    const held = this.held.get(agentId)
+    if (!held || held.agent.state === 'ended') return false
+    await this.send(agentId, text)
+    return true
+  }
+
   async stop(agentId: string): Promise<void> {
     const held = this.held.get(agentId)
     if (!held) return
@@ -115,6 +123,7 @@ export class AcpRunner {
       spawn: args => this.spawn(board, args),
       send: (agentId, text) => this.send(agentId, text),
       agents: async () => this.states(),
+      resume: (agentId, text) => this.resume(agentId, text),
     }
   }
 
@@ -205,6 +214,7 @@ export class AcpRunner {
   private updated(board: string, agentId: string, update: AcpUpdate): void {
     this.options.onUpdate?.(agentId, update)
     if (update.kind === 'tool_call') void recordActivity(mcpIo(this.boards, board, this.runnerFor(board)), agentId, update.text)
+    if (update.usage) void recordContext(mcpIo(this.boards, board), agentId, update.usage)
   }
 
   /** The verdict of meld on what an agent asks; a refusal for a stopped worker or a run that ended also ends the prompt. */

@@ -1,8 +1,8 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { MockClock } from 'claude-code/testing'
-import type { McpToolResult, On } from 'claude-code'
+import type { McpToolResult, On, TurnUsage } from 'claude-code'
 
-import { bindWorker, isFailure, startRun } from '../core/board'
+import { addTasks, bindWorker, isFailure, setWorkerState, startRun } from '../core/board'
 import type { Change, Run, WorkerId } from '../types'
 import { HEAD } from './fake-io'
 
@@ -11,6 +11,9 @@ const SERVER = 'plugin:meld:board'
 const SESSION = 'session-1'
 const IDS: WorkerId[] = ['w1', 'w2']
 const CHANNEL = '/tmp/meld/channels/1.sock'
+const WINDOW = 200_000
+const USAGE = { input_tokens: 1000, cache_creation_input_tokens: 2000, cache_read_input_tokens: 30_000, output_tokens: 500, model: 'claude-opus-5-5' } as TurnUsage
+const STORED = { shape: 'run-4' }
 const TYPED = { origin: { kind: 'composer' as const }, presentation: { isFullscreen: false, columns: 80 } }
 
 type Call = { tool: string; args: Record<string, unknown> }
@@ -30,6 +33,14 @@ function runOf<T>(change: Change<T>): Run {
 
 function withActivity(run: Run, worker: WorkerId, activity: string): Run {
   return { ...run, workers: run.workers.map(one => (one.id === worker ? { ...one, activity } : one)) }
+}
+
+/** w1 idle with a context that fills a fifth of the window of its agent, and w2 working: two open tasks, so one is for w1. */
+function idleWithSmallContext(): Run {
+  const run = working()
+  const tasked = runOf(addTasks(run, 'w2', { seen: run.taskList, tasks: [{ title: 'Add the theme' }, { title: 'Add the toggle' }] }, NOW))
+  const idle = setWorkerState(tasked, 'w1', 'idle', NOW)
+  return { ...idle, workers: idle.workers.map(worker => (worker.id === 'w1' ? { ...worker, context: { used: 40_000, size: WINDOW } } : worker)) }
 }
 
 function working(id = 'r1'): Run {
@@ -196,6 +207,52 @@ test('at its start, the plugin makes its meld mcp the leader of the ACP workers 
   answerTheEngine(on, mcp)
   await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
   expect(mcp.calls.filter(call => call.tool === 'lead_board').map(call => call.args)).toEqual([{ board: SESSION, owner: SESSION }])
+})
+
+test('a model call of a subagent records the context of its worker, against the window of the model of the session', async ($, on) => {
+  const written: (Run | undefined)[] = []
+  answerTheEngine(on, undefined)
+  on('state.get', ($, e) => ({ value: e.key === 'run' ? { value: { ...STORED, value: working() }, version: 1 } : { value: undefined, version: 0 } }))
+  on('state.set', ($, e) => {
+    if (e.key === 'run') written.push((e.value as { value?: Run }).value)
+    return { value: { isSet: true, version: 2 } }
+  })
+  on('session.usage', () => ({ value: { startedAt: NOW, context: { window: WINDOW }, cost: { usd: 0 } } as never }))
+  on('turn.step', async function* ($, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage: USAGE }
+  })
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  const stream = $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', messageCount: 3, agentId: 'agent-1' })
+  for await (const chunk of stream) void chunk
+  await stream.result
+  expect(written.at(-1)?.workers[0]?.context).toEqual({ used: 33_000, size: WINDOW })
+})
+
+test('at the end of a turn, an idle worker with a small context gets the step in its own session, and no new agent', async ($, on) => {
+  const sent: string[] = []
+  const spawned: string[] = []
+  const written: (Run | undefined)[] = []
+  answerTheEngine(on, undefined)
+  on('state.get', ($, e) => ({ value: e.key === 'run' ? { value: { ...STORED, value: idleWithSmallContext() }, version: 1 } : { value: undefined, version: 0 } }))
+  on('state.set', ($, e) => {
+    if (e.key === 'run') written.push((e.value as { value?: Run }).value)
+    return { value: { isSet: true, version: 2 } }
+  })
+  on('agent.list', () => ({ value: [] }))
+  on('agent.spawn', ($, e) => {
+    spawned.push(e.description)
+    return { model: 'claude-opus-5-5', agentId: 'agent-9' }
+  })
+  on('session.send', ($, e) => {
+    sent.push(`${e.to}: ${e.text}`)
+    return { isDelivered: true as const }
+  })
+  on('turn.complete', ($, e) => ({ text: e.answer }))
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  expect(spawned).toEqual([])
+  expect(sent).toEqual(['agent-1: meld: These tasks are open: #1 Add the theme; #2 Add the toggle. Claim one and do it. Read the board with mcp__meld__board, then go on.'])
+  expect(written.at(-1)?.workers[0]).toMatchObject({ agentId: 'agent-1', state: 'working', activity: 'goes on' })
 })
 
 test('the permission check refuses a model call of a tool of the board store, as only meld calls it', async ($, on) => {

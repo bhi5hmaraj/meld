@@ -1,4 +1,5 @@
 import type {
+  AgentContext,
   AgentSpec,
   Author,
   BoardView,
@@ -147,10 +148,34 @@ export function addTokens(run: Run, id: WorkerId, tokens: number): Run {
  */
 export function restartWorker(run: Run, id: WorkerId, agentId: string, now: number): Change<Worker> {
   if (run.state !== 'working') return failure('RUN_ENDED', `The run is ${run.state}.`)
-  const { seenContext: _seen, ...worker } = findWorker(run, id)
+  const { seenContext: _seen, context: _context, resumedAt: _resumed, ...worker } = findWorker(run, id)
   if (worker.state === 'stopped') return failure('WORKER_STOPPED', `The person stopped ${id}.`)
   const restarted: Worker = { ...worker, agentId, state: 'working', briefed: false, activity: 'started again', activityAt: now }
   return { run: withEntry(replaceWorker(run, restarted), { at: now, by: 'you', kind: 'event', text: `${id} starts again` }), value: restarted }
+}
+
+/**
+ * The agent of a worker goes on in its own session with a new prompt: the worker works again, and its agent keeps what
+ * it read. The agent list can show the turn before the prompt as ended for a moment, so settleEnded waits (resumedAt).
+ */
+export function resumeWorker(run: Run, id: WorkerId, now: number): Change<Worker> {
+  if (run.state !== 'working') return failure('RUN_ENDED', `The run is ${run.state}.`)
+  const worker = findWorker(run, id)
+  if (worker.state === 'stopped') return failure('WORKER_STOPPED', `The person stopped ${id}.`)
+  const resumed: Worker = { ...worker, state: 'working', activity: 'goes on', activityAt: now, resumedAt: now }
+  return { run: withEntry(replaceWorker(run, resumed), { at: now, by: 'you', kind: 'event', text: `${id} goes on in its session` }), value: resumed }
+}
+
+/** Below this share of its window, the context of an agent leaves room for one more task. */
+export const AFFINITY_SHARE = 0.5
+
+/** The agent of an idle worker goes on in its own session while its context fills less than AFFINITY_SHARE of its window. */
+export function keepsSession(worker: Worker): boolean {
+  return worker.agentId !== undefined && worker.context !== undefined && worker.context.used < AFFINITY_SHARE * worker.context.size
+}
+
+export function setContext(run: Run, by: WorkerId, context: AgentContext): Run {
+  return replaceWorker(run, { ...findWorker(run, by), context })
 }
 
 /** Adds a batch of tasks only when the worker has seen the current task list: a stale add fails alone and shows the tasks it missed. */
@@ -536,8 +561,14 @@ export function boardFor(run: Run, by: WorkerId): { run: Run; view: BoardView } 
  */
 /** Each working worker of `owns` whose agent ended, or is unknown and quiet since `before`, becomes idle. */
 export function settleEnded(run: Run, agents: ReadonlyMap<string, AgentState>, before: number, now: number, owns: (worker: Worker) => boolean = () => true): Run {
-  const ended = run.workers.filter(worker => owns(worker) && worker.state === 'working' && worker.agentId && hasEnded(agents.get(worker.agentId), worker.activityAt < before))
+  const ended = run.workers.filter(
+    worker => owns(worker) && worker.state === 'working' && worker.agentId && !resumedSince(worker, before) && hasEnded(agents.get(worker.agentId), worker.activityAt < before),
+  )
   return ended.reduce((current, worker) => setWorkerState(current, worker.id, 'idle', now), run)
+}
+
+function resumedSince(worker: Worker, at: number): boolean {
+  return worker.resumedAt !== undefined && worker.resumedAt >= at
 }
 
 function hasEnded(state: AgentState | undefined, isQuiet: boolean): boolean {

@@ -1,6 +1,6 @@
 # Build plan
 
-Status: draft. The order is agreed: first make solo good and give it to people, then local parties with Claude Code and Codex, then the hosted version. Steps 0a, 0b and 0c of phase 2, and steps 10a, 10b and 10c of phase 3, are built on the branch `next`. Nothing else in phases 2 to 4 has started.
+Status: draft. The order is agreed: first make solo good and give it to people, then local parties with Claude Code and Codex, then the hosted version. Steps 0a, 0b and 0c of phase 2, and steps 10a to 10d of phase 3, are built on the branch `next`. Nothing else in phases 2 to 4 has started.
 
 ## Phase 1: solo 0.8.x for users
 
@@ -35,8 +35,8 @@ The steps of 0.10.0:
 | 10a | The ACP client in `mcp/acp.ts`. It starts an agent and opens a session in the folder of the worker, with its MCP servers. It sends one prompt at a time, answers each permission request with the verdict of meld, cancels a prompt, and ends with the exit of the agent. Built, with a stub ACP agent. | The specs pass against the stub agent. |
 | 10b | The worker mode of `meld mcp`: the board tools of one worker of one board, from SQLite. A message to another agent becomes a row for the leader. Built: `meld mcp --worker` with MELD_BOARD and MELD_AGENT, and the `actions` table (schema 3). | A spec drives the tools of a worker through MCP: a claim, a finished task in a real git repository, and a message to the leader. |
 | 10c | The leader. `meld mcp` runs the ACP workers and writes their activity to the board. The plugin starts a `codex` agent through `meld mcp`, and its pane reads the board over a Unix socket. Built: the ACP runner in `mcp/leader.ts`, the board channel in `mcp/channel.ts`, one host that starts each worker again (the plugin its Claude workers, `meld mcp` its ACP workers on its beat), and `mcp/run.spec.ts`. That spec found that the ACP client did not wait for an async verdict, so each permission request of an ACP agent got the answer cancelled. | A run with one Claude worker and one stub ACP worker goes from start to delivery. |
-| 10d | Affinity: an idle worker continues its session while its context stays under a share of the window of its model. Else a fresh agent starts with the handover. | Tests cover both cases, for Claude workers and for ACP workers. |
-| 10e | A live run with Codex (`npx -y @agentclientprotocol/codex-acp`) on a machine with an OpenAI login. Check these open points: the name that Codex gives to the tools of meld (the prompts say `mcp__meld__board`), whether Codex reports its MCP calls as tool calls (then the leader counts each board call twice), and the approval mode of Codex against the verdicts of meld. | Claude Code and Codex finish one request together. |
+| 10d | Affinity: an idle worker continues its session while its context stays under a share of the window of its model. Else a fresh agent starts with the handover. Built: the share is one half. A Claude worker gets its context from each model call, and an ACP worker from `usage_update`. A live check in this session showed that a message to a subagent that ended its turn continues it with its context. | Tests cover both cases, for Claude workers and for ACP workers. |
+| 10e | A live run with Codex (`npx -y @agentclientprotocol/codex-acp`) on a machine with an OpenAI login. Check these open points: the name that Codex gives to the tools of meld (the prompts say `mcp__meld__board`), whether Codex reports its MCP calls as tool calls (then the leader counts each board call twice), the approval mode of Codex against the verdicts of meld, and whether codex-acp sends `usage_update` (without it, a Codex worker gets a new agent for each task). | Claude Code and Codex finish one request together. |
 
 ## Phase 4: hosted (later)
 

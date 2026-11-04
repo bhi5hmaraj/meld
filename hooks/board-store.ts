@@ -50,7 +50,8 @@ export async function copyFromChannel(session: SessionBoard, fetch: (url: string
 
 /**
  * The runner of a hook: an ACP agent, such as Codex, through the runner of meld mcp; every other agent through the engine.
- * The liveness is that of both, so the plugin settles each worker with what it knows.
+ * The liveness is that of both, so the plugin settles each worker with what it knows. A resume of an ACP agent needs a
+ * runner of meld mcp that can resume; the plugin never resumes one, as only meld mcp starts ACP workers again.
  */
 export function sessionRunner(session: SessionBoard, engine: Runner, acp: Runner): Runner {
   const connected = session.server !== ''
@@ -67,6 +68,10 @@ export function sessionRunner(session: SessionBoard, engine: Runner, acp: Runner
       const states = await engine.agents()
       if (!states || !connected) return states
       return new Map([...states, ...((await acp.agents()) ?? [])])
+    },
+    resume: async (agentId, text) => {
+      if (!isAcpAgent(agentId)) return engine.resume ? engine.resume(agentId, text) : false
+      return connected && acp.resume ? acp.resume(agentId, text) : false
     },
   }
 }

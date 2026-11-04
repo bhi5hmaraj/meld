@@ -67,6 +67,14 @@ Step 10c divides the restarts between two hosts. Each worker has one host that r
 
 Before this rule, both hosts restarted ACP workers. Both could read the same idle Codex worker and start an agent for it, and the second binding won.
 
+Step 10d adds affinity. An idle worker gets its old agent again while the context of that agent fills less than half of the window of its model (`AFFINITY_SHARE` in `core/board.ts`):
+
+- Each model call of a Claude subagent gives its context: the whole input of the call, against the window of the model of the session. A worker on a model with a smaller window gets the larger window, so meld keeps its session too long.
+- An ACP agent reports its context with `usage_update`, which gives `used` and `size`. An agent that reports none gets a fresh agent each time.
+- The plugin resumes a Claude subagent with a message (`$.session.send`): a message to a subagent that ended its turn continues it from its transcript. meld mcp gives the prompt to the same ACP session.
+- The agent list can show the turn before a resume as ended for a moment. So meld marks a resumed worker idle only after 15 s, or at its hand-back, which the tool guard sees.
+- When a host cannot reach the old agent, the worker gets a fresh agent.
+
 The pane needs one more channel: the workers of Codex write to the board through their own `meld mcp`, and no hook of the main session sees it. Step 10c built it:
 
 - `meld mcp` answers `GET /boards/<id>` over HTTP on a Unix socket, `channels/<pid>.sock` next to the board file. Only the user of the process can open that folder.
