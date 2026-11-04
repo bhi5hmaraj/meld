@@ -15,8 +15,8 @@ Nothing above this interface knows the engine. `openStore` picks the adapter fro
 
 ```ts
 interface Store {
-  readPod(id: PodId): Promise<Pod | null>
-  readyRuns(pod: PodId): Promise<RunSummary[]>
+  readParty(id: PartyId): Promise<Party | null>
+  readyRuns(party: PartyId): Promise<RunSummary[]>
   readRun(id: RunId): Promise<VersionedRun | null>
   commitRun(change: RunChange): Promise<'committed' | 'stale'>
   addContextIfAbsent(entries: ContextEntry[]): Promise<void>
@@ -34,11 +34,11 @@ Search is the one part that differs: SQLite uses FTS5, and Postgres uses `pg_trg
 
 | Table | Rows | Rule |
 |---|---|---|
-| `pods` | one row per pod: name and policies | changed by admins |
-| `members` | the runners that staff a pod: slots and repositories | each member holds a lease |
-| `runs` | one row per run: its pod, the Run JSON and a version | write with `UPDATE ... WHERE version = ?` |
+| `parties` | one row per party: name, leader, host and policies | changed by the leader |
+| `members` | the runners that staff a party: slots and repositories | each member holds a lease |
+| `runs` | one row per run: its party, the Run JSON and a version | write with `UPDATE ... WHERE version = ?` |
 | `events` | what happened: claims, merges, restarts, checks | rows are only added |
-| `context` | what was learned, in the partition of a pod: fact, fail, interface, done | rows are only added, except for changes of trust, retractions and hard deletes |
+| `context` | what was learned, in the partition of a party: fact, fail, interface, done | rows are only added, except for changes of trust, retractions and hard deletes |
 | `leases` | owners of runs, of claims and of worker slots | take and renew with compare-and-set |
 
 **One row per run, not a task table.** The rules work on the whole Run: needs, parents and the version of the task list. A task table needs a mapping layer that drifts from the plugin. With a JSON row, the shape migrations of the plugin (the `run-4` shape today) also upgrade the rows of the service.
@@ -51,7 +51,7 @@ Search is the one part that differs: SQLite uses FTS5, and Postgres uses `pg_trg
 2. **Shared rows are only added.** Events and context entries go to another store with "insert if absent". A repeated upload does no harm.
 3. **Ids that do not collide.** Today a run id is the start time in milliseconds, in base 36 (`hooks/actions.ts`). Two runs that start in the same millisecond get the same id. Add random characters before a run reaches a shared store. Then the run id and the entry number make a key that is unique in every store.
 4. **One schema.** Both stores hold the same Run JSON and the same rows.
-5. **An outbox.** A context entry made in solo mode has an "uploaded" mark. It goes up when the user shares the local pod with a hosted pod.
+5. **An outbox.** A context entry made in solo mode has an "uploaded" mark. It goes up when the user shares the local party with a hosted party.
 
 ## Several sessions on one machine
 

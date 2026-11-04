@@ -4,7 +4,7 @@ Status: draft.
 
 Files, Postgres and a search index such as turbopuffer are not three alternatives. They are three layers, and they stack: Postgres as the store, files as the view that agents read, and a search index that you add later.
 
-Each pod has its own partition of the store ([pods.md](pods.md)). Workers write to and read from the partition of their pod.
+Each party has its own partition of the store ([parties.md](parties.md)). Workers write to the partition of their party. They read their own partition first, then the partitions of related parties, ranked lower.
 
 | | Files (JSON or Markdown) | Postgres | turbopuffer |
 |---|---|---|---|
@@ -33,8 +33,8 @@ In solo mode, the same rules apply, with SQLite as the store.
 Agents use grep, rg and `cat` better than any custom tool. So give them a read-only file view:
 
 - **Writes** go through one tool, `post_context` (the `share` tool today), into the store.
-- **Reads** work two ways: the tool `grep_context(regex, kind, project)`, which searches the pod of the worker, with a trigram index (`pg_trgm`) to keep regex fast; and the file view.
-- **The file view** is the entries of the pod, written into the workspace as `context/<pod>.jsonl`, or one Markdown file per entry. It is written when a worker starts, and a hook refreshes it in Claude Code sessions.
+- **Reads** work two ways: the tool `grep_context(regex, kind, project)`, which searches the party of the worker and its related parties, with a trigram index (`pg_trgm`) to keep regex fast; and the file view.
+- **The file view** is the entries of the party, written into the workspace as `context/<party>.jsonl`, or one Markdown file per entry. It is written when a worker starts, and a hook refreshes it in Claude Code sessions.
 
 That gives the ease of files without their problems with concurrent writes, provenance and deletion.
 
@@ -50,9 +50,9 @@ To learn whether shared knowledge helps before you build the service, try a git 
 
 - Kinds: `fact`, `fail` and `interface` (meld 0.8.0), and `done` (proposed: the summary and the commit of a finished task). Keep `interface` apart from `fact`: interfaces are the contracts between tasks, and a claim reply sends the interfaces of the tasks that it needs.
 - At most 500 characters. A correction is a new entry that names the entry that it replaces.
-- Provenance on each entry: pod, project, repository, run, worker, commit, files, and trust (delivered with green CI, discarded, or live). Trust feeds the ranking.
+- Provenance on each entry: party, project, repository, run, worker, commit, files, and trust (delivered with green CI, discarded, or live). Trust feeds the ranking.
 - Workers treat entries as evidence, not as instructions.
-- Search covers the pod of the worker by default, and ranks entries of the same repository and the same files first.
+- Search covers the party of the worker first, then related parties, ranked lower. Inside each, entries of the same repository and the same files come first.
 - Admins can retract an entry. A leaked secret needs a hard delete.
 - An entry names the commit at which it was true, and its files. A reader can check whether the files changed after that commit, and mark the entry "check first".
 - Runs send entries on deliver, discard and stop. The FAIL entries of a discarded run are among the most useful.

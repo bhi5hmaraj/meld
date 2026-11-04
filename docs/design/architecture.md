@@ -60,12 +60,12 @@ In Cursor, `.cursor/mcp.json` runs the same `meld mcp`. meld starts each worker 
 
 ## The supervisor
 
-One function decides what each run needs: `supervise(run, now, observations)` returns actions such as "start w3" or "release #4". It works at two levels: the pod (which member takes which task) and the run (merges, the final commit, delivery). See [pods.md](pods.md). Only the code that executes the actions differs:
+One function decides what each run needs: `supervise(run, now, observations)` returns actions such as "start w3" or "release #4". It works at two levels: the party (which member takes which task) and the run (merges, the final commit, delivery). See [parties.md](parties.md). Only the code that executes the actions differs:
 
 - In Claude Code, the plugin starts subagents at the end of a turn. Only the engine can start them.
 - In Cursor, the `meld mcp` process that holds the supervisor lease runs the loop, and starts workers through ACP.
 - On a server, `meld serve` runs the loop, and starts workers through cloud APIs.
-- A local session that is a member of a hosted pod asks the service for its actions, and executes them in its own engine.
+- A local session that is a member of a hosted party asks the service for its actions, and executes them in its own engine.
 
 ## Leases
 
