@@ -25,7 +25,7 @@ From a shell: `claude plugin install meld --marketplace bhi5hmaraj/meld`.
 
 In the desktop app, click **+** next to the prompt box, and click **Plugins**. Click **Add marketplace**, type `bhi5hmaraj/meld`, and click **Add plugin**.
 
-meld needs git, and it uses jj 0.40 or newer when jj is installed. It was tested with Claude Code 2.1.317, jj 0.46 and git 2.43 on Linux.
+meld needs git 2.38 or newer, because the integration line merges with `git merge-tree --write-tree`, also for jj. With an older git, meld refuses to start a run and names the version of your git. meld uses jj 0.40 or newer when jj is installed. It was tested with Claude Code 2.1.317, jj 0.46 and git 2.43 on Linux.
 
 ## Start a run
 
