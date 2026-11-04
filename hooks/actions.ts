@@ -188,7 +188,7 @@ async function spawnWorkers(io: Io, run: Run, workers: readonly Worker[] = run.w
 async function spawnOne(io: Io, run: Run, worker: Worker, step?: string): Promise<Spawned> {
   try {
     return await io.spawn({
-      prompt: step ? `${workerPrompt(run, worker.id)}\n\nWhat meld asks of you now: ${step}` : workerPrompt(run, worker.id),
+      prompt: workerPrompt(run, worker.id, step),
       description: `meld ${worker.id}`,
       subagentType: worker.agent.type,
       model: worker.agent.model,
