@@ -1,7 +1,9 @@
 import { expect, test } from 'claude-code/testing'
+import type { ToolCallInput } from 'claude-code'
 
-import { steerRun } from '../hooks/actions'
+import { serveTool, steerRun } from '../hooks/actions'
 import { addTasks, bindWorker, claimTask, declareFinal, finishTask, isFailure, lackingTasks, lineMerged, startRun, steer, takeIntegration } from '../hooks/board'
+import { TOOL } from '../hooks/contract'
 import { vcsFor } from '../hooks/vcs'
 import type { Change, Run, VcsKind, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
@@ -16,6 +18,7 @@ const GIT_MOVE = `git update-ref refs/heads/meld/r1/integration ${FINAL}`
 const JJ_MOVE = `git update-ref refs/heads/meld_integration ${FINAL}`
 const JJ_IMPORT = 'jj -R /tmp/meld/r1/jj --ignore-working-copy git import'
 const IDS: WorkerId[] = ['w1', 'w2', 'w3']
+const LINE_HEAD_READ = 'git rev-parse --verify --quiet refs/heads/meld/r1/integration^{commit}'
 
 function runOf<T>(change: Change<T>): Run {
   if (isFailure(change)) throw new Error(`${change.error}: ${change.message}`)
@@ -177,4 +180,23 @@ test('a steer of a working run leaves the integration line where it is', async (
   await steerRun(io, 'Rename the toggle')
   expect(io.ran('git update-ref')).toBe(false)
   expect(io.current?.line).toEqual({ head: LINE, tasks: [1, 2] })
+})
+
+test('a steer of a working run does not wait for the merges in the queue of the integration line', { timeoutMs: 3000 }, async () => {
+  const workers = IDS.map(id => ({ id, path: `/tmp/meld/r1/${id}`, ref: refOf('git', id), agent: { type: 'meld:worker' } }))
+  let run = startRun({ id: 'r1', request: 'Add a dark theme', repo: '/repo', base: HEAD, vcs: 'git', now: NOW, workers })
+  for (const [index, id] of IDS.entries()) run = runOf(bindWorker(run, id, `agent-${index + 1}`, NOW))
+  run = runOf(claimTask(runOf(addTasks(run, 'w1', { seen: 0, tasks: [{ title: 'Theme tokens' }] }, NOW)), 'w1', 1, 1, NOW))
+  const io = ioWith(run)
+  let release = () => {}
+  io.gates[LINE_HEAD_READ] = new Promise<void>(resolve => (release = resolve))
+  io.answers[`git rev-parse --verify --quiet ${TOKENS}^{commit}`] = TOKENS
+  const finish = { tool: TOOL.finishTask, task: 1, version: 2, commit: TOKENS, summary: 'Tokens', agentId: 'agent-1' }
+  const finishing = serveTool(io, finish as unknown as ToolCallInput)
+  while (!io.commands.includes(LINE_HEAD_READ)) await io.sleep()
+  const steered = await steerRun(io, 'Use blue for the toggle')
+  release()
+  await finishing
+  expect(steered).toBe('All 3 workers get revision 2.')
+  expect(io.current?.revision).toBe(2)
 })

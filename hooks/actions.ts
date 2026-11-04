@@ -37,8 +37,19 @@ type Made = { run: Run; value: unknown; extra?: object } | Failure
 
 let pendingSpawns = 0
 let restarting = false
+let starting = false
 let mirroring: Promise<void> = Promise.resolve()
 let merging: Promise<void> = Promise.resolve()
+/**
+ * The agents that meld told to end and that no worker holds: the agents of a discarded run, and an agent that started
+ * while the person stopped its worker or the run. The guard refuses their calls, as no worker of a run guards them.
+ */
+const retired = new Set<string>()
+
+const STOPPED_YOU = 'meld stopped you. End your turn now.'
+/** Why meld bound no agent to a worker of a run that the person discarded during the spawn. */
+const RUN_ENDED = 'the run ended'
+const STOPPED_CALL = 'meld stopped you. End your turn now with a one-line summary.'
 
 export async function readRun(io: Io): Promise<Run | null> {
   return (await io.read()) ?? null
@@ -51,6 +62,14 @@ async function writeRun(io: Io, change: (run: Run) => Run): Promise<Run | null> 
     return written
   })
   return written
+}
+
+/**
+ * Writes the run `id` only. A spawn or a merge takes seconds, and the person can discard the run and start another one
+ * meanwhile: the write after such a step leaves the other run as it is.
+ */
+function writeRunOf(io: Io, id: string, change: (run: Run) => Run): Promise<Run | null> {
+  return writeRun(io, current => (current.id === id ? change(current) : current))
 }
 
 /** Each write of the run goes through here. After the write, meld mirrors the board. */
@@ -73,9 +92,22 @@ function mirrorBoard(io: Io): Promise<void> {
   return mirroring
 }
 
+const RUN_ACTIVE = 'A run is active. Deliver, discard or stop it first: /meld-deliver, /meld-discard or /meld-stop, or the meld pane.'
+
+/** One start at a time: a second click on Start comes before the first start saves its run, so the run check cannot see it. */
 export async function startRun(io: Io, cwd: string, options: StartOptions): Promise<CommandRunResult> {
+  if (starting) return { text: RUN_ACTIVE }
+  starting = true
+  try {
+    return await startAlone(io, cwd, options)
+  } finally {
+    starting = false
+  }
+}
+
+async function startAlone(io: Io, cwd: string, options: StartOptions): Promise<CommandRunResult> {
   const current = await readRun(io)
-  if (current && LIVE_STATES.has(current.state)) return { text: 'A run is active. Deliver, discard or stop it first: /meld-deliver, /meld-discard or /meld-stop, or the meld pane.' }
+  if (current && LIVE_STATES.has(current.state)) return { text: RUN_ACTIVE }
   const old = await oldGit(io, cwd)
   if (old) return { text: old }
   if (current?.state === 'stopped') {
@@ -134,7 +166,7 @@ async function keptWork(io: Io, run: Run): Promise<string | undefined> {
   const { commits, edits, unread } = await heldWork(io, run)
   const home = runHome(run.id)
   if (unread.length) {
-    const errors = unread.map(lane => `${lane.id}: ${lane.error?.split('\n')[0]}`).join('; ')
+    const errors = unread.map(entry => `${entry.id}: ${entry.error.split('\n')[0]}`).join('; ')
     return `Run ${run.id} stopped, and meld cannot read its workspaces in ${home} (${errors}), so they can hold work. /meld-discard or Discard in the meld pane removes them, then you can start again.`
   }
   if (!commits && !edits.length) return undefined
@@ -176,12 +208,15 @@ async function spawnWorkers(io: Io, run: Run, workers: readonly Worker[] = run.w
       const now = await io.now()
       const agentId = spawned.agentId
       if (agentId) {
-        const unbound = await bindOrRefuse(io, worker.id, agentId, now)
-        if (unbound) refused.push(unbound)
+        const unbound = await bindOrRefuse(io, run.id, worker.id, agentId, now)
+        if (unbound) {
+          refused.push(unbound)
+          retire(io, agentId)
+        }
       } else {
         const reason = spawned.deny ?? 'the engine started no agent'
         refused.push(reason)
-        await writeRun(io, current => board.refuseWorker(current, worker.id, reason, now))
+        await writeRunOf(io, run.id, current => board.refuseWorker(current, worker.id, reason, now))
       }
     } finally {
       pendingSpawns = Math.max(0, pendingSpawns - 1)
@@ -191,18 +226,22 @@ async function spawnWorkers(io: Io, run: Run, workers: readonly Worker[] = run.w
 }
 
 /**
- * Binds a new agent to its worker. A run that ended during the spawn (the integrator declared the final commit, or the
- * person stopped the run) binds no agent: the worker is refused, as a denied spawn is, so that it does not stay starting
- * with no agent, which no beat starts and which keeps the run from being idle. Gives the reason of a refusal.
+ * Binds a new agent to its worker of the run `runId`. A run that ended during the spawn (the integrator declared the final
+ * commit, or the person stopped the run) binds no agent: the worker is refused, as a denied spawn is, so that it does not
+ * stay starting with no agent, which no beat starts and which keeps the run from being idle. A worker with another agent
+ * keeps it, and a run that the person discarded during the spawn binds nothing. Gives the reason when meld bound no agent.
  */
-async function bindOrRefuse(io: Io, id: WorkerId, agentId: string, now: number): Promise<string | undefined> {
-  let reason: string | undefined
-  await writeRun(io, current => {
+async function bindOrRefuse(io: Io, runId: string, id: WorkerId, agentId: string, now: number): Promise<string | undefined> {
+  let reason: string | undefined = RUN_ENDED
+  await writeRunOf(io, runId, current => {
     const bound = board.bindWorker(current, id, agentId, now)
-    if (!board.isFailure(bound)) return bound.run
-    if (current.workers.some(worker => worker.id === id && worker.agentId)) return current
-    reason = `the run is ${current.state}`
-    return board.refuseWorker(current, id, reason, now)
+    if (!board.isFailure(bound)) {
+      reason = undefined
+      return bound.run
+    }
+    const taken = current.workers.some(worker => worker.id === id && worker.agentId)
+    reason = taken ? `${id} has another agent` : `the run is ${current.state}`
+    return taken ? current : board.refuseWorker(current, id, reason, now)
   })
   return reason
 }
@@ -287,13 +326,14 @@ async function mergeTask(io: Io, by: WorkerId, id: number): Promise<void> {
   if (!run || !task) return
   const merged = await vcsFor(run.vcs).mergeIntoLine(io, run, task.commit ?? '', `meld: integrate #${task.id} ${task.title}`)
   const now = await io.now()
-  await writeRun(io, current => {
+  await writeRunOf(io, run.id, current => {
     if (merged.state === 'merged') return board.lineMerged(current, task.id, merged.head, now)
     return runOf(board.addIntegrateTask(current, task.id, integrateDetail(current, task, merged), now), current)
   })
   if (merged.state === 'merged') return
   const after = await readRun(io)
-  for (const peer of after?.workers ?? []) if (peer.id !== by && peer.state === 'working') tell(io, peer, wakeText('There is open work on the board.'))
+  if (after?.id !== run.id) return
+  for (const peer of after.workers) if (peer.id !== by && peer.state === 'working') tell(io, peer, wakeText('There is open work on the board.'))
 }
 
 /** A tool call of a worker: the worker works, and the call counts. A call can bring a leaf of the worker to its nudge. */
@@ -521,9 +561,16 @@ function tell(io: Io, worker: Worker, message: string): void {
   if (worker.agentId) void io.send(worker.agentId, message).catch(() => undefined)
 }
 
+/** An agent that no worker holds ends: it hears to end its turn, and the guard refuses its calls. */
+function retire(io: Io, agentId: string): void {
+  retired.add(agentId)
+  void io.send(agentId, STOPPED_YOU).catch(() => undefined)
+}
+
 /**
  * The run of an idle worker has ended (the engine drops a spawned agent at its hand-back), so meld starts a new agent
- * for that worker, in its folder, with the step in its prompt.
+ * for that worker, in its folder, with the step in its prompt. When the person stopped the worker or the run during the
+ * start, the new agent takes no place: it ends, and the worker stays as the person left it.
  */
 async function restart(io: Io, worker: Worker, step: string): Promise<boolean> {
   const run = await readRun(io)
@@ -537,8 +584,14 @@ async function restart(io: Io, worker: Worker, step: string): Promise<boolean> {
       io.toast(`meld: ${worker.id} could not start again: ${spawned.deny ?? 'the engine started no agent'}.`)
       return false
     }
-    await writeRun(io, current => board.restartWorker(current, worker.id, agentId, now))
-    return true
+    let bound = false
+    await writeRunOf(io, run.id, current => {
+      const restarted = board.restartWorker(current, worker.id, agentId, now)
+      bound = !board.isFailure(restarted)
+      return board.isFailure(restarted) ? current : restarted.run
+    })
+    if (!bound) retire(io, agentId)
+    return bound
   } finally {
     pendingSpawns = Math.max(0, pendingSpawns - 1)
   }
@@ -546,11 +599,11 @@ async function restart(io: Io, worker: Worker, step: string): Promise<boolean> {
 
 /** A deny reason for a tool call of a worker, or undefined; records the call as the worker's activity. */
 export async function guardCall(io: Io, e: ToolCallInput): Promise<string | undefined> {
-  if (e.agentId === undefined) return undefined
+  if (e.agentId === undefined || String(e.tool) === HANDBACK_TOOL) return undefined
   const run = await readRun(io)
   const worker = run ? board.workerOf(run, e.agentId) : undefined
-  if (!run || !worker || String(e.tool) === HANDBACK_TOOL) return undefined
-  if (worker.state === 'stopped' || run.state === 'stopped') return 'meld stopped you. End your turn now with a one-line summary.'
+  if (!run || !worker) return retired.has(e.agentId) ? STOPPED_CALL : undefined
+  if (worker.state === 'stopped' || run.state === 'stopped') return STOPPED_CALL
   if (run.state === 'ready' || run.state === 'delivered') return 'The meld run has its final commit. End your turn now.'
   const path = editedPath(e)
   if (path && !isInside(path, worker.path)) return `meld: you work in ${worker.path}. Edit ${moved(path, run.repo, worker.path)} instead.`
@@ -783,8 +836,12 @@ async function trySteer(io: Io, instruction: string): Promise<Steered> {
  * that commit: the merges after the steer and the next final build on it. The move runs in the chain of merges, as it
  * moves the line too. It gives the commit that the line moved to, nothing for a run that is not ready, or why the line
  * could not move: then the steer changes nothing. The board refuses a steer of a ready run whose line did not move.
+ * A steer of a run that is not ready waits for no merge: when the run becomes ready before the steer saves, the board
+ * refuses the steer, and the next try moves the line.
  */
-function lineToFinal(io: Io): Promise<{ moved?: string } | { error: string }> {
+async function lineToFinal(io: Io): Promise<{ moved?: string } | { error: string }> {
+  const current = await readRun(io)
+  if (current?.state !== 'ready' || !current.final) return {}
   const moved = merging.then(async () => {
     const run = await readRun(io)
     if (run?.state !== 'ready' || !run.final) return {}
@@ -859,13 +916,18 @@ export async function addWorker(io: Io, agentText: string): Promise<string> {
   if (!run || !ACTIVE_RUN.has(run.state)) return NO_RUN_AT_WORK
   if (run.workers.length >= MAX_AGENTS) return `A run has ${MAX_AGENTS} workers at most.`
   const id = nextWorkerId(run)
-  const made = await vcsFor(run.vcs).addWorkspace(io, run, id)
+  const vcs = vcsFor(run.vcs)
+  const made = await vcs.addWorkspace(io, run, id)
   if ('error' in made) return `meld could not make the workspace of ${id}: ${made.error}`
   const agent = agentText ? agentSpecOf(agentText) : (run.workers[0]?.agent ?? { type: WORKER_TYPE })
   const now = await io.now()
-  const joined = await writeRun(io, current => board.addWorker(current, { id, agent, path: made.path, ref: made.ref }, now))
-  const worker = joined?.workers.find(one => one.id === id)
-  if (!joined || !worker) return NO_RUN_AT_WORK
+  const joined = await writeRunOf(io, run.id, current => board.addWorker(current, { id, agent, path: made.path, ref: made.ref }, now))
+  if (joined?.id !== run.id) {
+    await vcs.remove(io, { id: run.id, repo: run.repo, workers: [made] })
+    return `${id} did not join: the run ended while meld made its workspace.`
+  }
+  const worker = joined.workers.find(one => one.id === id)
+  if (!worker) return NO_RUN_AT_WORK
   const refused = await spawnWorkers(io, joined, [worker])
   if (refused.length) return `${id} joined the run, but its agent did not start: ${refused[0]}.`
   return `${id} joined the run. Its workspace is ${made.path}, from ${run.line ? 'the integration line' : 'the base'}.`
@@ -889,7 +951,7 @@ export async function deliver(io: Io): Promise<string> {
   const merged = await vcs.deliver(io, run, run.final.commit, deliveryMessage(run))
   if (!merged.ok) return `The merge stopped, and nothing changed: ${merged.err || merged.out}`
   const now = await io.now()
-  await writeRun(io, current => board.markDelivered(current, now))
+  await writeRunOf(io, run.id, current => board.markDelivered(current, now))
   await vcs.remove(io, run)
   return `Merged ${run.final.commit.slice(0, 7)} into your branch.`
 }
@@ -913,8 +975,10 @@ export async function discard(io: Io): Promise<string> {
 /**
  * Drops the run and its facts, then removes the workspaces of a run that meld did not deliver. The run goes first: a
  * worker that ends its turn during the removal then writes no run, so no mirror of the board makes its folder again.
+ * Its agents retire, so the guard refuses the calls of an agent that still runs during the removal.
  */
 async function dropRun(io: Io, run: Run): Promise<void> {
+  for (const worker of run.workers) if (worker.agentId) retired.add(worker.agentId)
   await save(io, () => null)
   await io.writeFacts(null)
   if (run.state !== 'delivered') await vcsFor(run.vcs).remove(io, run)

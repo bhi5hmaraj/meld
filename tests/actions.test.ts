@@ -189,10 +189,15 @@ function jjFreshLog(run: string, worker: WorkerId): string {
   return `jj -R /tmp/meld/${run}/${worker} log --no-graph --limit 40 -r meld_base..${worker}@ -T ${JJ_LANE_TEMPLATE}`
 }
 
+/** The jj log of the commits since the base that no working copy holds. */
+function jjStrayLog(run: string): string {
+  return `jj -R /tmp/meld/${run}/jj --ignore-working-copy log --no-graph --limit 40 -r meld_base.. ~ ::working_copies() -T ${JJ_LANE_TEMPLATE}`
+}
+
 test('a start over a stopped run with no work removes its workspaces as Discard does, then starts', async () => {
   const io = ioWith(stopRun(working(), NOW))
   const result = await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'git' })
-  expect(io.commands).toContain('git worktree remove --force /tmp/meld/r1/w1')
+  expect(io.commands).toContain('git worktree prune')
   expect(io.commands).toContain('git branch -D meld/r1/w2')
   expect(io.commands).toContain('git branch -D meld/r1/integration')
   expect(io.commands.indexOf('rm -rf -- /tmp/meld/r1')).toBeLessThan(io.commands.indexOf(`git worktree add -b meld/${ID}/w1 /tmp/meld/${ID}/w1 ${HEAD}`))
@@ -207,7 +212,7 @@ test('a start after a start that started no worker removes the workspaces of the
   io.spawnDeny = undefined
   io.now = async () => NOW + 60_000
   const result = await startRun(io, '/repo', { request: 'Add a dark theme', agents: TWO, vcs: 'git' })
-  expect(io.commands).toContain(`git worktree remove --force /tmp/meld/${ID}/w2`)
+  expect(io.commands).toContain(`git branch -D meld/${ID}/w2`)
   expect(io.commands).toContain(`rm -rf -- /tmp/meld/${ID}`)
   expect(io.current?.id).toBe((NOW + 60_000).toString(36))
   expect(result.text).toBe(`Run ${(NOW + 60_000).toString(36)}: 2 workers on git, from commit ${HEAD.slice(0, 7)}.`)
@@ -241,7 +246,7 @@ test('a start over a stopped jj run reads each workspace in its folder, so edits
   io.answers[jjFreshLog('r1', 'w2')] = `${FULL}\t1\t--\tw2@\t\n`
   const result = await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'auto' })
   expect(result.text).toBe('Run r1 stopped with work in /tmp/meld/r1: 0 commits, and uncommitted edits in w2. /meld-discard or Discard in the meld pane removes its workspaces, then you can start again.')
-  expect(io.commands.filter(command => command.includes(' log '))).toEqual(['w1', 'w2', 'w3'].map(id => jjFreshLog('r1', id as WorkerId)))
+  expect(io.commands.filter(command => command.includes(' log '))).toEqual([...(['w1', 'w2', 'w3'] as WorkerId[]).map(id => jjFreshLog('r1', id)), jjStrayLog('r1')])
   expect(io.ran('rm')).toBe(false)
 })
 
@@ -721,9 +726,10 @@ test('deliver refuses a checkout with uncommitted changes', async () => {
 
 test('deliver merges the final commit, then removes the workspaces', async () => {
   const io = ioWith(runOf(declareFinal(runOf(takeIntegration(working(), 'w2', NOW)), 'w2', FULL, 'Done', NOW)))
+  const merge = `git merge --no-ff -m meld: Done\n\nAdd a dark theme ${FULL}`
   expect(await deliver(io)).toBe(`Merged ${FULL.slice(0, 7)} into your branch.`)
-  expect(io.commands).toContain(`git merge --no-ff -m meld: Done\n\nAdd a dark theme ${FULL}`)
-  expect(io.commands).toContain('git worktree remove --force /tmp/meld/r1/w2')
+  expect(io.commands).toContain(merge)
+  expect(io.commands.indexOf('rm -rf -- /tmp/meld/r1')).toBeGreaterThan(io.commands.indexOf(merge))
   expect(io.current?.state).toBe('delivered')
 })
 
@@ -988,4 +994,18 @@ test('deliver writes no mirror into the folder that it removed', async () => {
   await deliver(io)
   expect(io.current?.state).toBe('delivered')
   expect(io.files[BOARD_FILE]).toBeUndefined()
+})
+
+test('a start while another start makes its workspaces, as a second click on Start does, makes and starts nothing', async () => {
+  const io = ioWith(null)
+  let release = () => {}
+  io.gates[`git worktree add -b meld/${ID}/w1 /tmp/meld/${ID}/w1 ${HEAD}`] = new Promise<void>(resolve => (release = resolve))
+  const first = startRun(io, '/repo', { request: 'Add a dark theme', agents: TWO, vcs: 'git' })
+  while (!io.ran('git worktree add')) await io.sleep()
+  const second = startRun(io, '/repo', { request: 'Add a dark theme', agents: TWO, vcs: 'git' })
+  release()
+  expect((await second).text).toBe('A run is active. Deliver, discard or stop it first: /meld-deliver, /meld-discard or /meld-stop, or the meld pane.')
+  expect((await first).text).toBe(`Run ${ID}: 2 workers on git, from commit ${HEAD.slice(0, 7)}.`)
+  expect(io.commands.filter(command => command.startsWith('git worktree add'))).toHaveLength(2)
+  expect(io.spawned).toHaveLength(2)
 })

@@ -139,11 +139,16 @@ export function addTokens(run: Run, id: WorkerId, tokens: number): Run {
   return replaceWorker(run, { ...worker, tokens: worker.tokens + tokens })
 }
 
-/** A new agent takes the place of a worker whose run ended: it works in the same folder, and reads its rules and the current context again. */
-export function restartWorker(run: Run, id: WorkerId, agentId: string, now: number): Run {
+/**
+ * A new agent takes the place of a worker whose run ended: it works in the same folder, and reads its rules and the current
+ * context again. The person can stop the worker or the run while the engine starts the agent: then the agent takes no place.
+ */
+export function restartWorker(run: Run, id: WorkerId, agentId: string, now: number): Change<Worker> {
+  if (run.state !== 'working') return failure('RUN_ENDED', `The run is ${run.state}.`)
   const { seenContext: _seen, ...worker } = findWorker(run, id)
-  const restarted = replaceWorker(run, { ...worker, agentId, state: 'working', briefed: false, activity: 'started again', activityAt: now })
-  return withEntry(restarted, { at: now, by: 'you', kind: 'event', text: `${id} starts again` })
+  if (worker.state === 'stopped') return failure('WORKER_STOPPED', `The person stopped ${id}.`)
+  const restarted: Worker = { ...worker, agentId, state: 'working', briefed: false, activity: 'started again', activityAt: now }
+  return { run: withEntry(replaceWorker(run, restarted), { at: now, by: 'you', kind: 'event', text: `${id} starts again` }), value: restarted }
 }
 
 /** Adds a batch of tasks only when the worker has seen the current task list: a stale add fails alone and shows the tasks it missed. */

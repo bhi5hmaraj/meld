@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
 import { markWorker, restartIdleWorkers, serveTool } from '../hooks/actions'
-import { addTasks, addWorker as joinRun, bindWorker, claimTask, isFailure, startRun, takeIntegration } from '../hooks/board'
+import { addTasks, addWorker as joinRun, bindWorker, claimTask, isFailure, startRun, stopRun, stopWorker, takeIntegration } from '../hooks/board'
 import type { Change, NewTask, Run, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
 
@@ -84,4 +84,25 @@ test('a worker that is starting with no agent takes no open task: a beat starts 
   await restartIdleWorkers(io)
   expect(io.current?.workers.map(worker => worker.state)).toEqual(['working', 'working', 'idle', 'starting'])
   expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w2'])
+})
+
+test('a stop of a worker while meld starts it again keeps it stopped, and its new agent hears to end its turn', async () => {
+  const io = ioWith(runOf(claimTask(withTasks([{ title: 'Tokens' }, { title: 'Docs' }]), 'w1', 1, 1, NOW)))
+  await markWorker(io, 'agent-2', 'idle')
+  await markWorker(io, 'agent-3', 'idle')
+  io.during['meld w2'] = run => stopWorker(run, 'w2', NOW)
+  await restartIdleWorkers(io)
+  expect(io.current?.workers.find(worker => worker.id === 'w2')).toMatchObject({ state: 'stopped', agentId: 'agent-2' })
+  expect(io.sent).toContain('spawned-1: meld stopped you. End your turn now.')
+})
+
+test('a stop of the run while meld starts a worker again starts no work: the run stays stopped, and the new agent hears to end its turn', async () => {
+  const io = ioWith(runOf(claimTask(withTasks([{ title: 'Tokens' }, { title: 'Docs' }]), 'w1', 1, 1, NOW)))
+  await markWorker(io, 'agent-2', 'idle')
+  await markWorker(io, 'agent-3', 'idle')
+  io.during['meld w2'] = run => stopRun(run, NOW)
+  await restartIdleWorkers(io)
+  expect(io.current?.state).toBe('stopped')
+  expect(io.current?.workers.every(worker => worker.state === 'stopped')).toBe(true)
+  expect(io.sent).toContain('spawned-1: meld stopped you. End your turn now.')
 })

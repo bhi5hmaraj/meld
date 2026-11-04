@@ -465,9 +465,14 @@ test('the first reply to an agent carries the current entries, 20 at most, its o
   expect(passContext(first.run, 'w1').context).toEqual([])
 })
 
+test('a worker that the person stopped, or a worker of a run that does not work, takes no new agent', () => {
+  expect(restartWorker(stopWorker(working(), 'w1', NOW), 'w1', 'agent-9', NOW)).toMatchObject({ error: 'WORKER_STOPPED' })
+  expect(restartWorker(stopRun(working(), NOW), 'w2', 'agent-9', NOW)).toMatchObject({ error: 'RUN_ENDED' })
+})
+
 test('a new agent of a worker gets the current entries again at its first reply', () => {
   const read = passContext(runOf(shareEntry(working(), 'w2', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW)), 'w1').run
-  const again = passContext(restartWorker(read, 'w1', 'agent-9', NOW), 'w1')
+  const again = passContext(runOf(restartWorker(read, 'w1', 'agent-9', NOW)), 'w1')
   expect(again.context.map(entry => [entry.text, entry.seenBy])).toEqual([['The theme lives in theme.css', ['w1']]])
   expect(passContext(again.run, 'w1').context).toEqual([])
 })

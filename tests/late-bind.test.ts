@@ -2,7 +2,6 @@ import { expect, test } from 'claude-code/testing'
 
 import { addWorker, markWorker, steerRun } from '../hooks/actions'
 import { bindWorker, declareFinal, isFailure, startRun, takeIntegration } from '../hooks/board'
-import type { SpawnArgs, Spawned } from '../hooks/io'
 import type { Change, Run, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
 
@@ -23,20 +22,16 @@ function integrating(): Run {
   return runOf(takeIntegration(run, 'w1', NOW))
 }
 
-/**
- * The integrator declares the final commit while the engine starts the agent of a worker that the person added: the
- * run is ready when meld binds that agent, and a ready run binds no agent.
- */
-class FinalDuringSpawn extends FakeIo {
-  override async spawn(args: SpawnArgs): Promise<Spawned> {
-    if (this.current?.state === 'working') this.current = runOf(declareFinal(this.current, 'w1', FINAL, 'A dark theme', NOW))
-    return super.spawn(args)
-  }
+/** The integrator declares the final commit while the engine starts the agent of w3: a ready run binds no agent. */
+function finalDuringSpawn(): FakeIo {
+  const io = new FakeIo()
+  io.current = integrating()
+  io.during['meld w3'] = run => runOf(declareFinal(run, 'w1', FINAL, 'A dark theme', NOW))
+  return io
 }
 
 test('a worker whose agent meld cannot bind, as the run became ready during its spawn, is refused as a denied spawn is', async () => {
-  const io = new FinalDuringSpawn()
-  io.current = integrating()
+  const io = finalDuringSpawn()
   const replied = await addWorker(io, '')
   expect(replied).toBe('w3 joined the run, but its agent did not start: the run is ready.')
   expect(io.current?.workers.map(worker => worker.state)).toEqual(['working', 'working', 'stopped'])
@@ -46,8 +41,7 @@ test('a worker whose agent meld cannot bind, as the run became ready during its 
 })
 
 test('a worker that meld could not bind does not stall the run: a steer starts the lead again', async () => {
-  const io = new FinalDuringSpawn()
-  io.current = integrating()
+  const io = finalDuringSpawn()
   await addWorker(io, '')
   await markWorker(io, 'agent-1', 'idle')
   await markWorker(io, 'agent-2', 'idle')

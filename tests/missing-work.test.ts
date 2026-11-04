@@ -2,8 +2,8 @@ import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
 import { controlRun, deliver, serveTool } from '../hooks/actions'
-import { addTasks, bindWorker, claimTask, declareFinal, finishTask, isFailure, startRun as startBoard, takeIntegration } from '../hooks/board'
-import { TOOL } from '../hooks/contract'
+import { addIntegrateTask, addTasks, bindWorker, claimTask, declareFinal, finishTask, isFailure, lackingTasks, lineMerged, startRun as startBoard, takeIntegration } from '../hooks/board'
+import { integrateStep, missingWorkText, TOOL } from '../hooks/contract'
 import { JJ_RESOLVE_TEMPLATE, vcsFor } from '../hooks/vcs'
 import type { ProcessResult } from '../hooks/io'
 import type { Change, Run, VcsKind, WorkerId } from '../types'
@@ -14,6 +14,8 @@ const FULL = 'f'.repeat(40)
 const TOKENS = 'b'.repeat(40)
 const TOGGLE = 'c'.repeat(40)
 const DOCS = 'd'.repeat(40)
+const INTEGRATED = '1'.repeat(40)
+const LINE = '2'.repeat(40)
 const STORE = '/tmp/meld/r1/store.git'
 const LACKS_TOGGLE = `git merge-base --is-ancestor ${TOGGLE} ${FULL}`
 const REFUSED_DELIVERY =
@@ -240,4 +242,27 @@ test('Deliver in the pane refuses it too, and its toast names the task and the s
   expect(ran.some(command => command.startsWith('git merge --no-ff'))).toBe(false)
   expect(written).toEqual([])
   await ui.unmount()
+})
+
+
+test('when a task and its task "integrate #N" both lack in the final commit, the steps merge only the commit of the integrate task, which holds the task', () => {
+  const conflicted = runOf(addIntegrateTask(finished(planned(), 2, 'w2', TOGGLE), 2, 'The commit conflicts with the line.', NOW))
+  const done = finished(conflicted, 4, 'w1', INTEGRATED)
+  const text = missingWorkText(done, FULL, done.tasks.filter(task => task.id === 2 || task.id === 4))
+  expect(text).toContain(`In your folder: git merge ${INTEGRATED}, fix the conflicts`)
+  expect(text).not.toContain(`git merge ${TOGGLE}`)
+})
+
+test('on jj, the steps of a lacking task and its task "integrate #N" name only the commit of the integrate task', () => {
+  const conflicted = runOf(addIntegrateTask(finished(planned('jj'), 2, 'w2', TOGGLE), 2, 'The commit conflicts with the line.', NOW))
+  const done = finished(conflicted, 4, 'w1', INTEGRATED)
+  const text = missingWorkText(done, FULL, done.tasks.filter(task => task.id === 2 || task.id === 4))
+  expect(text).toContain(`In your folder: jj new ${FULL} ${INTEGRATED} -m "meld: integrate"`)
+})
+
+test('the integration step names only the commit of a task "integrate #N" when the line lacks both it and #N', () => {
+  const lined = lineMerged(finished(planned(), 1, 'w1', TOKENS), 1, LINE, NOW)
+  const conflicted = runOf(addIntegrateTask(finished(lined, 2, 'w2', TOGGLE), 2, 'The commit conflicts with the line.', NOW))
+  const done = finished(conflicted, 4, 'w1', INTEGRATED)
+  expect(integrateStep(done, lackingTasks(done))).toContain(`The line lacks #4 (${INTEGRATED.slice(0, 12)}): merge those commits too.`)
 })

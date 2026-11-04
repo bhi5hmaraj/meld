@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { bindWorker, isFailure, startRun } from '../hooks/board'
-import { detectVcs, JJ_LANE_TEMPLATE, JJ_RESOLVE_TEMPLATE, vcsFor } from '../hooks/vcs'
+import { detectVcs, JJ_LANE_TEMPLATE, JJ_RESOLVE_TEMPLATE, jjConfigMark, vcsFor } from '../hooks/vcs'
 import type { Change, Run, VcsKind, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
 
@@ -117,12 +117,10 @@ test('git delivers with a merge commit and aborts a merge that fails', async () 
   expect(io.commands).toContain('git merge --abort')
 })
 
-test('git removal drops the worktrees, the branches and the run folder', async () => {
+test('git removal removes the run folder, then prunes its worktrees and drops their branches: git, which follows a link, gets no folder', async () => {
   const io = new FakeIo()
   await vcsFor('git').remove(io, runOn('git'))
-  expect(io.commands).toContain('git worktree remove --force /tmp/meld/r1/w2')
-  expect(io.commands).toContain('git branch -D meld/r1/w2')
-  expect(io.commands).toContain('rm -rf -- /tmp/meld/r1')
+  expect(io.commands).toEqual(['rm -rf -- /tmp/meld/r1', 'git worktree prune', 'git branch -D meld/r1/w1', 'git branch -D meld/r1/w2', 'git branch -D meld/r1/integration'])
 })
 
 test('jj makes a private store over the objects of the repository, with one ref for the base', async () => {
@@ -145,13 +143,14 @@ test('jj makes a private store over the objects of the repository, with one ref 
   expect(io.commands).toContain(`jj -R ${JJ_REPO} workspace add --name w2 -r meld_base /tmp/meld/r1/w2`)
 })
 
-test('jj gets a repository config: the identity of git, no editor, and a base that cannot change', async () => {
+test('jj gets a repository config: the run that it belongs to, the identity of git, no editor, and a base that cannot change', async () => {
   const io = new FakeIo()
   io.answers[`jj -R ${JJ_REPO} config path --repo`] = CONFIG
   io.answers['git config user.name'] = 'Sample "Q" Person'
   io.answers['git config user.email'] = 'sample@example.com'
   await vcsFor('jj').prepare(io, { id: 'r1', repo: '/repo', base: HEAD }, ['w1'])
   const config = io.files[CONFIG] ?? ''
+  expect(config.split('\n')[0]).toBe(jjConfigMark('r1'))
   expect(config).toContain('name = "Sample \\"Q\\" Person"')
   expect(config).toContain('email = "sample@example.com"')
   expect(config).toContain('editor = "false"')
@@ -246,6 +245,7 @@ test('jj delivers through a bookmark in the store, a fetch and a merge commit', 
 test('jj removal drops the run folder and the repository config of jj', async () => {
   const io = new FakeIo()
   io.answers[`jj -R ${JJ_REPO} config path --repo`] = CONFIG
+  io.files[CONFIG] = `${jjConfigMark('r1')}\n`
   await vcsFor('jj').remove(io, runOn('jj'))
   expect(io.commands).toContain('rm -rf -- /root/.config/jj/repos/42ee0e08c27ca3c2d862')
   expect(io.commands).toContain('rm -rf -- /tmp/meld/r1')
@@ -359,4 +359,22 @@ test('git removal drops the integration line', async () => {
   const io = new FakeIo()
   await vcsFor('git').remove(io, runOn('git'))
   expect(io.commands).toContain('git branch -D meld/r1/integration')
+})
+
+test('jj removal keeps a repository config that names no meld run, as a link in the run folder can lead jj to the config of a repository of the person', async () => {
+  const io = new FakeIo()
+  io.answers[`jj -R ${JJ_REPO} config path --repo`] = CONFIG
+  io.files[CONFIG] = '[user]\nname = "Sample Person"\n'
+  await vcsFor('jj').remove(io, runOn('jj'))
+  expect(io.commands).not.toContain('rm -rf -- /root/.config/jj/repos/42ee0e08c27ca3c2d862')
+  expect(io.commands).toContain('rm -rf -- /tmp/meld/r1')
+})
+
+test('jj removal keeps the repository config of another meld run', async () => {
+  const io = new FakeIo()
+  io.answers[`jj -R ${JJ_REPO} config path --repo`] = CONFIG
+  io.files[CONFIG] = `${jjConfigMark('r2')}\n`
+  await vcsFor('jj').remove(io, runOn('jj'))
+  expect(io.commands).not.toContain('rm -rf -- /root/.config/jj/repos/42ee0e08c27ca3c2d862')
+  expect(io.commands).toContain('rm -rf -- /tmp/meld/r1')
 })

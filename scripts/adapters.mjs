@@ -3,12 +3,12 @@
  * A check of the git and the jj adapter of hooks/vcs.ts with real processes. tsc compiles hooks/ into CommonJS in a
  * temporary folder. Each adapter goes through a run in a temporary git repository: three workspaces, a commit in
  * each, the integration line, the integration, the commits that the final commit lacks, resolve, lanes (and the work that a
- * plain read hides), result, deliver and remove. HOME is a
- * temporary folder, so the check reads and
- * changes no git or jj config of the person. Run: node scripts/adapters.mjs
+ * plain read hides), result, deliver and remove. A second run of one worker checks the work that no lane shows, and a
+ * removal through a folder that an agent made a link. HOME is a temporary folder, so the check reads and changes no git
+ * or jj config of the person. Run: node scripts/adapters.mjs
  */
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -40,6 +40,15 @@ const STEPS = [
   ['join', addWorkers],
   ['line to final', lineToFinal],
   ['remove', remove],
+]
+const SAFETY_STEPS = [
+  ['one worker', prepareOne],
+  ['stray work', strayWork],
+  ['remove through a link', removeThroughLink],
+]
+const JJ_CONFIG_STEPS = [
+  ['one worker again', prepareOne],
+  ['remove through a link in the jj folder', removeThroughInnerLink],
 ]
 
 const require = createRequire(import.meta.url)
@@ -346,6 +355,97 @@ async function remove(s) {
   return s.config ? 'no run folder, jj config, ref or worktree stays' : 'no run folder, branch or worktree stays'
 }
 
+async function prepareOne(s) {
+  s.id = `${s.kind}x${s.stamp}${s.homes.length + 1}`
+  s.home = hooks.vcs.runHome(s.id)
+  s.homes.push(s.home)
+  s.base = sh(s.repo, ['git', 'rev-parse', 'HEAD'])
+  const prepared = await s.vcs.prepare(io, { id: s.id, repo: s.repo, base: s.base }, ['w1'])
+  if ('error' in prepared) throw new Error(prepared.error)
+  const workers = prepared.workspaces.map(workspace => ({ ...workspace, id: 'w1', agent: { type: 'meld:worker' } }))
+  s.run = hooks.board.startRun({ id: s.id, request: `Check ${s.kind}`, repo: s.repo, base: s.base, vcs: s.kind, now: Date.now(), workers })
+  same(await hooks.vcs.heldWork(io, s.run), { commits: 0, edits: [], unread: [] }, 'the work of the new run')
+  return `w1 from ${short(s.base)}, with no work`
+}
+
+/** git: a commit on a detached HEAD of the worktree, which the branch does not hold. jj: an edit that jj new left behind. */
+async function strayWork(s) {
+  const path = s.run.workers[0].path
+  writeFileSync(join(path, 'stray.txt'), 'left behind\n')
+  if (s.kind === 'git') {
+    sh(path, ['git', 'checkout', '-q', '--detach'])
+    sh(path, ['git', 'add', 'stray.txt'])
+    sh(path, ['git', 'commit', '-q', '-m', 'stray'])
+  } else {
+    sh(path, ['jj', 'new', '@-'])
+  }
+  same(await hooks.vcs.heldWork(io, s.run), { commits: 1, edits: [], unread: [] }, 'the work of the run')
+  return s.kind === 'git' ? 'a commit on a detached HEAD of w1 counts as work' : 'an edit in w1 that jj new left behind counts as work'
+}
+
+/**
+ * An agent makes a folder of the run a link to a worktree (git) or a jj repository (jj) of the person. The removal
+ * names no workspace folder to git, and asks jj for no config through a link, so what the link points to stays.
+ */
+async function removeThroughLink(s) {
+  const { kept, config } = s.kind === 'git' ? { kept: join(TEMP, 'kept-git'), config: '' } : keptJj()
+  if (s.kind === 'git') {
+    sh(s.repo, ['git', 'worktree', 'add', '-q', '-b', 'kept', kept, s.base])
+    rmSync(s.run.workers[0].path, { recursive: true, force: true })
+    symlinkSync(kept, s.run.workers[0].path)
+  } else {
+    rmSync(join(s.home, 'jj'), { recursive: true, force: true })
+    symlinkSync(kept, join(s.home, 'jj'))
+  }
+  await s.vcs.remove(io, s.run)
+  if (existsSync(s.home)) throw new Error(`${s.home} stays`)
+  if (!existsSync(join(kept, s.kind === 'git' ? 'README.md' : '.jj'))) throw new Error(`${kept} is gone`)
+  if (s.kind === 'jj') {
+    if (!existsSync(config)) throw new Error(`the repository config of ${kept} is gone`)
+    return `the jj folder of the run as a link to ${kept}: the run folder goes, and ${kept} keeps its repository config`
+  }
+  same(sh(s.repo, ['git', 'worktree', 'list', '--porcelain']).split('\n').filter(line => line.startsWith('worktree ')), [`worktree ${s.repo}`, `worktree ${kept}`], 'the worktrees')
+  same(sh(s.repo, ['git', 'for-each-ref', '--format=%(refname)', 'refs/heads/meld']), '', 'the branches of the run')
+  return `w1 as a link to the worktree ${kept}: the run folder and its branches go, and ${kept} stays`
+}
+
+/**
+ * An agent makes .jj/repo in the jj folder of the run a link to the store of a jj repository of the person. jj then names
+ * the config of that repository, which names no run, so the removal keeps it, and rm removes the link, not the store.
+ */
+async function removeThroughInnerLink(s) {
+  const { kept, config } = keptJj()
+  const store = join(s.home, 'jj', '.jj', 'repo')
+  rmSync(store, { recursive: true, force: true })
+  symlinkSync(join(kept, '.jj', 'repo'), store)
+  same(sh(s.repo, ['jj', '-R', join(s.home, 'jj'), 'config', 'path', '--repo']), config, 'the config that jj names for the run')
+  await s.vcs.remove(io, s.run)
+  if (existsSync(s.home)) throw new Error(`${s.home} stays`)
+  if (!existsSync(config)) throw new Error(`the repository config of ${kept} is gone`)
+  if (!existsSync(join(kept, '.jj', 'repo', 'store'))) throw new Error(`the store of ${kept} is gone`)
+  return `.jj/repo of the run as a link to the store of ${kept}: the run folder goes, and ${kept} keeps its store and repository config`
+}
+
+/** A jj repository of the person with a repository config, made once, for a link of an agent to point to. */
+function keptJj() {
+  const kept = join(TEMP, 'kept-jj')
+  if (!existsSync(kept)) {
+    sh(TEMP, ['jj', 'git', 'init', kept])
+    sh(kept, ['jj', 'config', 'set', '--repo', 'user.name', 'kept'])
+  }
+  return { kept, config: sh(kept, ['jj', 'config', 'path', '--repo']) }
+}
+
+async function checkSafety(kind) {
+  const s = { kind, stamp: Date.now().toString(36), vcs: hooks.vcs.vcsFor(kind), repo: join(TEMP, kind), homes: [] }
+  const steps = kind === 'jj' ? [...SAFETY_STEPS, ...JJ_CONFIG_STEPS] : SAFETY_STEPS
+  try {
+    for (const [name, action] of steps) if (!(await step(`${kind} ${name}`, () => action(s)))) return
+  } finally {
+    for (const home of s.homes) rmSync(home, { recursive: true, force: true })
+  }
+}
+
 async function checkAdapter(kind) {
   const id = `${kind}${Date.now().toString(36)}`
   const s = { kind, id, vcs: hooks.vcs.vcsFor(kind), home: hooks.vcs.runHome(id), repo: join(TEMP, kind), commits: {} }
@@ -360,7 +460,9 @@ try {
   mkdirSync(HOME)
   if (await step('compile', compile)) {
     await checkAdapter('git')
+    await checkSafety('git')
     await checkAdapter('jj')
+    await checkSafety('jj')
   }
 } finally {
   rmSync(TEMP, { recursive: true, force: true })

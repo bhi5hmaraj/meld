@@ -145,7 +145,7 @@ The first board reply to a new agent carries the 20 newest current entries. Each
 
 **Board file.** After each change, meld writes the board to `/tmp/meld/<run>/board.json`: the tasks, the log and the shared context. The file stays when your session ends. Deliver and Discard remove it. Deliver marks the run delivered, and Discard drops it, before the removal, so an agent that ends its turn during the removal does not write the file again. `/meld-clean` removes the folders of runs that your session does not store.
 
-**Edit guard.** meld refuses an edit that an agent makes outside its own workspace.
+**Edit guard.** meld refuses an edit that an agent makes outside its own workspace. It refuses each tool call of an agent that you stopped, of an agent of a stopped or discarded run, and of a new agent that took no place on the board, and tells that agent to end its turn.
 
 </details>
 
@@ -168,9 +168,9 @@ A restarted agent reads its rules at its first board read. meld reads the agent 
 
 **Auto mode.** In auto mode, a classifier decides each Agent call, and it allows a call that it can link to your request. It cannot link a start that a plugin makes, so that start fails. A plugin may approve an action, so meld approves each start and restart of an agent while a run that you started is live. Each action of an agent goes through the mode of your session, and a deny from your rules or your organization stands.
 
-**jj.** meld uses jj when jj 0.40 or newer answers in the repository. jj works over a private git store of the run: a bare git repository under `/tmp/meld/<run>/`. The store reads the objects of your repository through git alternates and has one ref for the base. It copies no objects, and the refs of jj do not go into your repository. The jj repository of the run has the git identity of your repository, a base that no agent can rewrite, and no editor: a jj command without `-m` fails and does not wait. Deliver sets a bookmark on the final commit in the store, fetches that commit into your repository, and merges it. Deliver and Discard remove the folder of the run and the jj config of the run.
+**jj.** meld uses jj when jj 0.40 or newer answers in the repository. jj works over a private git store of the run: a bare git repository under `/tmp/meld/<run>/`. The store reads the objects of your repository through git alternates and has one ref for the base. It copies no objects, and the refs of jj do not go into your repository. The jj repository of the run has the git identity of your repository, a base that no agent can rewrite, and no editor: a jj command without `-m` fails and does not wait. Deliver sets a bookmark on the final commit in the store, fetches that commit into your repository, and merges it. Deliver and Discard remove the folder of the run and the jj config of the run. The first line of that config names the run, and meld removes a jj config only when that line names the run.
 
-**git.** meld uses git when jj is not installed, when jj is older than 0.40, or when you give `--vcs git`. With `--vcs auto`, meld uses git when jj cannot make the workspaces, and the start message tells you why. Each agent gets a worktree and a branch. Deliver merges the final commit and removes the worktrees and the branches.
+**git.** meld uses git when jj is not installed, when jj is older than 0.40, or when you give `--vcs git`. With `--vcs auto`, meld uses git when jj cannot make the workspaces, and the start message tells you why. Each agent gets a worktree and a branch. Deliver merges the final commit and removes the worktrees and the branches. A removal removes the run folder first, then prunes the worktrees and drops the branches, so it gives git no folder that an agent can make a link.
 
 </details>
 
@@ -194,6 +194,19 @@ A restarted agent reads its rules at its first board read. meld reads the agent 
 **Peers.** The rules tell an agent to merge the branch of another agent only when its own task needs that code. The line gathers the finished tasks, so a merge to stay current only adds conflicts and context.
 
 </details>
+
+## What changed in 0.8.1
+
+This release fixes six findings of the two reviews of 0.8.0, and two more gaps that the checks of those fixes found. Each fix has a test that failed before the fix. `scripts/adapters.mjs` runs the first two fixes on real git and jj repositories.
+
+- **A removal does not follow a link.** An agent can make a folder of its run a link. With jj, meld asked jj for the repository config through the run folder, so jj named the config of the repository that the link points to, and meld removed that config. A check on real repositories showed it for a link at the jj folder and at `.jj/repo` in it. Now meld writes the run id in the first line of each jj config that it makes, and removes a config only when that line names the run. With git, meld removes the run folder first, then prunes the worktrees and drops their branches, so it gives git no folder. Before, `git worktree remove` refused a folder that was a link, and the branch and the worktree record of the worker stayed. A run that meld 0.8.0 or older made keeps its jj config at removal: a folder of a few hundred bytes under `~/.config/jj/repos/`.
+- **Work that no lane shows.** The work check of a new start and of `/meld-clean --all` also reads each worktree from its `HEAD`, so a commit on a detached `HEAD` counts. With jj, it also reads the commits since the base that no working copy holds, so an edit that a later `jj new` left behind counts. Before, such work read as no work, and a new start or `--all` removed it.
+- **A stop during a restart stands.** When you stop an agent or the run while meld starts a new agent for it, the new agent takes no place on the board, and meld tells it to end its turn. Before, the new agent took the place of the stopped worker, and the worker was at work again.
+- **The guard after Discard.** The agents of a discarded run, and a new agent that takes no place, get no tool call through: the guard tells them to end their turn. Before, the guard let through each call of an agent that no worker of the run held.
+- **A steer does not wait for merges.** A steer of a run at work saves at once. Before, it waited for each merge in the queue of the integration line.
+- **An integrate task replaces its task.** When the final commit or the line lacks a task and its task `integrate #N`, the steps name only the commit of the integrate task, which holds the task with its conflicts fixed. Before, they named both, and a merge of the task first made the conflict again.
+- **A run that replaced the run.** A spawn, a merge and a delivery take seconds. When you discard the run and start another one in that time, meld now writes nothing to the new run, and the new agent of the old run hears to end its turn. Before, an agent of the old run could take a worker of the new run, and the merge of an old task or a delivery could change the new run.
+- **One start at a time.** A second click on Start, or `/meld` while a start runs, gets "A run is active". Before, both starts made workspaces, and the later one saved over the first.
 
 ## What changed in 0.8.0
 

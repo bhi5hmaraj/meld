@@ -66,7 +66,18 @@ export type Vcs = {
   remove(io: Io, run: RunPlace): Promise<void>
   /** The workspace of a worker that joins a live run: from the head of the integration line, or from the base when the run has no line. */
   addWorkspace(io: Io, run: Run, id: WorkerId): Promise<Workspace | { error: string }>
+  /**
+   * The commits that the lanes do not show. git: the commits on the HEAD of each worktree, as on a detached HEAD. jj: the
+   * commits that no working copy holds, as the edits that an agent left before the next agent ran jj new.
+   */
+  strayWork(io: Io, run: LanePlace): Promise<StrayWork>
 }
+
+/** What meld could not read of the work of a run: a worker or the jj repository of the run, and the error. */
+export type Unread = { id: string; error: string }
+
+/** The commits that the lanes of a run do not show, and the reads that failed. */
+export type StrayWork = { commits: string[]; unread: Unread[] }
 
 export function runHome(id: string): string {
   return `${MELD_ROOT}/${id}`
@@ -106,8 +117,8 @@ export type RunPlace = { id: string; repo: string; workers: readonly Workspace[]
 /** What a read of the lanes needs of a run: its id, the repository of the person, the base, and each worker with its workspace. */
 export type LanePlace = { id: string; repo: string; base: string; workers: readonly (Workspace & { id: WorkerId })[] }
 
-/** The work in the workspaces of a run: its commits since the base, the workers with uncommitted edits, and the lanes that meld cannot read. */
-export type HeldWork = { commits: number; edits: WorkerId[]; unread: LaneFacts[] }
+/** The work in the workspaces of a run: its commits since the base, the workers with uncommitted edits, and what meld cannot read. */
+export type HeldWork = { commits: number; edits: WorkerId[]; unread: Unread[] }
 
 /** The workspace of a worker of the run `id`: the folder and the ref that prepare makes for it. */
 export function workspaceOf(kind: VcsKind, id: string, worker: WorkerId): Workspace {
@@ -116,14 +127,18 @@ export function workspaceOf(kind: VcsKind, id: string, worker: WorkerId): Worksp
 
 /**
  * Reads the work in the workspaces of a run that no agent works in. jj first records the files of each workspace, as a
- * worker can stop after an edit and before its next jj command. A commit that two lanes hold counts once.
+ * worker can stop after an edit and before its next jj command. The stray commits count too, after the lanes, so jj reads
+ * the recorded files. A commit that two reads hold counts once.
  */
 export async function heldWork(io: Io, run: LanePlace & { vcs: VcsKind }): Promise<HeldWork> {
-  const lanes = await vcsFor(run.vcs).lanes(io, run, { snapshot: true })
+  const vcs = vcsFor(run.vcs)
+  const lanes = await vcs.lanes(io, run, { snapshot: true })
+  const stray = await vcs.strayWork(io, run)
+  const unreadLanes = lanes.flatMap(lane => (lane.error === undefined ? [] : [{ id: lane.id, error: lane.error }]))
   return {
-    commits: new Set(lanes.flatMap(lane => lane.commits.map(fact => fact.commit))).size,
+    commits: new Set([...lanes.flatMap(lane => lane.commits.map(fact => fact.commit)), ...stray.commits]).size,
     edits: lanes.filter(lane => lane.edits).map(lane => lane.id),
-    unread: lanes.filter(lane => lane.error !== undefined),
+    unread: [...unreadLanes, ...stray.unread],
   }
 }
 
@@ -254,12 +269,28 @@ const GIT: Vcs = {
 
   deliver: (io, run, commit, message) => mergeInto(io, run.repo, commit, message),
 
+  /**
+   * A removal names no workspace folder to git: git worktree remove follows a folder that is a link to the worktree that it
+   * points to. So meld removes the folder of the run, which rm does not follow, prunes the worktrees whose folders are
+   * gone, then drops the branches that they held.
+   */
   async remove(io, run) {
     if (!SAFE_ID.test(run.id)) return
-    for (const worker of run.workers) await dropWorktree(io, run.repo, worker)
-    await git(io, run.repo, ['branch', '-D', gitLine(run)])
     await removeFolder(io, run.id)
     await git(io, run.repo, ['worktree', 'prune'])
+    for (const worker of run.workers) await git(io, run.repo, ['branch', '-D', worker.ref])
+    await git(io, run.repo, ['branch', '-D', gitLine(run)])
+  },
+
+  /** The log of each worktree from its HEAD and its branch, in the worktree, so a commit on a detached HEAD counts. */
+  async strayWork(io, run) {
+    const stray: StrayWork = { commits: [], unread: [] }
+    for (const worker of run.workers) {
+      const log = await git(io, worker.path, ['log', '--format=%H%x09%P%x09%s', '-n', LANE_LIMIT, `^${run.base}`, worker.ref, 'HEAD'])
+      if (log.ok) stray.commits.push(...gitCommits(log.out).map(fact => fact.commit))
+      else stray.unread.push({ id: worker.id, error: log.err || log.out })
+    }
+    return stray
   },
 }
 
@@ -362,6 +393,15 @@ const JJ: Vcs = {
   },
 
   remove: (io, run) => removeJj(io, run.id),
+
+  /** The commits since the base that no working copy holds, with something in them: an empty commit holds no work. */
+  async strayWork(io, run) {
+    const revset = `${BASE_BOOKMARK}.. ~ ::working_copies()`
+    const log = await command(io, run.repo, ['jj', '-R', jjRepoOf(run.id), '--ignore-working-copy', 'log', '--no-graph', '--limit', LANE_LIMIT, '-r', revset, '-T', JJ_LANE_TEMPLATE])
+    if (!log.ok) return { commits: [], unread: [{ id: 'jj', error: log.err || log.out }] }
+    const rows = log.out.split('\n').filter(Boolean).map(line => line.split('\t'))
+    return { commits: rows.filter(([, , flags = '']) => !flags.includes('e')).map(([commit = '']) => commit), unread: [] }
+  },
 }
 
 async function makeJjRepo(io: Io, place: Place): Promise<{ ok: true } | { error: string }> {
@@ -382,14 +422,23 @@ async function makeJjRepo(io: Io, place: Place): Promise<{ ok: true } | { error:
   if (!config.ok) return { error: config.err || config.out }
   const name = await git(io, place.repo, ['config', 'user.name'])
   const email = await git(io, place.repo, ['config', 'user.email'])
-  await io.writeFile(config.out, jjConfig(name.ok ? name.out : '', email.ok ? email.out : ''))
+  await io.writeFile(config.out, jjConfig(place.id, name.ok ? name.out : '', email.ok ? email.out : ''))
   return { ok: true }
 }
 
-/** The repository config of jj for a run: the identity of git, no editor (a command without -m fails at once), a base no worker can rewrite. */
-function jjConfig(name: string, email: string): string {
+/** The first line of the repository config of jj that meld writes for the run `id`: a removal takes only a config with this line. */
+export function jjConfigMark(id: string): string {
+  return `# The repository config of the meld run ${id}`
+}
+
+/**
+ * The repository config of jj for a run: the run, the identity of git, no editor (a command without -m fails at once), and
+ * a base no worker can rewrite.
+ */
+function jjConfig(id: string, name: string, email: string): string {
   const user = [name && `name = ${JSON.stringify(name)}`, email && `email = ${JSON.stringify(email)}`].filter(Boolean)
   const sections = [
+    jjConfigMark(id),
     user.length ? `[user]\n${user.join('\n')}` : '',
     `[revset-aliases]\n"immutable_heads()" = "builtin_immutable_heads() | ${BASE_BOOKMARK}"`,
     `[revsets]\nlog = "${BASE_BOOKMARK}::"`,
@@ -401,10 +450,22 @@ function jjConfig(name: string, email: string): string {
 /** Removes the repository config of jj, which jj keeps outside the run, then the folder; both run in the folder of meld, as removeFolder does. */
 async function removeJj(io: Io, id: string): Promise<void> {
   if (!SAFE_ID.test(id)) return
-  const config = await command(io, MELD_ROOT, ['jj', '-R', jjRepoOf(id), 'config', 'path', '--repo'])
-  const folder = config.ok ? JJ_CONFIG_FOLDER.exec(config.out)?.[1] : undefined
+  const folder = await configFolderOf(io, id)
   if (folder) await command(io, MELD_ROOT, ['rm', '-rf', '--', folder])
   await removeFolder(io, id)
+}
+
+/**
+ * The folder of the repository config of the jj repository of the run `id`. jj finds the config through the store in the
+ * jj folder of the run, and an agent can make a folder of the run, or that store, a link: jj then names the config of the
+ * repository that the link points to. So meld gives the folder only when its config names the run.
+ */
+async function configFolderOf(io: Io, id: string): Promise<string | undefined> {
+  const path = await command(io, MELD_ROOT, ['jj', '-R', jjRepoOf(id), 'config', 'path', '--repo'])
+  const folder = path.ok ? JJ_CONFIG_FOLDER.exec(path.out)?.[1] : undefined
+  if (!folder) return undefined
+  const config = await command(io, MELD_ROOT, ['cat', '--', path.out])
+  return config.ok && config.out.split('\n').includes(jjConfigMark(id)) ? folder : undefined
 }
 
 /**

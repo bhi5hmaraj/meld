@@ -25,6 +25,8 @@ export type ErrorCode =
   | 'MISSING_WORK'
   /** A steer of a ready run whose integration line meld has not moved to its final commit. */
   | 'LINE_NOT_MOVED'
+  /** A new agent for a worker that the person stopped. */
+  | 'WORKER_STOPPED'
 
 /** What runs one worker: an agent type (`meld:worker`, `general-purpose`, a plugin's agent) and an optional model. */
 export type AgentSpec = { type: string; model?: string }

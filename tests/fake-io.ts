@@ -30,11 +30,19 @@ export class FakeIo implements Io, Files {
   listings: Record<string, FolderEntry[]> = {}
   /** Folders that are gone: a command that runs in one cannot start. */
   goneDirs: string[] = []
+  /** Commands that wait for their promise before they answer, as a merge that is still running. */
+  gates: Record<string, Promise<void>> = {}
+  /** A change of the run while a command or a spawn runs, by the command or the description of the spawn: a stop, a final, another run. */
+  during: Record<string, (run: Run) => Run | null> = {}
 
   async run(argv: string[], cwd: string): Promise<ProcessResult> {
     const command = argv.join(' ')
     this.commands.push(command)
     this.cwds[command] = cwd
+    const gate = this.gates[command]
+    if (gate) await gate
+    this.change(command)
+    if (argv[0] === 'cat' && argv[1] === '--') return this.catOf(argv[2] ?? '')
     if (this.missing.includes(argv[0] ?? '')) throw new Error(`spawn ${argv[0]} ENOENT`)
     if (this.goneDirs.includes(cwd)) throw new Error(`spawn ${argv[0]} ENOENT: no such directory ${cwd}`)
     if (this.failing.some(prefix => command.startsWith(prefix))) return refusal(`${argv[0]}: failed`)
@@ -98,6 +106,7 @@ export class FakeIo implements Io, Files {
 
   async spawn(args: SpawnArgs): Promise<Spawned> {
     this.spawned.push(args)
+    this.change(args.description)
     const deny = this.spawnDenies[args.description] ?? this.spawnDeny
     return deny ? { deny } : { agentId: `spawned-${this.spawned.length}` }
   }
@@ -131,6 +140,16 @@ export class FakeIo implements Io, Files {
     const text = this.files[path]
     if (text === undefined) throw new Error(`ENOENT: no such file or directory, open '${path}'`)
     return text
+  }
+
+  catOf(path: string): ProcessResult {
+    const text = this.files[path]
+    return text === undefined ? refusal(`cat: ${path}: No such file or directory`) : answer(text)
+  }
+
+  change(key: string): void {
+    const change = this.during[key]
+    if (change && this.current) this.current = change(this.current)
   }
 
   /** Drops a folder from the listings, as rm -rf removes it. The written files stay, so a test still sees what was written. */

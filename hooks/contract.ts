@@ -342,7 +342,7 @@ export function integrateDetail(run: Run, task: Task, merge: Exclude<LineMerge, 
  * them in the folder of the integrator. git merges one commit at a time, as an octopus merge stops at a conflict.
  */
 export function missingWorkText(run: Run, final: string, missing: readonly Task[]): string {
-  const commits = missing.map(task => task.commit ?? '')
+  const commits = withoutIntegrated(missing).map(task => task.commit ?? '')
   const tasks = missing.map(task => `#${task.id} ${task.title} (${(task.commit ?? '').slice(0, 12)})`).join(', ')
   const steps =
     run.vcs === 'jj'
@@ -359,8 +359,18 @@ export function integrateStep(run: Run, lacking: readonly Task[]): string {
   if (!run.line) return `All tasks are done. Integrate: call ${TOOL.integrate}, merge the work of every worker into yours, run the checks, then call ${TOOL.finish}.`
   const line = vcsFor(run.vcs).lineName(run)
   const start = run.vcs === 'jj' ? `jj new ${line} -m "meld: integrate"` : `git merge ${line}`
-  const lacks = lacking.length ? ` The line lacks ${lacking.map(task => `#${task.id} (${(task.commit ?? '').slice(0, 12)})`).join(', ')}: merge those commits too.` : ''
+  const merges = withoutIntegrated(lacking)
+  const lacks = merges.length ? ` The line lacks ${merges.map(task => `#${task.id} (${(task.commit ?? '').slice(0, 12)})`).join(', ')}: merge those commits too.` : ''
   return `All tasks are done, and the integration line ${line} holds them at ${run.line.head.slice(0, 12)}. Integrate: call ${TOOL.integrate}, start from the line (${start}).${lacks} Run one final build and the checks, commit, then call ${TOOL.finish} with that commit.`
+}
+
+/**
+ * The tasks whose commits a merge needs: a task "integrate #N" in the list holds #N with its conflicts fixed, so a merge
+ * of #N first would conflict again.
+ */
+function withoutIntegrated(tasks: readonly Task[]): Task[] {
+  const integrated = new Set(tasks.map(task => task.integrates))
+  return tasks.filter(task => !integrated.has(task.id))
 }
 
 /** What the reply of a finish_task tells a worker that claims no other task: a new agent takes the next task. */

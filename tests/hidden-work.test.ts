@@ -116,3 +116,23 @@ test('/meld-clean --all keeps a jj folder whose snapshot jj refused, and its lis
   expect(await cleanFolders(io, '--all')).toBe('Kept bbb (workspaces not readable). /meld-clean bbb removes it, with any work in it.')
   expect(io.ran('rm ')).toBe(false)
 })
+
+test('a start over a stopped git run whose only work is a commit on a detached HEAD of a worktree refuses, and removes nothing', async () => {
+  const io = new FakeIo()
+  io.current = stopRun(working('r1', 'git'), NOW)
+  io.answers[`git log --format=%H%x09%P%x09%s -n 40 ^${HEAD} meld/r1/w1 HEAD`] = `${FULL}\t${HEAD}\tTokens on a detached HEAD`
+  const result = await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'git' })
+  expect(result.text).toBe('Run r1 stopped with work in /tmp/meld/r1: 1 commit. /meld-discard or Discard in the meld pane removes its workspaces, then you can start again.')
+  expect(io.ran('rm ')).toBe(false)
+  expect(io.current).toMatchObject({ id: 'r1', state: 'stopped' })
+})
+
+test('a start over a stopped jj run whose only work is an edit that a later jj new left behind refuses, and removes nothing', async () => {
+  const io = new FakeIo()
+  io.current = stopRun(working('r1', 'jj'), NOW)
+  io.answers[`jj -R /tmp/meld/r1/jj --ignore-working-copy log --no-graph --limit 40 -r meld_base.. ~ ::working_copies() -T ${JJ_LANE_TEMPLATE}`] = `${OTHER}\t1\t--\t\t\n${FULL}\t1\t-e\t\t\n`
+  const result = await startRun(io, '/repo', { request: 'More', agents: TWO, vcs: 'auto' })
+  expect(result.text).toBe('Run r1 stopped with work in /tmp/meld/r1: 1 commit. /meld-discard or Discard in the meld pane removes its workspaces, then you can start again.')
+  expect(io.ran('rm ')).toBe(false)
+  expect(io.current).toMatchObject({ id: 'r1', state: 'stopped' })
+})

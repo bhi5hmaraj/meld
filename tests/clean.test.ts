@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import { startRun as startBoard } from '../hooks/board'
 import { cleanFolders } from '../hooks/clean'
-import { JJ_LANE_TEMPLATE } from '../hooks/vcs'
+import { JJ_LANE_TEMPLATE, jjConfigMark } from '../hooks/vcs'
 import type { Run, RunState, VcsKind, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
 import { STORED_BY_0_7_0 } from './stored-runs'
@@ -59,6 +59,16 @@ function folderNames(io: FakeIo): string[] {
 /** The git log of the lane of a worker of the folder `id`, from `base`. */
 function gitLog(id: string, worker: WorkerId, base = HEAD): string {
   return `git log --format=%H%x09%P%x09%s -n 40 ${base}..meld/${id}/${worker}`
+}
+
+/** The git log of the worktree of a worker from its HEAD and its branch, so a commit on a detached HEAD counts. */
+function gitStrayLog(id: string, worker: WorkerId, base = HEAD): string {
+  return `git log --format=%H%x09%P%x09%s -n 40 ^${base} meld/${id}/${worker} HEAD`
+}
+
+/** The jj log of the commits since the base that no working copy holds. */
+function jjStrayLog(id: string): string {
+  return `jj -R ${ROOT}/${id}/jj --ignore-working-copy log --no-graph --limit 40 -r meld_base.. ~ ::working_copies() -T ${JJ_LANE_TEMPLATE}`
 }
 
 /** The jj log of the lane of a worker, read in its folder, so jj first records the files there. */
@@ -123,8 +133,14 @@ test('the work check takes the workspaces from the id of the folder and the base
   folder(io, 'aaa', { board: forged })
   io.answers[gitLog('aaa', 'w2', OTHER)] = `${MERGE}\t${OTHER}\tAdd add()`
   const text = await cleanFolders(io, '--all')
-  expect(io.commands.filter(command => command.startsWith('git log'))).toEqual([gitLog('aaa', 'w1', OTHER), gitLog('aaa', 'w2', OTHER)])
+  expect(io.commands.filter(command => command.startsWith('git log'))).toEqual([
+    gitLog('aaa', 'w1', OTHER),
+    gitLog('aaa', 'w2', OTHER),
+    gitStrayLog('aaa', 'w1', OTHER),
+    gitStrayLog('aaa', 'w2', OTHER),
+  ])
   expect(io.cwds[gitLog('aaa', 'w1', OTHER)]).toBe('/repo')
+  expect(io.cwds[gitStrayLog('aaa', 'w1', OTHER)]).toBe('/tmp/meld/aaa/w1')
   expect(io.cwds['git status --porcelain --untracked-files=all']).toBe('/tmp/meld/aaa/w2')
   expect(text).toBe('Kept aaa (holds work: 1 commit). /meld-clean aaa removes it, with any work in it.')
   expect(folderNames(io)).toEqual(['r1', 'aaa'])
@@ -182,20 +198,12 @@ test('with nothing to clean, /meld-clean says so', async () => {
   expect(await cleanFolders(new FakeIo(), '')).toBe('No folder under /tmp/meld is left from another run.')
 })
 
-test('an id removes its folder as Discard does: the worktrees and branches in the repository of its board.json, then the folder', async () => {
+test('an id removes its folder as Discard does: the folder, then the worktrees and branches in the repository of its board.json', async () => {
   const io = session()
   folder(io, 'aaa', { board: boardRun('aaa', 'stopped', 'git', '/elsewhere') })
   const text = await cleanFolders(io, 'aaa')
   expect(io.commands).toEqual(
-    expect.arrayContaining([
-      'git worktree remove --force /tmp/meld/aaa/w1',
-      'git branch -D meld/aaa/w1',
-      'git worktree remove --force /tmp/meld/aaa/w2',
-      'git branch -D meld/aaa/w2',
-      'git branch -D meld/aaa/integration',
-      'rm -rf -- /tmp/meld/aaa',
-      'git worktree prune',
-    ]),
+    expect.arrayContaining(['rm -rf -- /tmp/meld/aaa', 'git worktree prune', 'git branch -D meld/aaa/w1', 'git branch -D meld/aaa/w2', 'git branch -D meld/aaa/integration']),
   )
   expect(io.cwds['git branch -D meld/aaa/w1']).toBe('/elsewhere')
   expect(folderNames(io)).toEqual(['r1'])
@@ -206,6 +214,7 @@ test('a jj folder loses its folder and the repository config of jj', async () =>
   const io = session()
   folder(io, 'aaa', { board: boardRun('aaa', 'stopped', 'jj') })
   io.answers[`jj -R ${ROOT}/aaa/jj config path --repo`] = CONFIG
+  io.files[CONFIG] = `${jjConfigMark('aaa')}\n`
   await cleanFolders(io, 'aaa')
   expect(io.commands).toContain('rm -rf -- /root/.config/jj/repos/42ee0e08c27ca3c2d862')
   expect(folderNames(io)).toEqual(['r1'])
@@ -236,6 +245,7 @@ test('a folder whose repository is gone still goes, with the repository config o
   folder(io, 'aaa', { board: boardRun('aaa', 'stopped', 'jj', '/gone') })
   io.goneDirs = ['/gone']
   io.answers[`jj -R ${ROOT}/aaa/jj config path --repo`] = CONFIG
+  io.files[CONFIG] = `${jjConfigMark('aaa')}\n`
   expect(await cleanFolders(io, 'aaa')).toBe('Removed aaa.')
   expect(io.cwds['rm -rf -- /root/.config/jj/repos/42ee0e08c27ca3c2d862']).toBe(ROOT)
   expect(folderNames(io)).toEqual(['r1'])
@@ -279,13 +289,11 @@ test('--all removes only a folder with a readable board.json, not maybe live, an
     'Removed aaa. Kept bbb (holds work: 1 commit), ccc (workspaces not readable), ddd (no board.json) and eee (board.json not readable). Skipped fff, maybe live: a run of another session can use it. /meld-clean <id> removes one, with any work in it.',
   )
   expect(io.commands.filter(command => command.startsWith('rm ') || command.startsWith('git worktree') || command.startsWith('git branch'))).toEqual([
-    'git worktree remove --force /tmp/meld/aaa/w1',
-    'git branch -D meld/aaa/w1',
-    'git worktree remove --force /tmp/meld/aaa/w2',
-    'git branch -D meld/aaa/w2',
-    'git branch -D meld/aaa/integration',
     'rm -rf -- /tmp/meld/aaa',
     'git worktree prune',
+    'git branch -D meld/aaa/w1',
+    'git branch -D meld/aaa/w2',
+    'git branch -D meld/aaa/integration',
   ])
 })
 
@@ -294,7 +302,7 @@ test('--all reads each jj workspace in its folder, so edits that no jj command r
   folder(io, 'aaa', { board: boardRun('aaa', 'stopped', 'jj') })
   io.answers[jjFreshLog('aaa', 'w1')] = `${MERGE}\t1\t--\tw1@\t\n`
   const text = await cleanFolders(io, '--all')
-  expect(io.commands.filter(command => command.includes(' log '))).toEqual([jjFreshLog('aaa', 'w1'), jjFreshLog('aaa', 'w2')])
+  expect(io.commands.filter(command => command.includes(' log '))).toEqual([jjFreshLog('aaa', 'w1'), jjFreshLog('aaa', 'w2'), jjStrayLog('aaa')])
   expect(io.cwds[jjFreshLog('aaa', 'w1')]).toBe('/repo')
   expect(text).toBe('Kept aaa (holds work: uncommitted edits in w1). /meld-clean aaa removes it, with any work in it.')
   expect(io.ran('rm ')).toBe(false)
@@ -341,13 +349,15 @@ test('/meld-clean takes ids or --all, and no other flag', async () => {
   expect(io.ran('rm ')).toBe(false)
 })
 
-test('a folder that meld 0.7.0 mirrored lists with its state, and goes with its jj workspaces', async () => {
+test('a folder that meld 0.7.0 mirrored lists with its state, and goes with its jj workspaces; its jj config names no run, so it stays', async () => {
   const io = session()
   folder(io, STORED_BY_0_7_0.id, { board: STORED_BY_0_7_0, changedAt: NOW - 2 * DAY })
   io.answers[`jj -R ${ROOT}/${STORED_BY_0_7_0.id}/jj config path --repo`] = CONFIG
+  io.files[CONFIG] = '[revset-aliases]\n"immutable_heads()" = "builtin_immutable_heads() | meld_base"\n'
   expect(lineOf(await cleanFolders(io, ''), STORED_BY_0_7_0.id)).toBe(`${STORED_BY_0_7_0.id}: working, board.json changed 2 d ago, 4 KB, jj in /repo, no work`)
   expect(await cleanFolders(io, '--all')).toBe(`Removed ${STORED_BY_0_7_0.id}.`)
-  expect(io.commands).toContain('rm -rf -- /root/.config/jj/repos/42ee0e08c27ca3c2d862')
+  expect(io.commands).toContain(`rm -rf -- ${ROOT}/${STORED_BY_0_7_0.id}`)
+  expect(io.commands).not.toContain('rm -rf -- /root/.config/jj/repos/42ee0e08c27ca3c2d862')
 })
 
 test('the command /meld-clean lists through the file system of the engine and removes with rm', async ($, on) => {

@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
-import { controlRun, serveTool } from '../hooks/actions'
+import { controlRun, guardCall, serveTool } from '../hooks/actions'
 import { bindWorker, declareFinal, isFailure, startRun as startBoard, stopRun, takeIntegration } from '../hooks/board'
 import { COMMAND_CONTROLS, SESSION_TOOLS, TOOL, TOOL_SPECS } from '../hooks/contract'
 import type { AgentSpec, Change, Run, VcsKind, WorkerId } from '../types'
@@ -58,7 +58,7 @@ test('the main session discards a run with the discard tool', async () => {
   const replied = await serveTool(io, call({ tool: TOOL.discard }))
   expect(parsed(replied.result)).toEqual({ text: 'The run and its workspaces are gone.' })
   expect(io.current).toBeNull()
-  expect(io.commands).toContain('git worktree remove --force /tmp/meld/r1/w1')
+  expect(io.commands).toContain('rm -rf -- /tmp/meld/r1')
 })
 
 test('a worker cannot deliver, discard or add a worker', async () => {
@@ -154,4 +154,20 @@ test('each session tool says that only the main session uses it', () => {
     const spec = TOOL_SPECS.find(one => `mcp__meld__${one.name}` === tool)
     expect(spec?.description).toContain('Only the main session')
   }
+})
+
+test('a worker that still runs after a discard gets no tool call through: the guard tells it to end its turn', async () => {
+  const io = ioWith(working(2))
+  await controlRun(io, 'discard')
+  const denied = await guardCall(io, call({ tool: 'Edit', file_path: '/repo/src/a.ts', agentId: 'agent-1' }))
+  expect(denied).toBe('meld stopped you. End your turn now with a one-line summary.')
+})
+
+test('a stop of the run while meld starts a new worker leaves its agent nothing to do: it hears to end its turn, and the guard refuses its calls', async () => {
+  const io = ioWith(working(2))
+  io.during['meld w3'] = run => stopRun(run, NOW)
+  await controlRun(io, 'add_worker', '')
+  const denied = await guardCall(io, call({ tool: 'Edit', file_path: '/repo/src/a.ts', agentId: 'spawned-1' }))
+  expect(io.sent).toContain('spawned-1: meld stopped you. End your turn now.')
+  expect(denied).toBe('meld stopped you. End your turn now with a one-line summary.')
 })
