@@ -125,7 +125,7 @@ test('the work check takes the workspaces from the id of the folder and the base
   const text = await cleanFolders(io, '--all')
   expect(io.commands.filter(command => command.startsWith('git log'))).toEqual([gitLog('aaa', 'w1', OTHER), gitLog('aaa', 'w2', OTHER)])
   expect(io.cwds[gitLog('aaa', 'w1', OTHER)]).toBe('/repo')
-  expect(io.cwds['git status --porcelain']).toBe('/tmp/meld/aaa/w2')
+  expect(io.cwds['git status --porcelain --untracked-files=all']).toBe('/tmp/meld/aaa/w2')
   expect(text).toBe('Kept aaa (holds work: 1 commit). /meld-clean aaa removes it, with any work in it.')
   expect(folderNames(io)).toEqual(['r1', 'aaa'])
 })
