@@ -52,6 +52,9 @@ export type ShareInput = { kind: string; text: string; commit?: string; files?: 
 /** What a finished task leaves for the other tasks: the interfaces it made, and the part it did not do. */
 export type Handover = { interfaces?: string; unfinished?: string }
 
+/** A split: the task and its version, the version of the task list that the worker saw, and the parts. */
+export type SplitInput = { task: number; version: number; seen: number; tasks: NewTask[] }
+
 export function startRun(input: StartInput): Run {
   return {
     id: input.id,
@@ -160,12 +163,11 @@ export function addTasks(
   const ended = endedFailure(run)
   if (ended) return ended
   if (input.seen !== run.taskList) {
-    return {
-      error: 'STALE_TASK_LIST',
-      message: `Tasks were added since your read: the task list is at ${run.taskList}, and you saw ${input.seen}. Compare these tasks with yours. Claim the ones that cover your work, and add only what is still missing, with seen ${run.taskList}.`,
-      taskList: run.taskList,
-      tasks: run.tasks,
-    }
+    return staleTasks(
+      run,
+      'STALE_TASK_LIST',
+      `Tasks were added since your read: the task list is at ${run.taskList}, and you saw ${input.seen}. Compare these tasks with yours. Claim the ones that cover your work, and add only what is still missing, with seen ${run.taskList}.`,
+    )
   }
   const added = newTasks(run.tasks, input.tasks, now)
   if (!Array.isArray(added)) return added
@@ -222,18 +224,22 @@ function newTask(known: readonly Task[], id: number, input: NewTask, now: number
 
 /**
  * Splits a task of the worker into parts in one change, so no peer takes a part between two calls. The task becomes
- * their parent, with no owner. The worker keeps the first part as its claim, and the other parts are open.
+ * their parent, with no owner. The worker keeps the first part as its claim, and the other parts are open. As with an
+ * add, the worker must have seen the current task list: the needs of a part name tasks by number, so a split from a
+ * stale read could make a part need the wrong task. It fails with STALE_VERSION and the current tasks.
  */
-export function splitTask(
-  run: Run,
-  by: WorkerId,
-  id: number,
-  version: number,
-  parts: NewTask[],
-  now: number,
-): Change<{ tasks: Task[]; taskList: number }> {
+export function splitTask(run: Run, by: WorkerId, input: SplitInput, now: number): Change<{ tasks: Task[]; taskList: number }> {
+  const { task: id, version, seen, tasks: parts } = input
   const checked = checkOwnedTask(run, by, id, version)
   if (isTaskFailure(checked)) return checked
+  if (seen !== run.taskList) {
+    const saw = Number.isFinite(seen) ? `and you saw ${seen}` : 'and you gave no seen version'
+    return staleTasks(
+      run,
+      'STALE_VERSION',
+      `The task list is at ${run.taskList}, ${saw}. Check the needs of your parts against these tasks, then split #${id} again with seen ${run.taskList}.`,
+    )
+  }
   const parent: Task = { ...checked, state: 'open', owner: undefined, claimedAt: undefined, calls: undefined, nudged: undefined, version: checked.version + 1 }
   const tasks = run.tasks.map(one => (one.id === id ? parent : one))
   const made = newTasks(tasks, parts.map(part => ({ ...part, parent: id })), now)
@@ -484,6 +490,11 @@ function unseenSteers(run: Run, worker: Worker): string[] {
 
 function failure(error: ErrorCode, message: string): Failure {
   return { error, message }
+}
+
+/** A refusal of a call that saw an old task list: it gives the current tasks and the version to use. */
+function staleTasks(run: Run, error: ErrorCode, message: string): Failure {
+  return { error, message, taskList: run.taskList, tasks: run.tasks }
 }
 
 function endedFailure(run: Run): Failure | undefined {

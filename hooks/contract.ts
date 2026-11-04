@@ -52,6 +52,8 @@ const TASK_VERSION = {
 
 const COMMIT = { type: 'string', description: 'A revision that names one commit in your folder: HEAD or a hash for git, @- or a commit id for jj.' }
 
+const SEEN = { type: 'number', description: 'The taskList version of your last board read, or of your last add_tasks or split reply.' }
+
 const PART = {
   title: { type: 'string', description: 'Plain words, 8 words at most, with no file paths.' },
   detail: { type: 'string' },
@@ -98,7 +100,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        seen: { type: 'number', description: 'The taskList version of your last board read, or of your last add_tasks reply.' },
+        seen: SEEN,
         tasks: {
           type: 'array',
           minItems: 1,
@@ -120,11 +122,12 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: 'split',
     description:
-      'Split a task that you claimed into smaller tasks, in one change. The task becomes their parent: it has no commit of its own, and it is done when all its parts are done. You keep the first part as your claim, and the other parts are open for the other workers.',
+      'Split a task that you claimed into smaller tasks, in one change, with the taskList version of your last board read. If tasks were added since that read, the split fails with STALE_VERSION and returns the current tasks: check the needs of your parts against them, and split again with the new version. The task becomes their parent: it has no commit of its own, and it is done when all its parts are done. You keep the first part as your claim, and the other parts are open for the other workers.',
     inputSchema: {
       type: 'object',
       properties: {
         ...TASK_VERSION,
+        seen: SEEN,
         tasks: {
           type: 'array',
           minItems: 2,
@@ -132,7 +135,7 @@ export const TOOL_SPECS: ToolSpec[] = [
           items: { type: 'object', properties: PART, required: ['title'] },
         },
       },
-      required: ['task', 'version', 'tasks'],
+      required: ['task', 'version', 'seen', 'tasks'],
     },
   },
   {
