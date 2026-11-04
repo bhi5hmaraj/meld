@@ -41,6 +41,11 @@ export type Vcs = {
    */
   lanes(io: Io, run: Run, read?: LaneRead): Promise<LaneFacts[]>
   result(io: Io, run: Run, commit: string): Promise<ResultFacts>
+  /**
+   * The commits of `commits` that `final` does not hold, as git merge-base --is-ancestor reads them: in the repository of
+   * the person for git, in the store of the run for jj. A commit that git cannot read counts as missing.
+   */
+  missing(io: Io, run: Run, final: string, commits: readonly string[]): Promise<string[]>
   /** The integration line as a worker names it in its folder: a branch for git, a bookmark for jj. */
   lineName(run: Run): string
   /**
@@ -49,11 +54,6 @@ export type Vcs = {
    * moves only from the head that the merge read, so a merge that lost a race fails and changes nothing.
    */
   mergeIntoLine(io: Io, run: Run, commit: string, message: string): Promise<LineMerge>
-  /**
-   * The commits of `commits` that `final` does not hold, as git merge-base --is-ancestor reads them: in the repository of
-   * the person for git, in the store of the run for jj. A commit that git cannot read counts as missing.
-   */
-  missing(io: Io, run: Run, final: string, commits: readonly string[]): Promise<string[]>
   deliver(io: Io, run: Run, commit: string, message: string): Promise<CommandResult>
   remove(io: Io, run: RunPlace): Promise<void>
   /** The workspace of a worker that joins a live run: from the head of the integration line, or from the base when the run has no line. */
@@ -140,13 +140,6 @@ async function mergeInGit(io: Io, gitDir: string, ref: string, base: string, com
   return moved.ok ? { state: 'merged', head: next } : { state: 'failed', error: moved.err || moved.out }
 }
 
-/** The commits of `commits` that `final` does not hold in the git store `gitDir`, each one time, in their order. */
-async function missingIn(io: Io, gitDir: string, final: string, commits: readonly string[]): Promise<string[]> {
-  const missing: string[] = []
-  for (const commit of new Set(commits)) if (!(await git(io, gitDir, ['merge-base', '--is-ancestor', commit, final])).ok) missing.push(commit)
-  return missing
-}
-
 /** The commit of a ref in the git store `gitDir`, or undefined when the ref is not there yet. */
 async function headOf(io: Io, gitDir: string, ref: string): Promise<string | undefined> {
   const found = await git(io, gitDir, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`])
@@ -168,6 +161,13 @@ function gitCommits(out: string): CommitFact[] {
       const [commit = '', parents = '', subject = ''] = line.split('\t')
       return { commit, subject, parents: parents.split(' ').filter(Boolean).length, conflict: false }
     })
+}
+
+/** The commits of `commits` that `final` does not hold in the git store `gitDir`, each one time, in their order. */
+async function missingIn(io: Io, gitDir: string, final: string, commits: readonly string[]): Promise<string[]> {
+  const missing: string[] = []
+  for (const commit of new Set(commits)) if (!(await git(io, gitDir, ['merge-base', '--is-ancestor', commit, final])).ok) missing.push(commit)
+  return missing
 }
 
 const GIT: Vcs = {
@@ -213,11 +213,11 @@ const GIT: Vcs = {
 
   result: (io, run, commit) => gitChange(io, run.repo, run.base, commit),
 
+  missing: (io, run, final, commits) => missingIn(io, run.repo, final, commits),
+
   lineName: gitLine,
 
   mergeIntoLine: (io, run, commit, message) => mergeInGit(io, run.repo, `refs/heads/${gitLine(run)}`, run.base, commit, message),
-
-  missing: (io, run, final, commits) => missingIn(io, run.repo, final, commits),
 
   deliver: (io, run, commit, message) => mergeInto(io, run.repo, commit, message),
 
@@ -283,6 +283,9 @@ const JJ: Vcs = {
 
   result: (io, run, commit) => gitChange(io, storeOf(run.id), run.base, commit),
 
+  /** jj keeps each commit in the git store of the run, so git reads the ancestors there. */
+  missing: (io, run, final, commits) => missingIn(io, storeOf(run.id), final, commits),
+
   lineName: () => LINE_BOOKMARK,
 
   /**
@@ -300,9 +303,6 @@ const JJ: Vcs = {
     const imported = await command(io, run.repo, ['jj', '-R', jjRepoOf(run.id), '--ignore-working-copy', 'git', 'import'])
     return imported.ok ? merged : { state: 'failed', error: `the line moved to ${merged.head}, but jj did not import it: ${imported.err || imported.out}` }
   },
-
-  /** jj keeps each commit in the git store of the run, so git reads the ancestors there. */
-  missing: (io, run, final, commits) => missingIn(io, storeOf(run.id), final, commits),
 
   async deliver(io, run, commit, message) {
     const repo = jjRepoOf(run.id)
