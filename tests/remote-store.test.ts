@@ -3,7 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import { startRun } from '../core/board'
 import { remoteStore } from '../core/remote-store'
 import type { BoardRead, BoardServer, Committed } from '../core/remote-store'
-import type { Facts, Run } from '../types'
+import type { Run } from '../types'
 import { HEAD } from './fake-io'
 import { STORE_CHECKS } from './store-conformance'
 
@@ -12,13 +12,12 @@ const NOW = 1_800_000_000_000
 /** A board server in memory that compares versions, and lets other calls run between a read and a commit, as a process does. */
 class VersionedBoard implements BoardServer {
   run: Run | null = null
-  facts: Facts | null = null
   version = 0
   answer: Committed | undefined = undefined
 
   async read(): Promise<BoardRead> {
     await Promise.resolve()
-    return { run: this.run, facts: this.facts, version: this.version }
+    return { run: this.run, version: this.version }
   }
 
   async commit(run: Run | null, version: number): Promise<Committed> {
@@ -28,10 +27,6 @@ class VersionedBoard implements BoardServer {
     this.run = run
     this.version += 1
     return 'committed'
-  }
-
-  async writeFacts(facts: Facts | null): Promise<void> {
-    this.facts = facts
   }
 }
 
@@ -56,19 +51,18 @@ test('a write that loses each race gives up after its tries, and says so', async
   expect(await remoteStore(server).write(newRun).then(() => 'stored', (error: unknown) => String(error))).toContain('another write came first')
 })
 
-test('the cache of the pane gets each stored run, and the facts', async () => {
+test('the cache of the pane gets each stored run', async () => {
   const cached: unknown[] = []
-  const store = remoteStore(new VersionedBoard(), { run: async run => cached.push(run?.id ?? null), facts: async facts => cached.push(facts?.run ?? null) })
+  const store = remoteStore(new VersionedBoard(), async run => cached.push(run?.id ?? null))
   await store.write(newRun)
-  await store.writeFacts({ run: 'r1', lanes: [] })
   await store.write(() => null)
-  expect(cached).toEqual(['r1', 'r1', null])
+  expect(cached).toEqual(['r1', null])
 })
 
 test('a read of a run that another process changed refreshes the cache once', async () => {
   const server = new VersionedBoard()
   const cached: unknown[] = []
-  const store = remoteStore(server, { run: async run => cached.push(run?.revision ?? null), facts: async () => undefined })
+  const store = remoteStore(server, async run => cached.push(run?.revision ?? null))
   await store.read()
   server.run = { ...newRun(), revision: 5 }
   server.version = 3

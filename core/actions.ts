@@ -3,7 +3,7 @@ import * as board from './board'
 import { CONTROL_TOOLS, HAND_BACK, integrateDetail, integrateStep, missingWorkText, splitNudge, TOOL, wakeText, workerPrompt, workerRules } from './contract'
 import type { Control } from './contract'
 import { GIT_MIN, gitVersion, headCommit, isDirty, isOldGit, repoRoot } from './git'
-import type { Clock, CodeHost, CommandReply, Io, Runner, Spawned, Store, Surface, TokenUsage, ToolCall, ToolReply } from './ports'
+import type { Clock, CodeHost, CommandReply, FactsStore, Io, Runner, Spawned, Store, Surface, TokenUsage, ToolCall, ToolReply } from './ports'
 import { agentSpecOf, agentsOf, MAX_AGENTS, parseStart, WORKER_TYPE } from './options'
 import type { StartOptions } from './options'
 import { claimable } from './tasks'
@@ -896,7 +896,7 @@ function cutAtSpace(text: string, limit: number): string {
 const NO_RUN_AT_WORK = 'There is no meld run at work. A worker can join a run that starts or works.'
 
 /** What the main session does to a run with a tool or a command, as the meld pane does. */
-export function controlRun(io: Board & Clock & Runner & Surface, control: Control, input = ''): Promise<string> {
+export function controlRun(io: Board & FactsStore & Clock & Runner & Surface, control: Control, input = ''): Promise<string> {
   if (control === 'steer') return steerRun(io, input.trim())
   if (control === 'stop') return stopAll(io)
   if (control === 'deliver') return deliver(io)
@@ -961,7 +961,7 @@ function lackingDelivery(final: string, missing: readonly Task[]): string {
   return `Nothing changed: the final commit ${final.slice(0, 7)} lacks the work of ${tasks}, which ${one ? 'is' : 'are'} done on the board. Steer the run so that an agent merges ${one ? 'it' : 'them'}, for example /meld-steer Merge ${ids} into the final commit. Then deliver the new final commit.`
 }
 
-export async function discard(io: Board & Clock & Runner): Promise<string> {
+export async function discard(io: Board & FactsStore & Clock & Runner): Promise<string> {
   const run = await readRun(io)
   if (!run) return 'There is no run.'
   if (LIVE_STATES.has(run.state)) await stopAll(io)
@@ -974,7 +974,7 @@ export async function discard(io: Board & Clock & Runner): Promise<string> {
  * worker that ends its turn during the removal then writes no run, so no mirror of the board makes its folder again.
  * Its agents retire, so the guard refuses the calls of an agent that still runs during the removal.
  */
-async function dropRun(io: Board, run: Run): Promise<void> {
+async function dropRun(io: Board & FactsStore, run: Run): Promise<void> {
   for (const worker of run.workers) if (worker.agentId) retired.add(worker.agentId)
   await save(io, () => null)
   await io.writeFacts(null)
@@ -982,7 +982,7 @@ async function dropRun(io: Board, run: Run): Promise<void> {
 }
 
 /** Reads what the version control shows of the run, for the pane: the commits of each worker, and the change of the final commit. */
-export async function refreshFacts(io: Board): Promise<void> {
+export async function refreshFacts(io: Board & FactsStore): Promise<void> {
   const run = await readRun(io)
   if (!run || run.state === 'delivered') return
   const vcs = vcsFor(run.vcs)

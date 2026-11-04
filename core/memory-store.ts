@@ -1,8 +1,8 @@
 import type { Facts, Run } from '../types'
-import type { Store } from './ports'
+import type { FactsStore, Store } from './ports'
 
-/** A Store in memory, for tests and for a host with no store of its own. A change runs once, in one step. */
-export class MemoryStore implements Store {
+/** A Store and a FactsStore in memory, for tests and for a host with no store of its own. A change runs once, in one step. */
+export class MemoryStore implements Store, FactsStore {
   current: Run | null = null
   facts: Facts | null = null
 

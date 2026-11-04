@@ -1,6 +1,6 @@
 import type { McpToolResult } from 'claude-code'
 
-import type { Store } from '../core/ports'
+import type { FactsStore, Store } from '../core/ports'
 import { remoteStore } from '../core/remote-store'
 import type { Adopted, BoardServer } from '../core/remote-store'
 import type { Run } from '../types'
@@ -14,19 +14,24 @@ export type SessionBoard = { server: string; id: string; owner: string; problem:
 /** Where the run of the session lives, for the board tool of the main session. */
 export type StoreNote = { store: string; board?: string; why?: string }
 
+/** The tools of meld mcp as the session names them: the engine connects it as `plugin:meld:board`. */
+export const BOARD_STORE_TOOLS = /^mcp__plugin_meld_board__/
+
 /** The name of this plugin, as the origin of each call that one of its hooks makes. */
 const MELD = 'meld'
+const ONLY_MELD = 'Only meld calls the board store of meld mcp.'
+const RELOAD = 'This session loaded meld before its manifest listed meld mcp: /reload-plugins or a new session starts it.'
+
+type Verdict = { decision: 'allow' | 'deny'; reason: string }
 
 /**
- * The store of a hook: the board of meld mcp, with the session state as the cache that the pane draws from; without
- * meld mcp, the session state alone, as in meld 0.8.
+ * The store of a hook: the run on the board of meld mcp, with a copy in the session state that the pane draws from, and
+ * the facts in the session state. Without meld mcp, the session state alone, as in meld 0.8.
  */
-export function sessionStore(session: SessionBoard, remote: BoardServer, local: Store): Store {
+export function sessionStore(session: SessionBoard, remote: BoardServer, local: Store & FactsStore): Store & FactsStore {
   if (!session.server) return local
-  return remoteStore(remote, {
-    run: run => local.write(current => (sameRun(current, run) ? current : run)),
-    facts: facts => local.writeFacts(facts),
-  })
+  const run = remoteStore(remote, copy => local.write(current => (sameRun(current, copy) ? current : copy)))
+  return { ...run, readFacts: () => local.readFacts(), writeFacts: facts => local.writeFacts(facts) }
 }
 
 /** The value of a tool of meld mcp: the JSON of its text. A failed call throws its text. */
@@ -48,11 +53,18 @@ export function boardToolPrefix(server: string): string {
 }
 
 /**
- * Whether the guard refuses a call of a tool of meld mcp: only meld calls them. The engine sends each `$.mcp.call` of
- * the plugin through the tool hooks too, with meld as its origin; a call of a model has the engine as its origin.
+ * The verdict of the permission check on a call of a tool of meld mcp. Each `$.mcp.call` of the plugin goes through the
+ * check with meld as its origin, and meld allows it; a call of the model or of another plugin is refused. No verdict
+ * for another tool, or when meld mcp did not connect.
  */
-export function refusesBoardCall(tool: string, server: string, origin: string): boolean {
-  return server !== '' && tool.startsWith(boardToolPrefix(server)) && origin !== MELD
+export function boardVerdict(tool: string, server: string, origin: string): Verdict | undefined {
+  if (!server || !tool.startsWith(boardToolPrefix(server))) return undefined
+  return origin === MELD ? { decision: 'allow', reason: 'meld keeps the board of its run in meld mcp.' } : { decision: 'deny', reason: ONLY_MELD }
+}
+
+/** Why meld mcp did not connect: the refusal of the engine, with the step that starts meld mcp when the session holds an old manifest. */
+export function problemOf(refusal: { reason: string; message: string }): string {
+  return refusal.reason === 'unlisted' ? `${refusal.message} ${RELOAD}` : refusal.message
 }
 
 export function storeNote(session: SessionBoard): StoreNote {

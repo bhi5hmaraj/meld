@@ -6,9 +6,9 @@ import { cleanFolders } from '../core/clean'
 import type { BoardRead, Boards, BoardSummary, Committed } from '../core/remote-store'
 import { resumeRun } from '../core/resume'
 import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL, TOOL_SPECS, WORKER_SYSTEM } from '../core/contract'
-import type { AgentState, Files, Io } from '../core/ports'
+import type { AgentState, FactsStore, Files, Io, Store } from '../core/ports'
 import { parseStart, WORKER_TYPE } from '../core/options'
-import { adoptedOf, refusesBoardCall, sessionStore, storeNote, valueOf, withNote } from './board-store'
+import { adoptedOf, BOARD_STORE_TOOLS, boardVerdict, problemOf, sessionStore, storeNote, valueOf, withNote } from './board-store'
 import type { SessionBoard } from './board-store'
 import { DEFAULT_VIEW, paneTree } from './pane'
 
@@ -48,11 +48,17 @@ function stateOf(status: AgentStatus): AgentState {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     sessionCwd = e.cwd
-    const connected = await $.mcp.connect('board').catch((error: unknown) => ({ isConnected: false as const, message: String(error) }))
+    const connected = await $.mcp.connect('board').catch((error: unknown) => ({ isConnected: false as const, reason: 'failed', message: String(error) }))
     board.server = connected.isConnected ? connected.server : ''
-    board.problem = connected.isConnected ? '' : connected.message
+    board.problem = connected.isConnected ? '' : problemOf(connected)
     board.owner = await $.session.id()
     board.id = (await read($, boardRef)) ?? board.owner
+    const sessionState: Store & FactsStore = {
+      read: () => read($, runRef),
+      write: change => update($, runRef, change),
+      readFacts: () => read($, factsRef),
+      writeFacts: facts => update($, factsRef, () => facts),
+    }
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
@@ -64,14 +70,8 @@ export const register: Register = on => {
         {
           read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
-          writeFacts: async facts => void valueOf(await $.mcp.call(board.server, 'write_facts', { board: board.id, facts })),
         },
-        {
-          read: () => read($, runRef),
-          write: change => update($, runRef, change),
-          readFacts: () => read($, factsRef),
-          writeFacts: facts => update($, factsRef, () => facts),
-        },
+        sessionState,
       ),
       writeFile: (path, text) => $.fs.write(path, text),
       spawn: async args => {
@@ -96,10 +96,11 @@ export const register: Register = on => {
     await $.command.register({ name: 'meld-discard', description: 'Stop the meld run and remove its workspaces', immediate: true })
     await $.command.register({ name: 'meld-add', description: 'Add a worker to the meld run', argumentHint: '[model | agent type | type@model]', immediate: true })
     await $.command.register({ name: 'meld-resume', description: 'List the meld runs of other sessions, or resume one', argumentHint: '[<board>]', immediate: true })
+    // A timer runs outside every hook, so the engine would ask the person about each call of meld mcp. It reads the copy.
     $.clock.every(FACTS_MS, () => {
       if (refreshing) return
       refreshing = true
-      void refreshFacts(io)
+      void refreshFacts({ ...io, ...sessionState })
         .catch(() => undefined)
         .finally(() => {
           refreshing = false
@@ -109,6 +110,10 @@ export const register: Register = on => {
   })
 
   on('agent.offer', { agent: WORKER_TYPE }, () => ({ isOffered: false }))
+
+  on('tool.check', { tool: BOARD_STORE_TOOLS }, ($, e, next) => boardVerdict(String(e.tool), board.server, next.origin.plugin) ?? next(e)).catch(() => ({
+    decision: 'deny',
+  }))
 
   // A worker spawn is an Agent call that meld raises, and auto mode cannot link it to the person: see spawnVerdict.
   on('tool.check', { tool: 'Agent' }, async ($, e, next) => spawnVerdict(await next(e), next.origin.plugin, await read($, runRef))).catch(
@@ -127,7 +132,6 @@ export const register: Register = on => {
         {
           read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
-          writeFacts: async facts => void valueOf(await $.mcp.call(board.server, 'write_facts', { board: board.id, facts })),
         },
         {
           read: () => read($, runRef),
@@ -186,7 +190,6 @@ export const register: Register = on => {
         {
           read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
-          writeFacts: async facts => void valueOf(await $.mcp.call(board.server, 'write_facts', { board: board.id, facts })),
         },
         {
           read: () => read($, runRef),
@@ -225,7 +228,6 @@ export const register: Register = on => {
           {
             read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
             commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
-            writeFacts: async facts => void valueOf(await $.mcp.call(board.server, 'write_facts', { board: board.id, facts })),
           },
           {
             read: () => read($, runRef),
@@ -250,7 +252,6 @@ export const register: Register = on => {
   ).catch(($, e, next) => (next.called ? next(e) : { deny: 'meld: the board failed. Try the call again.' }))
 
   on('tool.call', async ($, e, next) => {
-    if (refusesBoardCall(String(e.tool), board.server, next.origin.plugin)) return { deny: 'Only meld calls the board store of meld mcp.' }
     if (String(e.tool).startsWith(MELD_TOOL)) return next(e)
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
@@ -263,7 +264,6 @@ export const register: Register = on => {
         {
           read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
-          writeFacts: async facts => void valueOf(await $.mcp.call(board.server, 'write_facts', { board: board.id, facts })),
         },
         {
           read: () => read($, runRef),
@@ -302,7 +302,6 @@ export const register: Register = on => {
         {
           read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
-          writeFacts: async facts => void valueOf(await $.mcp.call(board.server, 'write_facts', { board: board.id, facts })),
         },
         {
           read: () => read($, runRef),
@@ -338,7 +337,6 @@ export const register: Register = on => {
         {
           read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
-          writeFacts: async facts => void valueOf(await $.mcp.call(board.server, 'write_facts', { board: board.id, facts })),
         },
         {
           read: () => read($, runRef),
@@ -376,7 +374,6 @@ export const register: Register = on => {
         {
           read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
-          writeFacts: async facts => void valueOf(await $.mcp.call(board.server, 'write_facts', { board: board.id, facts })),
         },
         {
           read: () => read($, runRef),
@@ -420,7 +417,6 @@ export const register: Register = on => {
         {
           read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
-          writeFacts: async facts => void valueOf(await $.mcp.call(board.server, 'write_facts', { board: board.id, facts })),
         },
         {
           read: () => read($, runRef),
@@ -459,7 +455,6 @@ export const register: Register = on => {
         {
           read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
-          writeFacts: async facts => void valueOf(await $.mcp.call(board.server, 'write_facts', { board: board.id, facts })),
         },
         {
           read: () => read($, runRef),

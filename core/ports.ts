@@ -17,13 +17,20 @@ export type AgentState = 'live' | 'ended'
 export type FolderEntry = { name: string; kind: 'file' | 'dir' | 'other'; mtimeMs: number }
 
 /**
- * Where the board of a session keeps its run and the facts that the pane shows. A write gives `change` the stored run
- * and stores what it returns, as one step: two writes at once never lose one. A host can run `change` more than once,
- * as a store that compares versions does after a lost race; the run that its last call returned is the one stored.
+ * Where the board of a session keeps its run. A write gives `change` the stored run and stores what it returns, as one
+ * step: two writes at once never lose one. A host can run `change` more than once, as a store that compares versions
+ * does after a lost race; the run that its last call returned is the one stored.
  */
 export type Store = {
   read(): Promise<Run | null>
   write(change: (run: Run | null) => Run | null): Promise<unknown>
+}
+
+/**
+ * Where a session keeps what its pane shows of the run beside the board: the commits of each worker and the change of
+ * the final commit. The session reads them from the version control again, so no other session needs them.
+ */
+export type FactsStore = {
   readFacts(): Promise<Facts | null>
   writeFacts(facts: Facts | null): Promise<unknown>
 }
@@ -69,7 +76,7 @@ export type Ledger = {
 }
 
 /** Every port. A hooks module spells `$` only at its call sites, so each hook builds an Io of closures over its own `$`. */
-export type Io = Store & CodeHost & Runner & Clock & Surface & Ledger
+export type Io = Store & FactsStore & CodeHost & Runner & Clock & Surface & Ledger
 
 /** A tool that the host offers to the model: its name, what it does, and the JSON schema of its input. */
 export type ToolSpec = { name: string; description: string; inputSchema?: Record<string, unknown> }

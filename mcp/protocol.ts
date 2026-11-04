@@ -5,6 +5,8 @@ export type ServedTool = {
   name: string
   description: string
   inputSchema: Record<string, unknown>
+  /** MCP tool annotations: `readOnlyHint` marks a read, so the permission check of a host can treat it as one. */
+  annotations?: { readOnlyHint: boolean }
   /** A throw gives an error result with its message. */
   answer(args: Record<string, unknown>): unknown
 }
@@ -29,7 +31,7 @@ export async function replyTo(line: string, tools: readonly ServedTool[], info: 
   const method = typeof message.method === 'string' ? message.method : ''
   if (method === 'initialize') return resultLine(message.id, initialized(params, info))
   if (method === 'ping') return resultLine(message.id, {})
-  if (method === 'tools/list') return resultLine(message.id, { tools: tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) })
+  if (method === 'tools/list') return resultLine(message.id, { tools: tools.map(({ name, description, inputSchema, annotations }) => ({ name, description, inputSchema, annotations })) })
   if (method === 'tools/call') return resultLine(message.id, await called(tools, params))
   return errorLine(message.id, NO_METHOD, `meld mcp has no method ${method}.`)
 }

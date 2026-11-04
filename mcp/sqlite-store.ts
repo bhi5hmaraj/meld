@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite'
 
 import type { Store } from '../core/ports'
 import type { Adopted, BoardRead, BoardSummary, Committed } from '../core/remote-store'
-import type { Facts, Run } from '../types'
+import type { Run } from '../types'
 
 /** The version of the tables in the file. A meld that knows only an older version reads the file and writes nothing. */
 export const SCHEMA_VERSION = 1
@@ -15,7 +15,7 @@ const NEWER = 'a newer meld wrote this board file: restart the session, so it lo
 /** A board as a client reads it, with the session that owns it. */
 export type BoardRow = BoardRead & { owner: string | null; ownerAt: number | null }
 
-type Row = { id: string; run: string | null; facts: string | null; version: number; owner: string | null; owner_at: number | null }
+type Row = { id: string; run: string | null; version: number; owner: string | null; owner_at: number | null }
 
 /**
  * The boards of every session on the machine, in one SQLite file in WAL mode. Each session keeps its run on one board.
@@ -39,14 +39,12 @@ export class SqliteBoards {
     return {
       read: async () => this.read(id).run,
       write: async change => this.change(id, change),
-      readFacts: async () => this.read(id).facts,
-      writeFacts: async facts => this.writeFacts(id, facts),
     }
   }
 
   read(id: string): BoardRow {
     const row = this.row(id)
-    return { run: parsed(row?.run), facts: parsed(row?.facts), version: row?.version ?? 0, owner: row?.owner ?? null, ownerAt: row?.owner_at ?? null }
+    return { run: parsed(row?.run), version: row?.version ?? 0, owner: row?.owner ?? null, ownerAt: row?.owner_at ?? null }
   }
 
   /**
@@ -67,12 +65,6 @@ export class SqliteBoards {
       .immediate()
   }
 
-  writeFacts(id: string, facts: Facts | null): void {
-    if (this.newer) throw new Error(NEWER)
-    const text = facts === null ? null : JSON.stringify(facts)
-    this.db.query('INSERT INTO boards (id, facts) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET facts = excluded.facts').run(id, text)
-  }
-
   /**
    * The session takes a board whose owner wrote nothing for the time of a lease, as a resume in a new session does. The
    * version moves, so a commit of the old owner from its last read is stale.
@@ -91,7 +83,7 @@ export class SqliteBoards {
 
   /** The boards with a run, the latest write first. */
   list(): BoardSummary[] {
-    const rows = this.db.query('SELECT id, run, facts, version, owner, owner_at FROM boards WHERE run IS NOT NULL ORDER BY owner_at DESC').all() as Row[]
+    const rows = this.db.query('SELECT id, run, version, owner, owner_at FROM boards WHERE run IS NOT NULL ORDER BY owner_at DESC').all() as Row[]
     return rows.map(row => {
       const run = JSON.parse(row.run ?? 'null') as Run
       return { board: row.id, run: run.id, state: run.state, request: run.request, repo: run.repo, owner: row.owner, ownerAt: row.owner_at }
@@ -115,7 +107,7 @@ export class SqliteBoards {
   }
 
   private row(id: string): Row | null {
-    return this.db.query('SELECT id, run, facts, version, owner, owner_at FROM boards WHERE id = ?').get(id) as Row | null
+    return this.db.query('SELECT id, run, version, owner, owner_at FROM boards WHERE id = ?').get(id) as Row | null
   }
 
   private put(id: string, run: Run | null, version: number, owner: string | null, ownerAt: number | null): void {
@@ -134,7 +126,6 @@ export class SqliteBoards {
         this.db.exec(`CREATE TABLE IF NOT EXISTS boards (
           id TEXT PRIMARY KEY,
           run TEXT,
-          facts TEXT,
           version INTEGER NOT NULL DEFAULT 0,
           owner TEXT,
           owner_at INTEGER

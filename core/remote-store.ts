@@ -1,8 +1,8 @@
-import type { Facts, Run } from '../types'
+import type { Run } from '../types'
 import type { Store } from './ports'
 
-/** A board as a server gives it: the run, the facts, and the version of the last write. */
-export type BoardRead = { run: Run | null; facts: Facts | null; version: number }
+/** A board as a server gives it: the run, and the version of the last write. */
+export type BoardRead = { run: Run | null; version: number }
 
 /** What a commit did: stored, refused for an old version, refused as another session holds the lease, or refused by a newer file. */
 export type Committed = 'committed' | 'stale' | 'taken' | 'newer schema'
@@ -23,18 +23,14 @@ export type Boards = {
   use(board: string): Promise<void>
 }
 
-/** A board that another process keeps, such as `meld mcp` with its SQLite file: reads, commits that compare versions, and facts. */
+/** A board that another process keeps, such as `meld mcp` with its SQLite file: reads, and commits that compare versions. */
 export type BoardServer = {
   read(): Promise<BoardRead>
   commit(run: Run | null, version: number): Promise<Committed>
-  writeFacts(facts: Facts | null): Promise<void>
 }
 
-/** Where a host keeps a copy for its screen, such as the session state that the pane draws from. */
-export type BoardCache = {
-  run(run: Run | null): Promise<unknown>
-  facts(facts: Facts | null): Promise<unknown>
-}
+/** Where a host keeps a copy of the run for its screen, such as the session state that the pane draws from. */
+export type BoardCache = (run: Run | null) => Promise<unknown>
 
 /** How many times a write reads and commits again after a lost race, before it gives up. */
 const TRIES = 8
@@ -51,7 +47,7 @@ const REFUSED: Record<Exclude<Committed, 'committed' | 'stale'>, string> = {
 export function remoteStore(server: BoardServer, cache?: BoardCache): Store {
   let seen: number | undefined
   const refreshed = async (board: BoardRead): Promise<BoardRead> => {
-    if (board.version !== seen) await cache?.run(board.run)
+    if (board.version !== seen) await cache?.(board.run)
     seen = board.version
     return board
   }
@@ -69,11 +65,6 @@ export function remoteStore(server: BoardServer, cache?: BoardCache): Store {
         if (done !== 'stale') throw new Error(REFUSED[done])
       }
       throw new Error(`meld: the board is busy: another write came first ${TRIES} times`)
-    },
-    readFacts: async () => (await server.read()).facts,
-    async writeFacts(facts) {
-      await server.writeFacts(facts)
-      await cache?.facts(facts)
     },
   }
 }

@@ -41,10 +41,10 @@ test('a file keeps the board for the next process, in WAL mode', async () => {
 
 test('a commit names the version that it read: a commit after another one is stale, and stores nothing', () => {
   const boards = new SqliteBoards(':memory:')
-  expect(boards.read('b1')).toEqual({ run: null, facts: null, version: 0, owner: null, ownerAt: null })
+  expect(boards.read('b1')).toEqual({ run: null, version: 0, owner: null, ownerAt: null })
   expect(boards.commit('b1', newRun(), 0, 's1', NOW)).toBe('committed')
   expect(boards.commit('b1', { ...newRun(), revision: 9 }, 0, 's1', NOW)).toBe('stale')
-  expect(boards.read('b1')).toEqual({ run: newRun(), facts: null, version: 1, owner: 's1', ownerAt: NOW })
+  expect(boards.read('b1')).toEqual({ run: newRun(), version: 1, owner: 's1', ownerAt: NOW })
 })
 
 test('a session adopts a board only when its owner wrote nothing for the time of a lease', () => {

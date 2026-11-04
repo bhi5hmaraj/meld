@@ -149,7 +149,7 @@ The first board reply to a new agent carries the 20 newest current entries. Each
 
 **Board file.** After each change, meld writes the board to `/tmp/meld/<run>/board.json`: the tasks, the log and the shared context. The file stays when your session ends. Deliver and Discard remove it. Deliver marks the run delivered, and Discard drops it, before the removal, so an agent that ends its turn during the removal does not write the file again. `/meld-clean` removes the folders of runs that your session does not store.
 
-**Board store.** With Bun, the run lives on a board in `~/.meld/meld.db`, in WAL mode, and each session has its own board. The plugin reads the board, runs the rules of meld, and commits the run at the version that it read, through the tools of `meld mcp`. When another write came first, it reads and tries again. The session that writes a board owns it for 60 s from its last write, and another session can adopt the board only after that time, so two sessions do not drive one run. The session state keeps a copy of the run for the pane. Only meld calls the tools of `meld mcp`: a call of an agent or of the main session is refused.
+**Board store.** With Bun, the run lives on a board in `~/.meld/meld.db`, in WAL mode, and each session has its own board. The plugin reads the board, runs the rules of meld, and commits the run at the version that it read, through the tools of `meld mcp`. When another write came first, it reads and tries again. The session that writes a board owns it for 60 s from its last write, and another session can adopt the board only after that time, so two sessions do not drive one run. The session state keeps a copy of the run, and the facts that the pane shows. Only meld calls the tools of `meld mcp`. The permission check allows the calls of meld, and refuses the calls of agents and of the main session. The board tool of the main session names the store, and why `meld mcp` did not connect. When the session loaded a meld before 0.9, `/reload-plugins` or a new session starts `meld mcp`.
 
 **Edit guard.** meld refuses an edit that an agent makes outside its own workspace. It refuses each tool call of an agent that you stopped, of an agent of a stopped or discarded run, and of a new agent that took no place on the board, and tells that agent to end its turn.
 
@@ -286,14 +286,14 @@ node scripts/shots.mjs
 
 `core/` holds the code that needs no Claude Code, so another host can run it: `meld mcp` from 0.9. `hooks/` holds the Claude Code host. `tsc -p tsconfig.core.json` checks `core/` and `types/` with no engine types.
 
-- `core/ports.ts` holds the ports that a host gives the core: `Store` (the run of the session and the facts of the pane), `CodeHost` (commands and files), `Runner` (agents), `Clock`, `Surface` (toasts, the pane, commands) and `Ledger` (the cost). A function takes only the ports that it uses. `Io` is all of them.
+- `core/ports.ts` holds the ports that a host gives the core: `Store` (the run of the session), `FactsStore` (what the pane shows of the run), `CodeHost` (commands and files), `Runner` (agents), `Clock`, `Surface` (toasts, the pane, commands) and `Ledger` (the cost). A function takes only the ports that it uses. `Io` is all of them.
 - `core/board.ts` holds the board rules as pure functions, `core/tasks.ts` the task tree, and `core/progress.ts` the percent.
 - `core/actions.ts` holds the steps of a run.
 - `core/vcs.ts` holds the version control port and its two adapters, jj and git, and `core/git.ts` the git commands.
 - `core/contract.ts` holds the tools, the rules and the prompts of the agents.
 - `core/options.ts` reads the options of `/meld`.
 - `core/clean.ts` lists and removes the folders of other runs for `/meld-clean`.
-- `core/memory-store.ts` is a `Store` in memory, and `core/remote-store.ts` a `Store` over a board server that compares versions.
+- `core/memory-store.ts` is a `Store` and a `FactsStore` in memory, and `core/remote-store.ts` a `Store` over a board server that compares versions.
 - `core/resume.ts` lists and takes the runs of other sessions for `/meld-resume`.
 - `mcp/` holds `meld mcp`, which runs on Bun: `main.ts` starts it, `protocol.ts` speaks MCP over standard input and output with no other package, `tools.ts` holds its tools, and `sqlite-store.ts` keeps the boards. Its specs are `*.spec.ts` files, which `bun test mcp/` runs: the engine runner loads only `*.test.ts` files, and those cannot import `bun:sqlite`.
 - `hooks/board-store.ts` connects the hooks to `meld mcp`.

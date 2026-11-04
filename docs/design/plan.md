@@ -16,7 +16,7 @@ Give each release to people, and keep their problems as GitHub issues. The run r
 | Step | Delivers | Done when |
 |---|---|---|
 | 0a | The core moves out of the plugin. `Io` splits into the ports of [architecture.md](architecture.md). An in-memory store and the conformance suite. Built: `core/`, `core/ports.ts`, `core/memory-store.ts`, `tests/store-conformance.ts` and the model test. The model test found that a stopped worker could still claim a task. | All tests pass on the in-memory store, and the plugin works as in 0.8. |
-| 0b | `meld mcp` on Bun, with the SQLite store and one local party. The Claude Code plugin declares it as its MCP server and becomes its client. The 0.8 board shape moves into SQLite rows. Built as the store of the plugin (decision 41): one board for each session in `~/.meld/meld.db`, commits that compare versions, a lease of 60 s for the owner, and `/meld-resume`. Without Bun, the plugin works as in 0.8. | A solo run works from start to delivery, and resumes in a new session. |
+| 0b | `meld mcp` on Bun, with the SQLite store and one local party. The Claude Code plugin declares it as its MCP server and becomes its client. The 0.8 board shape moves into SQLite rows. Built as the store of the plugin (decision 41): one board for each session in `~/.meld/meld.db`, commits that compare versions, a lease of 60 s for the owner, and `/meld-resume`. The facts of the pane stay in the session state. Without Bun, the plugin works as in 0.8. | A solo run works from start to delivery, and resumes in a new session. |
 | 0c | Random characters in run ids. Parties and members. Events and context as rows that are only added, with the party column and the "uploaded" mark. | The conformance suite covers them. |
 
 From 0.9, users need Bun. Compiled binaries come when users ask for them.
@@ -25,7 +25,7 @@ From 0.9, users need Bun. Compiled binaries come when users ask for them.
 
 | Release | Delivers | Done when |
 |---|---|---|
-| 0.10.0 | The ACP runner. Codex workers in a local party, with the Claude Code session as the leader. Affinity. | Claude Code and Codex finish one request together on one machine. |
+| 0.10.0 | The ACP runner. Codex workers in a local party, with the Claude Code session as the leader. Affinity. A channel for the timer of the leader, which cannot call `meld mcp` ([architecture.md](architecture.md)). | Claude Code and Codex finish one request together on one machine. |
 | 0.10.x | Cursor solo and the Gemini CLI, through the same ACP runner. | A Cursor chat leads a local party. |
 
 ## Phase 4: hosted (later)

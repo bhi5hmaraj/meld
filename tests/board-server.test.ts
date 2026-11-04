@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
+import type { MockClock } from 'claude-code/testing'
 import type { McpToolResult, On } from 'claude-code'
 
 import { bindWorker, isFailure, startRun } from '../core/board'
@@ -43,7 +44,7 @@ class FakeMcp {
   private value(tool: string, args: Record<string, unknown>): unknown {
     const id = String(args.board)
     const row = this.boards[id] ?? { run: null, version: 0, owner: null, ownerAt: null }
-    if (tool === 'read_board') return { ...row, facts: null }
+    if (tool === 'read_board') return row
     if (tool === 'commit_board') {
       if (args.version !== row.version) return { result: 'stale' }
       this.boards[id] = { run: args.run as Run | null, version: row.version + 1, owner: String(args.owner), ownerAt: NOW }
@@ -57,14 +58,13 @@ class FakeMcp {
       this.boards[id] = { ...row, owner: String(args.owner), ownerAt: NOW, version: row.version + 1 }
       return { result: 'adopted' }
     }
-    return { ok: true }
+    throw new Error(`meld mcp has no tool ${tool}`)
   }
 }
 
 /** What the engine answers for a session start; with a FakeMcp, meld mcp connects, and without one it does not start. */
-function answerTheEngine(on: On, mcp: FakeMcp | undefined): void {
-  on('clock.now', () => ({ value: NOW }))
-  on('clock.every', () => ({ value: undefined }))
+function answerTheEngine(on: On, mcp: FakeMcp | undefined): MockClock {
+  const clock = mock.clock(on, { now: NOW })
   on('session.id', () => ({ value: SESSION }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('tool.register', ($, e) => ({ value: { tool: e.name } }))
@@ -72,6 +72,7 @@ function answerTheEngine(on: On, mcp: FakeMcp | undefined): void {
   on('agent.register', ($, e) => ({ value: { agent: e.name } }))
   on('mcp.connect', () => ({ value: mcp ? { isConnected: true, server: SERVER } : { isConnected: false, reason: 'failed', message: 'bun: not found' } }))
   if (mcp) on('mcp.call', ($, e) => ({ value: mcp.answer(e.tool, e.args) }))
+  return clock
 }
 
 test('with meld mcp, a command reads and commits the run on the board of the session', async ($, on) => {
@@ -100,6 +101,16 @@ test('the session state gets each run that the board commits, as the pane draws 
   expect(cached.at(-1)).toBe('stopped')
 })
 
+test('the timer of the pane reads the run from the session state and calls no tool of meld mcp, as the engine asks the person for each call of a timer', async ($, on) => {
+  const mcp = new FakeMcp()
+  const clock = answerTheEngine(on, mcp)
+  on('state.get', () => ({ value: { value: undefined, version: 0 } }))
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  mcp.boards[SESSION] = { run: working(), version: 1, owner: SESSION, ownerAt: NOW }
+  await clock.advance(10_000)
+  expect(mcp.calls).toEqual([])
+})
+
 test('without meld mcp, a command keeps the run in the session state, as meld 0.8 does', async ($, on) => {
   const written: string[] = []
   answerTheEngine(on, undefined)
@@ -114,11 +125,11 @@ test('without meld mcp, a command keeps the run in the session state, as meld 0.
   expect(written).toContain('run stopped')
 })
 
-test('a model call of a tool of the board store is refused, as only meld calls it', async ($, on) => {
+test('the permission check refuses a model call of a tool of the board store, as only meld calls it', async ($, on) => {
   answerTheEngine(on, new FakeMcp())
   await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
-  const called = await $.tool.call({ tool: 'mcp__plugin_meld_board__commit_board', board: SESSION, run: null, version: 0, owner: 'model' } as never)
-  expect(called).toEqual({ deny: 'Only meld calls the board store of meld mcp.' })
+  const checked = await $.tool.check({ tool: 'mcp__plugin_meld_board__commit_board', input: { board: SESSION, run: null, version: 0, owner: 'model' } })
+  expect(checked).toEqual({ decision: 'deny', reason: 'Only meld calls the board store of meld mcp.' })
 })
 
 test('/meld-resume lists the run of another session from meld mcp, and a resume moves this session to that board', async ($, on) => {

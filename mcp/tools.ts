@@ -1,4 +1,4 @@
-import type { Facts, Run } from '../types'
+import type { Run } from '../types'
 import { isRecord } from './protocol'
 import type { ServedTool } from './protocol'
 import type { SqliteBoards } from './sqlite-store'
@@ -6,14 +6,16 @@ import type { SqliteBoards } from './sqlite-store'
 const ONLY_MELD = 'Only the meld plugin calls this tool.'
 const BOARD = { type: 'string', description: 'The id of the board: one board holds the run of one session.' }
 const OWNER = { type: 'string', description: 'The id of the session that writes.' }
+const READ_ONLY = { readOnlyHint: true }
 
 /** The tools of `meld mcp`: the boards in its SQLite file, which the meld plugin reads and writes as its store. */
 export function boardTools(boards: SqliteBoards, now: () => number): ServedTool[] {
   return [
     {
       name: 'read_board',
-      description: `${ONLY_MELD} Reads a board: its run, its facts, the version of its last write, and the session that owns it.`,
+      description: `${ONLY_MELD} Reads a board: its run, the version of its last write, and the session that owns it.`,
       inputSchema: schema({ board: BOARD }),
+      annotations: READ_ONLY,
       answer: args => boards.read(text(args, 'board')),
     },
     {
@@ -23,18 +25,10 @@ export function boardTools(boards: SqliteBoards, now: () => number): ServedTool[
       answer: args => ({ result: boards.commit(text(args, 'board'), runOf(args), version(args), text(args, 'owner'), now()) }),
     },
     {
-      name: 'write_facts',
-      description: `${ONLY_MELD} Stores the facts that the pane shows: the lanes of the workers and the change of the final commit.`,
-      inputSchema: schema({ board: BOARD, facts: { type: ['object', 'null'] } }),
-      answer: args => {
-        boards.writeFacts(text(args, 'board'), factsOf(args))
-        return { ok: true }
-      },
-    },
-    {
       name: 'list_boards',
       description: `${ONLY_MELD} Lists the boards that hold a run, so a new session can resume one.`,
       inputSchema: schema({}),
+      annotations: READ_ONLY,
       answer: () => ({ boards: boards.list() }),
     },
     {
@@ -70,11 +64,4 @@ function runOf(args: Record<string, unknown>): Run | null {
   if (value === null) return null
   if (!isRecord(value) || typeof value.id !== 'string' || !Array.isArray(value.tasks)) throw new Error('run is a meld run, or null.')
   return value as unknown as Run
-}
-
-function factsOf(args: Record<string, unknown>): Facts | null {
-  const value = args.facts
-  if (value === null) return null
-  if (!isRecord(value) || typeof value.run !== 'string' || !Array.isArray(value.lanes)) throw new Error('facts are the facts of a run, or null.')
-  return value as unknown as Facts
 }

@@ -9,7 +9,7 @@ import type { Run } from '../types'
 const MAIN = join(import.meta.dir, 'main.ts')
 const HEAD = 'abc1234def5678abc1234def5678abc1234def56'
 const NOW = 1_800_000_000_000
-const TOOLS = ['read_board', 'commit_board', 'write_facts', 'list_boards', 'adopt_board']
+const TOOLS = ['read_board', 'commit_board', 'list_boards', 'adopt_board']
 
 type Reply = { id: number | null; result?: { content?: { type: string; text: string }[]; isError?: boolean; [field: string]: unknown }; error?: { code: number; message: string } }
 
@@ -82,13 +82,15 @@ afterEach(() => {
   for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true })
 })
 
-test('meld mcp answers initialize with its name and the tools capability, and lists its board tools', async () => {
+test('meld mcp answers initialize with its name and the tools capability, and lists its board tools, the reads marked as reads', async () => {
   const client = new Client(tempDb())
   const started = await client.request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } })
   expect(started.result).toMatchObject({ protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'meld' } })
   client.send({ jsonrpc: '2.0', method: 'notifications/initialized' })
   const listed = await client.request('tools/list')
-  expect((listed.result?.tools as { name: string }[]).map(tool => tool.name)).toEqual(TOOLS)
+  const tools = listed.result?.tools as { name: string; annotations?: { readOnlyHint?: boolean } }[]
+  expect(tools.map(tool => tool.name)).toEqual(TOOLS)
+  expect(tools.filter(tool => tool.annotations?.readOnlyHint).map(tool => tool.name)).toEqual(['read_board', 'list_boards'])
   expect(await client.end()).toBe(0)
 })
 

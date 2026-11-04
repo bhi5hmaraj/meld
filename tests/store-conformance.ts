@@ -1,10 +1,11 @@
 import { startRun } from '../core/board'
-import type { Store } from '../core/ports'
+import type { FactsStore, Store } from '../core/ports'
 import type { Facts, Run } from '../types'
 
 /**
- * What every Store must do, whatever keeps the run: the memory of a test, the state of the session, SQLite or Postgres.
- * The checks throw, and import no test runner, so the engine runner and `bun test` both run them.
+ * What every Store must do, whatever keeps the run: the memory of a test, the state of the session, SQLite or Postgres;
+ * and what a FactsStore must do beside it. The checks throw, and import no test runner, so the engine runner and
+ * `bun test` both run them.
  */
 
 const HEAD = 'abc1234def5678abc1234def5678abc1234def56'
@@ -30,6 +31,9 @@ function same(actual: unknown, expected: unknown, what: string): void {
 
 async function emptyStore(store: Store): Promise<void> {
   same(await store.read(), null, 'the run of an empty store')
+}
+
+async function noFactsAtFirst(store: FactsStore): Promise<void> {
   same(await store.readFacts(), null, 'the facts of an empty store')
 }
 
@@ -66,7 +70,7 @@ async function failedChangeStoresNothing(store: Store): Promise<void> {
   same(await store.read(), newRun(), 'the run after a change that failed')
 }
 
-async function factsStandApart(store: Store): Promise<void> {
+async function factsStandApart(store: Store & FactsStore): Promise<void> {
   await store.write(newRun)
   await store.writeFacts(FACTS)
   same(await store.read(), newRun(), 'the run after a write of the facts')
@@ -77,11 +81,15 @@ async function factsStandApart(store: Store): Promise<void> {
 }
 
 export const STORE_CHECKS: [string, (store: Store) => Promise<void>][] = [
-  ['an empty store reads no run and no facts', emptyStore],
+  ['an empty store reads no run', emptyStore],
   ['a write stores the run that its change returns', writeStoresTheChange],
   ['a write gives its change the stored run', writeChangesTheStoredRun],
   ['a change that returns null removes the run', nullRemovesTheRun],
   ['writes at one time lose none', writesAtOnceLoseNone],
   ['a change that fails stores nothing, and its write rejects', failedChangeStoresNothing],
+]
+
+export const FACTS_CHECKS: [string, (store: Store & FactsStore) => Promise<void>][] = [
+  ['an empty store reads no facts', noFactsAtFirst],
   ['the facts stand apart from the run', factsStandApart],
 ]

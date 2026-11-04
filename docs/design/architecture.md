@@ -32,7 +32,8 @@ meld 0.8 sends all I/O through one `Io` interface with 15 methods. The ports of 
 
 | Port | `Io` methods | Solo adapter | Team adapter |
 |---|---|---|---|
-| Store | `read`, `write`, `readFacts`, `writeFacts` | SQLite | Postgres |
+| Store | `read`, `write` | SQLite | Postgres |
+| FactsStore | `readFacts`, `writeFacts` | session state | memory of the server |
 | CodeHost | `run` (git, jj), `writeFile` (the jj config, the board mirror) | store.git | bare mirror |
 | Runner | `spawn`, `send`, `agents` | subagents, ACP | drivers, sessions that pull |
 | Clock | `now`, `sleep` | engine clock or system clock | system clock |
@@ -46,6 +47,14 @@ Each function of the core takes only the ports that it uses, so the type check s
 - A board call of a worker needs the Runner as well as the Store: it sends nudges and wake texts to other agents. In `meld mcp`, those messages become actions that the plugin carries out.
 - Each write of the board needs the CodeHost, as it mirrors `board.json`. With SQLite in `~/.meld/`, the store outlives the session, and the mirror can go.
 - Only the start needs every port: the Ledger for the cost at the start, and the Surface to open the pane.
+
+Step 0b found these limits of the engine, in a live session:
+
+- Each `$.mcp.call` of the plugin goes through the permission check of the engine. A `tool.check` hook of meld allows the calls of meld, and refuses the calls of the model and of other plugins.
+- A timer callback runs outside every hook, so no hook of meld sees its calls, and the engine asks the person. The timer of the pane reads the copy of the run in the session state. The facts stay there too, as only the pane reads them.
+- A hot reload of a mod loads its hooks again, but not its manifest. A server that a new manifest lists starts after `/reload-plugins`, or in a new session.
+
+So 0.10 needs one more channel. The leader must read the board on a timer, as the workers of Codex write through their own `meld mcp`. Options: a Unix socket of `meld mcp` through `$.http.fetch`, or a permission rule that the person adds.
 
 ## Board addresses
 
