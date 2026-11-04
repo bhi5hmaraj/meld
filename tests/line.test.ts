@@ -129,15 +129,6 @@ test('on jj the task "integrate #N" names the bookmark of the line and the commi
   expect(integrate?.detail).toContain(`jj new meld_integration ${FULL}`)
 })
 
-test('a finish merges the done tasks that the line does not hold yet, in the order they were done', async () => {
-  const io = ioWith(finished(planned(), 2, 'w2', OTHER))
-  io.failing = [`git rev-parse --verify --quiet ${GIT_LINE}`, `git merge-base --is-ancestor ${OTHER} `, `git merge-base --is-ancestor ${FULL} `]
-  await serveTool(io, call(FINISH_1))
-  const merged = io.commands.filter(command => command.startsWith('git merge-tree') || command.startsWith('git update-ref'))
-  expect(merged[0]).toContain(OTHER)
-  expect(io.current?.line?.tasks).toEqual([2, 1])
-})
-
 test('when every task is done and the line holds them, the integrator starts from the line and runs one final build', async () => {
   const done = finished(finished(planned(), 2, 'w2', OTHER), 1, 'w1', FULL)
   const io = ioWith({ ...lineMerged(lineMerged(done, 2, OTHER, NOW), 1, LINE, NOW), integrator: 'w2' })
@@ -168,16 +159,14 @@ test('the rules name the integration line, and merge the branch of a peer only w
   expect(jj).not.toContain('jj new @- w2@- w3@-')
 })
 
-test('a run that meld 0.7.0 stored gets its line at the next finish: the task it finished before merges first', async () => {
+test('a run that meld 0.7.0 stored gets its line at the next finish, from the commit of that task alone: the task it finished before waits for the integrator', async () => {
   const io = new FakeIo()
   io.current = STORED_BY_0_7_0
   io.now = async () => NOW + 60_000
   const store = `/tmp/meld/${STORED_BY_0_7_0.id}/jj`
   io.answers[`jj -R /tmp/meld/${STORED_BY_0_7_0.id}/w1 --ignore-working-copy log --no-graph -r @- -T ${JJ_RESOLVE_TEMPLATE}`] = `${FULL} clean`
   await serveTool(io, call({ tool: 'mcp__meld__finish_task', task: 4, version: 1, commit: '@-', summary: 'Colour tokens', agentId: 'agent-1' }))
-  expect(io.current?.line?.tasks).toEqual([2, 4])
-  expect(io.commands.filter(command => command.startsWith(`jj -R ${store} --ignore-working-copy log`)).map(command => command.split(' ')[7])).toEqual([
-    STORED_BY_0_7_0.tasks.find(task => task.id === 2)?.commit,
-    FULL,
-  ])
+  expect(io.current?.line?.tasks).toEqual([4])
+  expect(io.commands.filter(command => command.startsWith(`jj -R ${store} --ignore-working-copy log`)).map(command => command.split(' ')[7])).toEqual([FULL])
+  expect(io.current && lackingTasks(io.current).map(task => task.id)).toEqual([2])
 })
