@@ -50,6 +50,8 @@ Or fill in the start form of the pane, which `/meld-status` opens. Or ask Claude
 | `/meld --agents 3 <request>` | Starts 3 agents. A run has 1 to 8 agents. |
 | `/meld --agents opus,general-purpose@haiku <request>` | Starts one agent for each item: a model, an agent type, or a type and a model with `@` between them. |
 | `/meld --model sonnet <request>` | Starts each agent that names no model on `sonnet`. |
+| `/meld --agents opus,codex <request>` | Starts a Claude agent and a Codex agent. `meld mcp` runs Codex through ACP with `npx -y @agentclientprotocol/codex-acp`, which needs Node and an OpenAI login. Needs Bun. |
+| `/meld --agents acp:<name> <request>` | Starts the ACP agent that `MELD_ACP_AGENTS` names. Set it in the environment of Claude Code to a JSON object from a name to its command, for example `{"gemini":["gemini","--experimental-acp"]}`. |
 | `/meld --vcs git <request>` | Makes git worktrees. `--vcs jj` makes jj workspaces. `--vcs auto`, the default, uses jj when jj is installed. |
 | `/meld /path/to/repo <request>` | Starts the run in another repository. |
 | `/meld-steer <instruction>` | Sends a new instruction to every agent. |

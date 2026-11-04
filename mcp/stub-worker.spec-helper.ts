@@ -2,7 +2,8 @@
  * An ACP agent that works as a meld worker, for the run specs of the leader. It connects to the MCP server that the leader
  * gives it, its own meld mcp --worker. Each prompt goes on with its claimed task, or waits for a ready open task whose
  * detail names a file and claims it. It asks for permission to write that file in its folder, commits it, and finishes the task.
- * When every task is done, it integrates: it merges the integration line and declares the final commit.
+ * When every task is done, it integrates: it merges the integration line and declares the final commit. Each prompt ends
+ * with a usage update, a context of 10,000 tokens more for each turn.
  */
 import { Peer, readLines } from './json-rpc'
 
@@ -13,12 +14,16 @@ type Reply = { ok?: boolean; error?: string }
 
 const SESSION = 'stub-worker-session'
 const WAIT_MS = 10_000
-const POLL_MS = 50
+const POLL_MS = 500
 const MCP_VERSION = '2025-06-18'
+const WINDOW = 200_000
+const TOKENS_PER_TURN = 10_000
+const FILE_NAME = /[\w.-]+\.\w+/
 
 let cwd = ''
 let meld: Peer | undefined
 let toolCalls = 0
+let turns = 0
 
 const acp = new Peer(line => process.stdout.write(`${line}\n`), {
   request: async (method, params) => {
@@ -29,7 +34,9 @@ const acp = new Peer(line => process.stdout.write(`${line}\n`), {
       return { sessionId: SESSION }
     }
     if (method === 'session/prompt') {
+      turns += 1
       await work()
+      acp.notify('session/update', { sessionId: SESSION, update: { sessionUpdate: 'usage_update', used: turns * TOKENS_PER_TURN, size: WINDOW } })
       return { stopReason: 'end_turn' }
     }
     throw new Error(`the stub worker has no method ${method}`)
@@ -85,13 +92,14 @@ function isReady(tasks: readonly BoardTask[], task: BoardTask): boolean {
 
 async function doTask(task: BoardTask): Promise<void> {
   if (task.state === 'open' && !(await call<Reply>('claim', { task: task.id, version: task.version })).ok) return
-  const path = `${cwd}/${task.detail}`
+  const name = FILE_NAME.exec(task.detail)?.[0] ?? `task-${task.id}.txt`
+  const path = `${cwd}/${name}`
   if (!(await allowed(`Write ${path}`, 'edit', path))) return
   await Bun.write(path, `${task.title}\n`)
-  await git('add', task.detail)
+  await git('add', name)
   await git('commit', '-q', '-m', task.title)
   const claimed = (await call<BoardView>('board')).tasks.find(one => one.id === task.id)
-  await call('finish_task', { task: task.id, version: claimed?.version, commit: 'HEAD', summary: `Added ${task.detail}` })
+  await call('finish_task', { task: task.id, version: claimed?.version, commit: 'HEAD', summary: `Added ${name}` })
 }
 
 async function integrate(view: BoardView): Promise<void> {
