@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
 import { markWorker, restartIdleWorkers, serveTool } from '../hooks/actions'
-import { addTasks, bindWorker, claimTask, isFailure, startRun, takeIntegration } from '../hooks/board'
+import { addTasks, addWorker as joinRun, bindWorker, claimTask, isFailure, startRun, takeIntegration } from '../hooks/board'
 import type { Change, NewTask, Run, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
 
@@ -65,4 +65,23 @@ test('while the integrator works and no task is open, a beat starts no other wor
   await markWorker(io, 'agent-3', 'idle')
   await restartIdleWorkers(io)
   expect(io.spawned).toHaveLength(0)
+})
+
+test('the integrator takes no open task: while it works with no claim, a beat starts an idle worker for the open task', async () => {
+  const io = ioWith(runOf(takeIntegration(withTasks([{ title: 'Docs' }]), 'w1', NOW)))
+  await markWorker(io, 'agent-2', 'idle')
+  await markWorker(io, 'agent-3', 'idle')
+  await restartIdleWorkers(io)
+  expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w2'])
+  expect(io.spawned[0]?.prompt).toContain('These tasks are open: #1 Docs. Claim one and do it.')
+})
+
+test('a worker that is starting with no agent takes no open task: a beat starts an idle worker for it', async () => {
+  const run = runOf(claimTask(withTasks([{ title: 'Tokens' }, { title: 'Docs' }]), 'w1', 1, 1, NOW))
+  const io = ioWith(joinRun(run, { id: 'w4', path: '/tmp/meld/r1/w4', ref: 'meld/r1/w4', agent: { type: 'meld:worker' } }, NOW))
+  await markWorker(io, 'agent-2', 'idle')
+  await markWorker(io, 'agent-3', 'idle')
+  await restartIdleWorkers(io)
+  expect(io.current?.workers.map(worker => worker.state)).toEqual(['working', 'working', 'idle', 'starting'])
+  expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w2'])
 })
