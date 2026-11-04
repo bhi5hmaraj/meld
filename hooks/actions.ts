@@ -163,7 +163,10 @@ async function namedRepo(io: Io, request: string): Promise<{ repo: string; task:
   return repo ? { repo, task: request.slice(first.length).trim() } : undefined
 }
 
-/** Starts each worker in its own folder and binds it by the agent id the engine answers. Returns the reasons of the refused spawns. */
+/**
+ * Starts each worker in its own folder and binds it by the agent id the engine answers. Returns the reasons of the
+ * refused spawns, and of the agents that meld could not bind: those workers are refused too, so none stays starting.
+ */
 async function spawnWorkers(io: Io, run: Run, workers: readonly Worker[] = run.workers): Promise<string[]> {
   const refused: string[] = []
   for (const worker of workers) {
@@ -172,8 +175,10 @@ async function spawnWorkers(io: Io, run: Run, workers: readonly Worker[] = run.w
       const spawned = await spawnOne(io, run, worker)
       const now = await io.now()
       const agentId = spawned.agentId
-      if (agentId) await writeRun(io, current => runOf(board.bindWorker(current, worker.id, agentId, now), current))
-      else {
+      if (agentId) {
+        const unbound = await bindOrRefuse(io, worker.id, agentId, now)
+        if (unbound) refused.push(unbound)
+      } else {
         const reason = spawned.deny ?? 'the engine started no agent'
         refused.push(reason)
         await writeRun(io, current => board.refuseWorker(current, worker.id, reason, now))
@@ -183,6 +188,23 @@ async function spawnWorkers(io: Io, run: Run, workers: readonly Worker[] = run.w
     }
   }
   return refused
+}
+
+/**
+ * Binds a new agent to its worker. A run that ended during the spawn (the integrator declared the final commit, or the
+ * person stopped the run) binds no agent: the worker is refused, as a denied spawn is, so that it does not stay starting
+ * with no agent, which no beat starts and which keeps the run from being idle. Gives the reason of a refusal.
+ */
+async function bindOrRefuse(io: Io, id: WorkerId, agentId: string, now: number): Promise<string | undefined> {
+  let reason: string | undefined
+  await writeRun(io, current => {
+    const bound = board.bindWorker(current, id, agentId, now)
+    if (!board.isFailure(bound)) return bound.run
+    if (current.workers.some(worker => worker.id === id && worker.agentId)) return current
+    reason = `the run is ${current.state}`
+    return board.refuseWorker(current, id, reason, now)
+  })
+  return reason
 }
 
 async function spawnOne(io: Io, run: Run, worker: Worker, step?: string): Promise<Spawned> {
@@ -614,7 +636,7 @@ type Restart = { worker: Worker; step: string }
 /**
  * One beat of the clock. The run of an idle worker has ended (the engine drops a spawned agent at its hand-back, and an
  * agent hands back after each task), so meld starts a new agent for it when there is work for it: a task that it can
- * claim, one worker for each such task that no working worker with no claim will take; news on the board that it has not read, for a task of its own; or, with every
+ * claim, one worker for each such task that no pending worker will take (see restartsFor); news on the board that it has not read, for a task of its own; or, with every
  * worker idle, the owners of unfinished tasks, then idle workers for open tasks, else the lead to plan, steer or integrate. Each beat that starts a worker counts; a finished task or a steer resets
  * the count, so after three beats that finish nothing meld stops and tells the person once. One beat runs at a time.
  *
@@ -653,9 +675,10 @@ async function settleEnded(io: Io): Promise<void> {
 }
 
 /**
- * The restarts of one beat. A live worker that is not idle and claims nothing will take an open task: meld started it
+ * The restarts of one beat. A working worker with an agent that claims nothing will take an open task: meld started it
  * again for one, or it planned the tasks, and the task stays open until its claim. Such a worker is pending, so the idle
- * workers start for the other open tasks only, and a ready task gets one agent.
+ * workers start for the other open tasks only, and a ready task gets one agent. The integrator integrates and takes no
+ * task, and a worker that is starting has no agent yet: neither is pending, so they hold back no idle worker.
  */
 function restartsFor(run: Run): Restart[] {
   const live = run.workers.filter(worker => worker.state !== 'stopped')
@@ -663,7 +686,7 @@ function restartsFor(run: Run): Restart[] {
   const everyoneIdle = idle.length === live.length
   const open = claimable(run.tasks)
   const owners = idle.filter(worker => claimsOf(run, worker).length && (everyoneIdle || hasNews(run, worker)))
-  const pending = live.filter(worker => worker.state !== 'idle' && !claimsOf(run, worker).length).length
+  const pending = live.filter(worker => isPending(run, worker)).length
   const takers = idle.filter(worker => !claimsOf(run, worker).length).slice(0, Math.max(0, open.length - pending))
   const restarts = [
     ...owners.map(worker => ({ worker, step: `Your task is not done: ${titles(claimsOf(run, worker))}. Go on with it, or release it with a note.` })),
@@ -672,6 +695,11 @@ function restartsFor(run: Run): Restart[] {
   if (restarts.length || !everyoneIdle) return restarts
   const lead = live.find(worker => worker.id === run.integrator) ?? live[0]
   return lead ? [{ worker: lead, step: leadStep(run, lead) }] : []
+}
+
+/** A working worker with an agent that claims nothing and does not integrate: it will claim an open task. */
+function isPending(run: Run, worker: Worker): boolean {
+  return worker.state === 'working' && worker.agentId !== undefined && worker.id !== run.integrator && !claimsOf(run, worker).length
 }
 
 /** Board entries the worker has not read: a steer, or an entry of another worker (meld's own restarts are not news). */

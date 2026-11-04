@@ -86,7 +86,7 @@ Some places show no meld pane, for example a cloud session in the Claude app. Ea
 
 Only the main session uses these tools. An agent of the run that calls one gets `NOT_ALLOWED`.
 
-**A new agent.** `/meld-add` adds one agent to a run that starts or works, up to 8 agents. Its workspace starts from the head of the integration line, so it has the finished work, or from the base when no task finished. The agent starts at once and reads the board. Name its model or type as `/meld --agents` does: `opus`, `Explore`, or `general-purpose@haiku`. With no name, it takes the agent of w1.
+**A new agent.** `/meld-add` adds one agent to a run that starts or works, up to 8 agents. Its workspace starts from the head of the integration line, so it has the finished work, or from the base when no task finished. The agent starts at once and reads the board. Name its model or type as `/meld --agents` does: `opus`, `Explore`, or `general-purpose@haiku`. With no name, it takes the agent of w1. When the run gets its final commit while the agent starts, meld does not bind the agent to the new worker: the worker shows as not started, so the run does not wait for it.
 
 ## Deliver the result
 
@@ -154,7 +154,7 @@ The first board reply to a new agent carries the 20 newest current entries. Each
 
 **Restarts.** Claude Code ends an agent when the agent returns its result. At the end of each turn of your session, meld restarts an idle agent in the same folder when there is work for it:
 
-- A task is ready, and the agent claims no task. meld restarts one agent for each ready task at most. An agent that works and claims no task counts for one of them: meld started it for a task, or it planned the tasks, and it claims a task next.
+- A task is ready, and the agent claims no task. meld restarts one agent for each ready task at most. An agent that works, claims no task and does not integrate counts for one of them: meld started it for a task, or it planned the tasks, and it claims a task next. The integrator does not count, as it takes no task, and an agent that Claude Code did not start yet does not count.
 - The board has news that the agent did not read, and the agent claims a task that is not done. A note, a share, a claim, a finished task or a check of another agent is news.
 - Every live agent is idle. meld restarts the owners of unfinished tasks, and idle agents for the open tasks. With no open task, meld restarts the lead, the integrator or the first live agent, to plan, to take your new instruction, or to integrate.
 
