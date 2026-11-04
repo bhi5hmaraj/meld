@@ -4,11 +4,14 @@ import type { ToolCallInput } from 'claude-code'
 import { markWorker, restartIdleWorkers, serveTool } from '../hooks/actions'
 import { addTasks, bindWorker, boardFor, claimTask, finishTask, handoversFor, isFailure, startRun, steer } from '../hooks/board'
 import { HAND_BACK, TOOL, workerRules } from '../hooks/contract'
+import { JJ_RESOLVE_TEMPLATE } from '../hooks/vcs'
 import type { Change, NewTask, Run, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
+import { STORED_BY_0_7_0 } from './stored-runs'
 
 const NOW = 1_800_000_000_000
 const FULL = 'f'.repeat(40)
+const OTHER = 'e'.repeat(40)
 const RESOLVE_HEAD = 'git rev-parse --verify --quiet HEAD^{commit}'
 const HANDOVER = { interfaces: '--bg and --fg in theme.css', unfinished: 'The print styles' }
 
@@ -188,4 +191,43 @@ test('a new agent for a ready task starts from the board, and its claim brings t
   expect(view.rules).toContain('You are w1')
   const claimed = await serve(io, { tool: TOOL.claim, task: 2, version: 1, agentId: 'spawned-1' })
   expect(claimed).toMatchObject({ ok: true, handovers: [{ task: 1, commit: 'def5678', ...HANDOVER }] })
+})
+
+test('a task added to a run that meld 0.7.0 stored gets the commit of its done need as its handover', async () => {
+  const toggle = STORED_BY_0_7_0.tasks[1]
+  const planned = runOf(addTasks(STORED_BY_0_7_0, 'w3', { seen: 2, tasks: [{ title: 'Toggle docs', needs: [2] }] }, NOW))
+  expect(handoversFor(planned, 6)).toEqual([{ task: 2, title: 'Dark toggle', commit: toggle?.commit }])
+  const claimed = await serve(ioWith(planned), { tool: TOOL.claim, task: 6, version: 1, agentId: 'agent-3' })
+  expect(claimed).toMatchObject({ ok: true, value: { id: 6, owner: 'w3' }, handovers: [{ task: 2, title: 'Dark toggle', commit: toggle?.commit }] })
+})
+
+test('a board read of a run that meld 0.7.0 stored shows its tasks as they were, and no handovers', () => {
+  const view = boardFor(STORED_BY_0_7_0, 'w1').view
+  expect(view.tasks).toEqual(STORED_BY_0_7_0.tasks)
+  expect(view.handovers).toBeUndefined()
+})
+
+test('the idle worker of a run that meld 0.7.0 stored starts again when a task gets ready, and its claim brings the handovers', async () => {
+  const colour = runOf(finishTask(STORED_BY_0_7_0, 'w1', 4, 1, FULL, 'Colour tokens', NOW, { interfaces: '--bg in tokens.css' }))
+  const io = ioWith(runOf(finishTask(colour, 'w2', 5, 2, OTHER, 'Spacing tokens', NOW)))
+  await serve(io, { tool: TOOL.board, agentId: 'agent-3' })
+  await markWorker(io, 'agent-3', 'idle')
+  await restartIdleWorkers(io)
+  expect(io.spawned.map(spawn => [spawn.description, spawn.cwd])).toEqual([['meld w3', '/tmp/meld/r070/w3']])
+  expect(io.spawned[0]?.prompt).toContain('These tasks are open: #3 Docs for the theme.')
+  const claimed = await serve(io, { tool: TOOL.claim, task: 3, version: 1, agentId: 'spawned-1' })
+  expect(claimed).toMatchObject({
+    ok: true,
+    handovers: [
+      { task: 4, title: 'Colour tokens', commit: FULL, interfaces: '--bg in tokens.css' },
+      { task: 5, title: 'Spacing tokens', commit: OTHER },
+    ],
+  })
+})
+
+test('a finish_task on a run that meld 0.7.0 stored tells its worker to hand back', async () => {
+  const io = ioWith(STORED_BY_0_7_0)
+  io.answers[`jj -R /tmp/meld/r070/w1 --ignore-working-copy log --no-graph -r @- -T ${JJ_RESOLVE_TEMPLATE}`] = `${FULL} clean`
+  const replied = await serve(io, { tool: TOOL.finishTask, task: 4, version: 1, commit: '@-', summary: 'Colour tokens', agentId: 'agent-1' })
+  expect(replied).toMatchObject({ ok: true, value: { id: 4, state: 'done', commit: FULL }, next: HAND_BACK })
 })

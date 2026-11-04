@@ -3,7 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import { addCheck, addTasks, bindWorker, boardFor, claimTask, declareFinal, finishTask, isFailure, refuseWorker, setActivity, shareEntry, splitTask, startRun, takeIntegration } from '../hooks/board'
 import { agentColor } from '../hooks/drawing'
 import type { Change, ContextKind, Facts, Run, Task, WorkerId } from '../types'
-import { STORED_BY_0_6_0 } from './stored-runs'
+import { STORED_BY_0_6_0, STORED_BY_0_7_0 } from './stored-runs'
 
 const NOW = 1_800_000_000_000
 const FULL = 'f'.repeat(40)
@@ -599,6 +599,23 @@ test('a run that meld 0.6.0 stored, with no task tree and a view with no open ro
     expect(rowKeys(await ui.findAll({ type: 'Box' }))).toEqual(['task-1', 'task-2', 'task-3'])
     expect(textsOf(await ui.find({ key: 'progress-all' })).slice(0, 2)).toEqual(['Progress', '33%'])
     expect(await ui.find({ type: 'Text', text: /^waits for/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('a run that meld 0.7.0 stored draws its task tree, its progress and its shared context, with no block over 100 words', async ($, on) => {
+  const state = new FakeState().load(STORED_BY_0_7_0, null, { ...CLOSED_VIEW, open: [1] })
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  for (const surface of ALL_SURFACES) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(rowKeys(await ui.findAll({ type: 'Box' }))).toEqual(['task-1', 'task-4', 'task-5', 'task-2', 'task-3'])
+    expect(textsOf(await ui.find({ key: 'progress-all' })).slice(0, 2)).toEqual(['Progress', '66%'])
+    expect(await ui.find({ type: 'Text', text: 'waits for #1' })).toBeDefined()
+    const lines = (await ui.findAll({ type: 'Box' })).filter(box => box.key?.startsWith('context-'))
+    expect(lines.map(line => line.key)).toEqual(['context-3', 'context-2'])
+    const blocks = (await ui.findAll({ type: 'Box' })).filter(box => box.key?.startsWith('sec-'))
+    for (const block of blocks) expect(wordsOf(block), `${block.key} on ${surface}`).toBeLessThanOrEqual(WORD_LIMIT)
     await ui.unmount()
   }
 })
