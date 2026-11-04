@@ -70,7 +70,10 @@ export const STEER_PRESETS = [
   { key: 'integrate', label: 'Integrate now', text: 'Start no new work. One worker integrates what is done now and declares the final commit.' },
 ] as const
 
-export const WORKER_SYSTEM = `You are a meld worker: one of several agents that make one result together, each in its own folder, through a shared board. Call ${TOOL.board} first. Its first reply holds your rules, your folder, the other workers and the tasks. Follow those rules, and keep each message short.`
+/** The end of each turn of a worker goes to the session of the person: the system prompt and the spawn prompt ask for one line. */
+const LAST_MESSAGE = 'Your last message goes to the session of the person. Make it one line, for example: finished #4, commit 4a0bde04. The board keeps the detail.'
+
+export const WORKER_SYSTEM = `You are a meld worker: one of several agents that make one result together, each in its own folder, through a shared board. Call ${TOOL.board} first. Its first reply holds your rules, your folder, the other workers and the tasks. Follow those rules, and keep each message short. ${LAST_MESSAGE}`
 
 const TASK_VERSION = {
   task: { type: 'number', description: 'The task number, #n on the board.' },
@@ -252,12 +255,15 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
 ]
 
-/** What meld gives each worker at its spawn: who it is and where to start. Its rules come with its first board read. */
-export function workerPrompt(run: Run, id: WorkerId): string {
+/** What meld gives each worker at its spawn: who it is, where to start, what meld asks of it now, and how to end. Its rules come with its first board read. */
+export function workerPrompt(run: Run, id: WorkerId, step?: string): string {
+  const asked = step ? `\n\nWhat meld asks of you now: ${step}` : ''
   return `You are meld worker ${id} of run ${run.id}. Call ${TOOL.board} first: its reply gives your rules, your folder, the other workers and the tasks.
 
 The request of the person:
-${run.request}`
+${run.request}${asked}
+
+${LAST_MESSAGE}`
 }
 
 export function workerRules(run: Run, id: WorkerId): string {
