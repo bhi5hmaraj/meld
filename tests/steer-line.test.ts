@@ -48,6 +48,30 @@ function ioWith(run: Run): FakeIo {
   return io
 }
 
+/**
+ * w2 integrates, and declares FINAL just after the first read of the run: a steer reads a working run before it moves
+ * the line, and saves to a ready one.
+ */
+class FinalAfterFirstRead extends FakeIo {
+  declared = false
+
+  override async read(): Promise<Run | null> {
+    const seen = this.current
+    if (!this.declared && seen?.state === 'working') {
+      this.declared = true
+      this.current = runOf(declareFinal(seen, 'w2', FINAL, 'Dark theme', NOW))
+    }
+    return seen
+  }
+}
+
+/** Each read shows the ready run as it was before its final commit, so no try of a steer moves the line before its save. */
+class BehindReady extends FakeIo {
+  override async read(): Promise<Run | null> {
+    return this.current && { ...this.current, state: 'working', final: undefined }
+  }
+}
+
 test('git moves the line branch of the run to a commit, in the repository of the person', async () => {
   const io = new FakeIo()
   const moved = await vcsFor('git').setLine(io, ready('git'), FINAL)
@@ -79,9 +103,35 @@ test('a steer of a ready run whose line moved to the final commit gives the line
   expect(steered.state).toBe('working')
 })
 
-test('a steer of a ready run keeps the line as it is when the line did not move to the final commit', () => {
-  expect(runOf(steer(ready('git'), 'Rename the toggle', NOW)).line).toEqual({ head: LINE, tasks: [1, 2] })
-  expect(runOf(steer(ready('git'), 'Rename the toggle', NOW, LINE)).line).toEqual({ head: LINE, tasks: [1, 2] })
+test('a steer of a ready run is refused while the integration line is not at its final commit', () => {
+  const refused = steer(ready('git'), 'Rename the toggle', NOW)
+  expect(refused).toMatchObject({ error: 'LINE_NOT_MOVED' })
+  expect(isFailure(refused) ? refused.message : '').toContain(`final commit ${FINAL.slice(0, 7)}`)
+  expect(steer(ready('git'), 'Rename the toggle', NOW, LINE)).toMatchObject({ error: 'LINE_NOT_MOVED' })
+})
+
+test('when the integrator declares the final commit after the steer read a working run, meld moves the line to it and steers', async () => {
+  const io = new FinalAfterFirstRead()
+  io.current = runOf(takeIntegration(lined('git'), 'w2', NOW))
+  const said = await steerRun(io, 'Rename the toggle')
+  expect(said).toBe('All 3 workers get revision 2.')
+  expect(io.cwds[GIT_MOVE]).toBe('/repo')
+  expect(io.current?.line).toEqual({ head: FINAL, tasks: [1, 2] })
+  expect(io.current?.state).toBe('working')
+  expect(io.current?.final).toBeUndefined()
+  expect(io.current?.revision).toBe(2)
+})
+
+test('a steer that never finds the line at the final commit of the ready run changes nothing and says to steer again', async () => {
+  const io = new BehindReady()
+  io.current = ready('git')
+  const said = await steerRun(io, 'Rename the toggle')
+  expect(said).toContain(`final commit ${FINAL.slice(0, 7)}`)
+  expect(said).toContain('Steer again')
+  expect(io.ran('git update-ref')).toBe(false)
+  expect(io.current?.state).toBe('ready')
+  expect(io.current?.final?.commit).toBe(FINAL)
+  expect(io.current?.revision).toBe(1)
 })
 
 test('a steer from ready moves the git line to the final commit, so the next final starts from its work', async () => {
