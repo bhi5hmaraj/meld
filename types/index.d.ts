@@ -182,8 +182,11 @@ export type BoardView = {
 /** A commit of one worker since the base, as the version control has it. */
 export type CommitFact = { commit: string; subject: string; parents: number; conflict: boolean }
 
-/** What the version control shows of one worker: its commits since the base, newest first, and whether it has edits it has not committed. */
-export type LaneFacts = { id: WorkerId; commits: CommitFact[]; edits: boolean }
+/**
+ * What the version control shows of one worker: its commits since the base, newest first, and whether it has edits it has
+ * not committed. A lane that the version control could not read has its error, and its commits and edits are unknown.
+ */
+export type LaneFacts = { id: WorkerId; commits: CommitFact[]; edits: boolean; error?: string }
 
 /** One changed file of the result: its line counts and its unified-diff hunks, cut when long. */
 export type FileChange = { path: string; added: number; removed: number; patch: string }

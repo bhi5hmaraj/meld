@@ -72,6 +72,11 @@ function mirrorBoard(io: Io): Promise<void> {
 export async function startRun(io: Io, cwd: string, options: StartOptions): Promise<CommandRunResult> {
   const current = await readRun(io)
   if (current && LIVE_STATES.has(current.state)) return { text: 'A run is active. Deliver, discard or stop it in the meld pane first.' }
+  if (current?.state === 'stopped') {
+    const kept = await keptWork(io, current)
+    if (kept) return { text: kept }
+    await dropRun(io, current)
+  }
   const named = await namedRepo(io, options.request)
   const repo = named?.repo ?? (await repoRoot(io, cwd))
   if (!repo) return { text: 'meld needs a git repository in the working directory.' }
@@ -103,6 +108,31 @@ export async function startRun(io: Io, cwd: string, options: StartOptions): Prom
   const notStarted = refused.length ? ` ${refused.length} did not start: ${refused[0]}.` : ''
   const dirty = (await isDirty(io, repo)) ? ' Your uncommitted changes are not in their workspaces.' : ''
   return { text: `Run ${id}: ${workers.length} workers on ${kind}, from commit ${base.slice(0, 7)}.${fallback}${notStarted}${dirty}` }
+}
+
+/**
+ * Why a new start cannot take the place of a stopped run: its workspaces hold commits or uncommitted edits, or meld
+ * cannot read them. Undefined when they hold no work, as after a start that started no worker. jj records the files
+ * of each workspace first, as a worker can stop after an edit and before its next jj command.
+ */
+async function keptWork(io: Io, run: Run): Promise<string | undefined> {
+  const lanes = await vcsFor(run.vcs).lanes(io, run, { snapshot: true })
+  const home = runHome(run.id)
+  const unread = lanes.filter(lane => lane.error !== undefined)
+  if (unread.length) {
+    const errors = unread.map(lane => `${lane.id}: ${lane.error?.split('\n')[0]}`).join('; ')
+    return `Run ${run.id} stopped, and meld cannot read its workspaces in ${home} (${errors}), so they can hold work. Discard in the meld pane removes them, then you can start again.`
+  }
+  const commits = new Set(lanes.flatMap(lane => lane.commits.map(fact => fact.commit))).size
+  const edits = lanes.filter(lane => lane.edits).map(lane => lane.id)
+  if (!commits && !edits.length) return undefined
+  const edited = edits.length ? `, and uncommitted edits in ${listed(edits)}` : ''
+  return `Run ${run.id} stopped with work in ${home}: ${commits} commit${commits === 1 ? '' : 's'}${edited}. Discard in the meld pane removes its workspaces, then you can start again.`
+}
+
+/** Names as a list in words: "w1", "w1 and w2", "w1, w2 and w3". */
+function listed(names: string[]): string {
+  return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : (names[0] ?? '')
 }
 
 /** The start form of the pane: its task, number of agents, model and version control. */
@@ -675,10 +705,15 @@ export async function discard(io: Io): Promise<string> {
   const run = await readRun(io)
   if (!run) return 'There is no run.'
   if (LIVE_STATES.has(run.state)) await stopAll(io)
+  await dropRun(io, run)
+  return 'The run and its workspaces are gone.'
+}
+
+/** Removes the workspaces of a run that meld did not deliver, then the run and its facts. */
+async function dropRun(io: Io, run: Run): Promise<void> {
   if (run.state !== 'delivered') await vcsFor(run.vcs).remove(io, run)
   await save(io, () => null)
   await io.writeFacts(null)
-  return 'The run and its workspaces are gone.'
 }
 
 /** Reads what the version control shows of the run, for the pane: the commits of each worker, and the change of the final commit. */
