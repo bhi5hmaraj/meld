@@ -4,7 +4,7 @@
  * detail names a file and claims it. It asks for permission to write that file in its folder, commits it, and finishes the task.
  * When every task is done, it integrates: it merges the integration line and declares the final commit.
  */
-import { Peer } from './json-rpc'
+import { Peer, readLines } from './json-rpc'
 
 type Server = { command: string; args: string[]; env: { name: string; value: string }[] }
 type BoardTask = { id: number; title: string; detail: string; state: string; owner?: string; version: number; needs?: number[] }
@@ -116,19 +116,6 @@ async function allowed(title: string, kind: string, path: string): Promise<boole
 async function git(...args: string[]): Promise<void> {
   const child = Bun.spawn(['git', ...args], { cwd, stdout: 'ignore', stderr: 'pipe' })
   if ((await child.exited) !== 0) throw new Error(`git ${args.join(' ')}: ${await new Response(child.stderr).text()}`)
-}
-
-async function readLines(stream: ReadableStream<Uint8Array>, take: (line: string) => void): Promise<void> {
-  const decoder = new TextDecoder()
-  let buffer = ''
-  for await (const chunk of stream) {
-    buffer += decoder.decode(chunk, { stream: true })
-    for (let end = buffer.indexOf('\n'); end >= 0; end = buffer.indexOf('\n')) {
-      const line = buffer.slice(0, end).trim()
-      buffer = buffer.slice(end + 1)
-      if (line) take(line)
-    }
-  }
 }
 
 await readLines(Bun.stdin.stream(), line => acp.receive(line))

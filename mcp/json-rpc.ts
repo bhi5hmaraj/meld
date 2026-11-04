@@ -73,6 +73,20 @@ export class Peer {
   }
 }
 
+/** Gives each line of the stream that is not empty, in order. A line waits for the one before it. */
+export async function readLines(stream: ReadableStream<Uint8Array>, take: (line: string) => void | Promise<void>): Promise<void> {
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for await (const chunk of stream) {
+    buffer += decoder.decode(chunk, { stream: true })
+    for (let end = buffer.indexOf('\n'); end >= 0; end = buffer.indexOf('\n')) {
+      const line = buffer.slice(0, end).trim()
+      buffer = buffer.slice(end + 1)
+      if (line) await take(line)
+    }
+  }
+}
+
 function parsed(line: string): Message | undefined {
   try {
     const value: unknown = JSON.parse(line)

@@ -1,6 +1,6 @@
 import type { Subprocess } from 'bun'
 
-import { Peer } from './json-rpc'
+import { Peer, readLines } from './json-rpc'
 
 /** The Agent Client Protocol: meld is the client of an agent process such as `codex-acp`, over standard input and output. */
 
@@ -120,19 +120,6 @@ export class AcpAgent {
 function writeLine(child: Subprocess<'pipe', 'pipe', 'pipe'>, line: string): void {
   child.stdin.write(`${line}\n`)
   void child.stdin.flush()
-}
-
-async function readLines(stream: ReadableStream<Uint8Array>, take: (line: string) => void): Promise<void> {
-  const decoder = new TextDecoder()
-  let buffer = ''
-  for await (const chunk of stream) {
-    buffer += decoder.decode(chunk, { stream: true })
-    for (let end = buffer.indexOf('\n'); end >= 0; end = buffer.indexOf('\n')) {
-      const line = buffer.slice(0, end).trim()
-      buffer = buffer.slice(end + 1)
-      if (line) take(line)
-    }
-  }
 }
 
 function acpServer(server: McpServerSpec): object {
