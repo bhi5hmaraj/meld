@@ -811,6 +811,10 @@ function nextWorkerId(run: Run): WorkerId {
   return `w${Math.max(0, ...run.workers.map(worker => Number(worker.id.slice(1)))) + 1}`
 }
 
+/**
+ * Merges the final commit into the branch of the person. The run is delivered before meld removes its folder, as meld
+ * mirrors no delivered run: a worker that ends its turn during the removal does not make the folder again.
+ */
 export async function deliver(io: Io): Promise<string> {
   const run = await readRun(io)
   if (!run || run.state !== 'ready' || !run.final) return 'There is no final commit to deliver.'
@@ -820,9 +824,9 @@ export async function deliver(io: Io): Promise<string> {
   const vcs = vcsFor(run.vcs)
   const merged = await vcs.deliver(io, run, run.final.commit, deliveryMessage(run))
   if (!merged.ok) return `The merge stopped, and nothing changed: ${merged.err || merged.out}`
-  await vcs.remove(io, run)
   const now = await io.now()
   await writeRun(io, current => board.markDelivered(current, now))
+  await vcs.remove(io, run)
   return `Merged ${run.final.commit.slice(0, 7)} into your branch.`
 }
 
@@ -842,11 +846,14 @@ export async function discard(io: Io): Promise<string> {
   return 'The run and its workspaces are gone.'
 }
 
-/** Removes the workspaces of a run that meld did not deliver, then the run and its facts. */
+/**
+ * Drops the run and its facts, then removes the workspaces of a run that meld did not deliver. The run goes first: a
+ * worker that ends its turn during the removal then writes no run, so no mirror of the board makes its folder again.
+ */
 async function dropRun(io: Io, run: Run): Promise<void> {
-  if (run.state !== 'delivered') await vcsFor(run.vcs).remove(io, run)
   await save(io, () => null)
   await io.writeFacts(null)
+  if (run.state !== 'delivered') await vcsFor(run.vcs).remove(io, run)
 }
 
 /** Reads what the version control shows of the run, for the pane: the commits of each worker, and the change of the final commit. */
