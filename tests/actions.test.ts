@@ -633,7 +633,7 @@ test('deliver refuses a checkout with uncommitted changes', async () => {
 test('deliver merges the final commit, then removes the workspaces', async () => {
   const io = ioWith(runOf(declareFinal(runOf(takeIntegration(working(), 'w2', NOW)), 'w2', FULL, 'Done', NOW)))
   expect(await deliver(io)).toBe(`Merged ${FULL.slice(0, 7)} into your branch.`)
-  expect(io.commands).toContain(`git merge --no-ff -m meld: Add a dark theme ${FULL}`)
+  expect(io.commands).toContain(`git merge --no-ff -m meld: Done\n\nAdd a dark theme ${FULL}`)
   expect(io.commands).toContain('git worktree remove --force /tmp/meld/r1/w2')
   expect(io.current?.state).toBe('delivered')
 })
