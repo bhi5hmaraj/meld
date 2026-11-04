@@ -454,10 +454,16 @@ export function declareFinal(run: Run, by: WorkerId, commit: string, summary: st
   return { run: ready, value: final }
 }
 
-export function steer(run: Run, text: string, now: number): Change<number> {
+/**
+ * The person changes the request, and a ready run works again with no final commit. `lineAt` is that final commit when meld
+ * moved the integration line to it first: the line then holds the done tasks at that commit, so the work of the final
+ * commit stays in the next one, and the merges after the steer build on it.
+ */
+export function steer(run: Run, text: string, now: number, lineAt?: string): Change<number> {
   if (!STEERABLE.has(run.state)) return failure('RUN_ENDED', `The run is ${run.state}.`)
   const revision = run.revision + 1
-  const reopened: Run = { ...run, revision, state: run.state === 'ready' ? 'working' : run.state, final: undefined, nudges: 0 }
+  const kept = run.state === 'ready' && lineAt && run.final?.commit === lineAt ? { line: { head: lineAt, tasks: run.tasks.filter(task => task.state === 'done').map(task => task.id) } } : {}
+  const reopened: Run = { ...run, ...kept, revision, state: run.state === 'ready' ? 'working' : run.state, final: undefined, nudges: 0 }
   return { run: withEntry(reopened, { at: now, by: 'you', kind: 'steer', text, revision }), value: revision }
 }
 

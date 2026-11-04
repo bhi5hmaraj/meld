@@ -34,6 +34,7 @@ const STEPS = [
   ['result', result],
   ['deliver', deliver],
   ['join', addWorkers],
+  ['line to final', lineToFinal],
   ['remove', remove],
 ]
 
@@ -275,6 +276,21 @@ async function addWorkers(s) {
   for (const [id, made] of [['w4', fromLine], ['w5', fromBase]]) s.run = hooks.board.addWorker(s.run, { ...made, id, agent: { type: 'meld:worker' } }, Date.now())
   same(s.run.workers.map(worker => worker.id), [...IDS, 'w4', 'w5'], 'the workers on the board')
   return `w4 from the line ${short(s.line)} has the files of w1, w2 and w3; w5 from the base has none`
+}
+
+/**
+ * A steer of a ready run moves the integration line to the final commit, which the line does not hold. A workspace sees
+ * the line there under its name, and a commit that the final commit holds merges into it with no change.
+ */
+async function lineToFinal(s) {
+  const name = s.vcs.lineName(s.run)
+  const moved = await s.vcs.setLine(io, s.run, s.final)
+  if (!moved.ok) throw new Error(moved.err || moved.out)
+  const path = s.run.workers[2].path
+  const seen = s.kind === 'jj' ? sh(path, ['jj', 'log', '--no-graph', '-r', name, '-T', 'commit_id']) : sh(path, ['git', 'rev-parse', name])
+  same(seen, s.final, `${name} in the folder of w3`)
+  same(await s.vcs.mergeIntoLine(io, s.run, s.commits.w3, 'meld: integrate #3 again'), { state: 'merged', head: s.final }, 'a merge of w3 into the moved line')
+  return `${name} moves from ${short(s.line)} to the final commit ${short(s.final)}, which holds w3`
 }
 
 async function remove(s) {
