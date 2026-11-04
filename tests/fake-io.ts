@@ -1,10 +1,10 @@
-import type { AgentState, Io, ProcessResult, SpawnArgs, Spawned } from '../hooks/io'
+import type { AgentState, Files, FolderEntry, Io, ProcessResult, SpawnArgs, Spawned } from '../hooks/io'
 import type { Facts, Run } from '../types'
 
 export const HEAD = 'abc1234def5678abc1234def5678abc1234def56'
 
 /** The engine as the logic of meld sees it: commands answer from tables, and every call is recorded. */
-export class FakeIo implements Io {
+export class FakeIo implements Io, Files {
   current: Run | null = null
   facts: Facts | null = null
   repos = ['/repo', '/elsewhere']
@@ -26,13 +26,19 @@ export class FakeIo implements Io {
   toasts: string[] = []
   usd: number | undefined = undefined
   agentStates: Map<string, AgentState> | undefined = undefined
+  /** The entries of each folder that list answers; a folder that is not here is missing. An rm -rf of a folder drops it. */
+  listings: Record<string, FolderEntry[]> = {}
+  /** Folders that are gone: a command that runs in one cannot start. */
+  goneDirs: string[] = []
 
   async run(argv: string[], cwd: string): Promise<ProcessResult> {
     const command = argv.join(' ')
     this.commands.push(command)
     this.cwds[command] = cwd
     if (this.missing.includes(argv[0] ?? '')) throw new Error(`spawn ${argv[0]} ENOENT`)
+    if (this.goneDirs.includes(cwd)) throw new Error(`spawn ${argv[0]} ENOENT: no such directory ${cwd}`)
     if (this.failing.some(prefix => command.startsWith(prefix))) return refusal(`${argv[0]}: failed`)
+    if (command.startsWith('rm -rf -- ')) this.drop(argv[argv.length - 1] ?? '')
     const outcome = this.outcomes[command]
     if (outcome !== undefined) return outcome
     const known = this.answers[command]
@@ -113,6 +119,27 @@ export class FakeIo implements Io {
 
   async openPane(): Promise<unknown> {
     return undefined
+  }
+
+  async list(path: string): Promise<FolderEntry[]> {
+    const entries = this.listings[path]
+    if (!entries) throw new Error(`ENOENT: no such file or directory, scandir '${path}'`)
+    return entries
+  }
+
+  async readText(path: string): Promise<string> {
+    const text = this.files[path]
+    if (text === undefined) throw new Error(`ENOENT: no such file or directory, open '${path}'`)
+    return text
+  }
+
+  /** Drops a folder from the listings, as rm -rf removes it. The written files stay, so a test still sees what was written. */
+  drop(path: string): void {
+    for (const folder of Object.keys(this.listings)) if (folder === path || folder.startsWith(`${path}/`)) delete this.listings[folder]
+    const cut = path.lastIndexOf('/')
+    const parent = path.slice(0, cut)
+    const entries = this.listings[parent]
+    if (entries) this.listings[parent] = entries.filter(entry => entry.name !== path.slice(cut + 1))
   }
 }
 

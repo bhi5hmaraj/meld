@@ -1,0 +1,227 @@
+import { expect, test } from 'claude-code/testing'
+
+import { startRun as startBoard } from '../hooks/board'
+import { cleanFolders } from '../hooks/clean'
+import type { Run, RunState, VcsKind, WorkerId } from '../types'
+import { FakeIo, HEAD } from './fake-io'
+import { STORED_BY_0_7_0 } from './stored-runs'
+
+const NOW = 1_800_000_000_000
+const HOUR = 3_600_000
+const DAY = 24 * HOUR
+const ROOT = '/tmp/meld'
+const CONFIG = '/root/.config/jj/repos/42ee0e08c27ca3c2d862/config.toml'
+
+/** A run as meld mirrors it to board.json: two workers in the folder of the run. */
+function boardRun(id: string, state: RunState, vcs: VcsKind = 'git', repo = '/repo'): Run {
+  const ids: WorkerId[] = ['w1', 'w2']
+  const workers = ids.map(wid => ({ id: wid, agent: { type: 'meld:worker' }, path: `${ROOT}/${id}/${wid}`, ref: vcs === 'jj' ? `${wid}@` : `meld/${id}/${wid}` }))
+  return { ...startBoard({ id, request: 'Add a dark theme', repo, base: HEAD, vcs, now: NOW - 4 * DAY, workers }), state }
+}
+
+type Setup = { board?: Run | string; changedAt?: number; kb?: number }
+
+/** A folder under /tmp/meld with one workspace, its board.json when given (a run, or a text as it is), and the size that du gives. */
+function folder(io: FakeIo, id: string, setup: Setup = {}): void {
+  io.listings[ROOT] = [...(io.listings[ROOT] ?? []), { name: id, kind: 'dir', mtimeMs: 0 }]
+  io.listings[`${ROOT}/${id}`] = [{ name: 'w1', kind: 'dir', mtimeMs: 0 }]
+  if (setup.board !== undefined) {
+    io.listings[`${ROOT}/${id}`]?.push({ name: 'board.json', kind: 'file', mtimeMs: setup.changedAt ?? NOW - 3 * DAY })
+    io.files[`${ROOT}/${id}/board.json`] = typeof setup.board === 'string' ? setup.board : `${JSON.stringify(setup.board, null, 2)}\n`
+  }
+  io.answers[`du -sk ${ROOT}/${id}`] = `${setup.kb ?? 4}\t${ROOT}/${id}`
+}
+
+/** This session stores the run r1, which works in /tmp/meld/r1. */
+function session(): FakeIo {
+  const io = new FakeIo()
+  io.current = boardRun('r1', 'working')
+  folder(io, 'r1', { board: io.current, changedAt: NOW })
+  return io
+}
+
+function lineOf(text: string, id: string): string {
+  return text.split('\n').find(line => line.startsWith(`${id}:`)) ?? ''
+}
+
+function folderNames(io: FakeIo): string[] {
+  return (io.listings[ROOT] ?? []).map(entry => entry.name)
+}
+
+test('with no argument, /meld-clean lists each folder but the stored run: its id, the state of its board.json, when that changed, and its size', async () => {
+  const io = session()
+  folder(io, 'lq3x9a1', { board: boardRun('lq3x9a1', 'stopped'), changedAt: NOW - 3 * DAY, kb: 7_025_459 })
+  folder(io, 'lq4b2c3', { kb: 120 * 1024 })
+  const text = await cleanFolders(io, '')
+  expect(lineOf(text, 'lq3x9a1')).toBe('lq3x9a1: stopped, board.json changed 3 d ago, 6.7 GB, git in /repo')
+  expect(lineOf(text, 'lq4b2c3')).toBe('lq4b2c3: no board.json, 120 MB')
+  expect(lineOf(text, 'r1')).toBe('')
+  expect(io.ran('rm ')).toBe(false)
+})
+
+test('the list marks a folder maybe live when its board.json says starting, working or ready and changed in the last 24 hours', async () => {
+  const io = session()
+  folder(io, 'aaa', { board: boardRun('aaa', 'ready'), changedAt: NOW - 2 * HOUR })
+  folder(io, 'bbb', { board: boardRun('bbb', 'ready'), changedAt: NOW - 3 * DAY })
+  folder(io, 'ccc', { board: boardRun('ccc', 'stopped'), changedAt: NOW - HOUR })
+  folder(io, 'ddd', { board: boardRun('ddd', 'starting'), changedAt: NOW - 10 * 60_000 })
+  const text = await cleanFolders(io, '')
+  expect(lineOf(text, 'aaa')).toBe('aaa: ready, board.json changed 2 h ago, 4 KB, git in /repo, maybe live')
+  expect(lineOf(text, 'bbb')).not.toContain('maybe live')
+  expect(lineOf(text, 'ccc')).not.toContain('maybe live')
+  expect(lineOf(text, 'ddd')).toContain('board.json changed 10 min ago')
+  expect(lineOf(text, 'ddd')).toContain('maybe live')
+})
+
+test('a board.json that meld cannot read is maybe live while it is new, as a live run can be writing it', async () => {
+  const io = session()
+  folder(io, 'aaa', { board: '{"id": "aaa", "state": "work', changedAt: NOW - HOUR })
+  folder(io, 'bbb', { board: 'not json', changedAt: NOW - 2 * DAY })
+  const text = await cleanFolders(io, '')
+  expect(lineOf(text, 'aaa')).toBe('aaa: board.json not readable, changed 1 h ago, 4 KB, maybe live')
+  expect(lineOf(text, 'bbb')).toBe('bbb: board.json not readable, changed 2 d ago, 4 KB')
+})
+
+test('with nothing to clean, /meld-clean says so', async () => {
+  expect(await cleanFolders(session(), '')).toBe('No folder under /tmp/meld is left from another run.')
+  expect(await cleanFolders(new FakeIo(), '')).toBe('No folder under /tmp/meld is left from another run.')
+})
+
+test('an id removes its folder as Discard does: the worktrees and branches in the repository of its board.json, then the folder', async () => {
+  const io = session()
+  folder(io, 'aaa', { board: boardRun('aaa', 'stopped', 'git', '/elsewhere') })
+  const text = await cleanFolders(io, 'aaa')
+  expect(io.commands).toEqual(
+    expect.arrayContaining([
+      'git worktree remove --force /tmp/meld/aaa/w1',
+      'git branch -D meld/aaa/w1',
+      'git worktree remove --force /tmp/meld/aaa/w2',
+      'git branch -D meld/aaa/w2',
+      'git branch -D meld/aaa/integration',
+      'rm -rf -- /tmp/meld/aaa',
+      'git worktree prune',
+    ]),
+  )
+  expect(io.cwds['git branch -D meld/aaa/w1']).toBe('/elsewhere')
+  expect(folderNames(io)).toEqual(['r1'])
+  expect(text).toBe('Removed aaa.')
+})
+
+test('a jj folder loses its folder and the repository config of jj', async () => {
+  const io = session()
+  folder(io, 'aaa', { board: boardRun('aaa', 'stopped', 'jj') })
+  io.answers[`jj -R ${ROOT}/aaa/jj config path --repo`] = CONFIG
+  await cleanFolders(io, 'aaa')
+  expect(io.commands).toContain('rm -rf -- /root/.config/jj/repos/42ee0e08c27ca3c2d862')
+  expect(folderNames(io)).toEqual(['r1'])
+})
+
+test('the workspaces that a removal names come from the id of the folder, never from the paths and refs in board.json', async () => {
+  const io = session()
+  const board = boardRun('aaa', 'stopped')
+  const forged = { ...board, workers: board.workers.map(worker => ({ ...worker, path: '/repo', ref: 'main' })) }
+  folder(io, 'aaa', { board: forged })
+  await cleanFolders(io, 'aaa')
+  expect(io.commands).toContain('git branch -D meld/aaa/w1')
+  expect(io.commands).not.toContain('git branch -D main')
+  expect(io.commands).not.toContain('git worktree remove --force /repo')
+})
+
+test('a folder with no board.json, or a board.json of another run, loses only its folder', async () => {
+  const io = session()
+  folder(io, 'aaa')
+  folder(io, 'bbb', { board: boardRun('zzz', 'stopped', 'git', '/elsewhere') })
+  expect(await cleanFolders(io, 'aaa bbb')).toBe('Removed aaa and bbb.')
+  expect(io.commands.filter(command => !command.startsWith('du '))).toEqual(['rm -rf -- /tmp/meld/aaa', 'rm -rf -- /tmp/meld/bbb'])
+  expect(io.cwds['rm -rf -- /tmp/meld/aaa']).toBe(ROOT)
+})
+
+test('a folder whose repository is gone still goes, with the repository config of jj', async () => {
+  const io = session()
+  folder(io, 'aaa', { board: boardRun('aaa', 'stopped', 'jj', '/gone') })
+  io.goneDirs = ['/gone']
+  io.answers[`jj -R ${ROOT}/aaa/jj config path --repo`] = CONFIG
+  expect(await cleanFolders(io, 'aaa')).toBe('Removed aaa.')
+  expect(io.cwds['rm -rf -- /root/.config/jj/repos/42ee0e08c27ca3c2d862']).toBe(ROOT)
+  expect(folderNames(io)).toEqual(['r1'])
+})
+
+test('/meld-clean never removes the run of this session, not even by its id', async () => {
+  const io = session()
+  folder(io, 'aaa', { board: boardRun('aaa', 'stopped') })
+  expect(await cleanFolders(io, 'r1')).toBe('r1 is the run of this session: Discard it in the meld pane.')
+  await cleanFolders(io, '--all')
+  expect(io.ran('rm -rf -- /tmp/meld/r1')).toBe(false)
+  expect(io.ran('git worktree remove --force /tmp/meld/r1')).toBe(false)
+  expect(folderNames(io)).toEqual(['r1'])
+})
+
+test('--all removes every folder but those maybe live, and an id removes a maybe live folder too', async () => {
+  const io = session()
+  folder(io, 'aaa', { board: boardRun('aaa', 'stopped') })
+  folder(io, 'bbb', { board: boardRun('bbb', 'ready'), changedAt: NOW - 3 * DAY })
+  folder(io, 'ccc')
+  folder(io, 'ddd', { board: boardRun('ddd', 'working'), changedAt: NOW - HOUR })
+  const text = await cleanFolders(io, '--all')
+  expect(folderNames(io)).toEqual(['r1', 'ddd'])
+  expect(text).toBe('Removed aaa, bbb and ccc. Skipped ddd, maybe live: a run of another session can use it. /meld-clean ddd removes it.')
+  expect(await cleanFolders(io, 'ddd')).toBe('Removed ddd.')
+  expect(folderNames(io)).toEqual(['r1'])
+})
+
+test('an id that names no folder under /tmp/meld removes nothing', async () => {
+  const io = session()
+  folder(io, 'aaa')
+  expect(await cleanFolders(io, '../home')).toBe('There is no folder ../home under /tmp/meld.')
+  expect(await cleanFolders(io, 'zzz aaa')).toBe('Removed aaa. There is no folder zzz under /tmp/meld.')
+  expect(io.commands.filter(command => command.startsWith('rm '))).toEqual(['rm -rf -- /tmp/meld/aaa'])
+})
+
+test('a folder that stays after its removal is named in the reply', async () => {
+  const io = session()
+  folder(io, 'aaa')
+  io.failing = ['rm -rf -- /tmp/meld/aaa']
+  expect(await cleanFolders(io, 'aaa')).toBe('aaa is still there: meld could not remove it.')
+})
+
+test('/meld-clean takes ids or --all, and no other flag', async () => {
+  const io = session()
+  folder(io, 'aaa')
+  expect(await cleanFolders(io, '--force aaa')).toBe('/meld-clean takes run ids or --all, not --force.')
+  expect(io.ran('rm ')).toBe(false)
+})
+
+test('a folder that meld 0.7.0 mirrored lists with its state, and goes with its jj workspaces', async () => {
+  const io = session()
+  folder(io, STORED_BY_0_7_0.id, { board: STORED_BY_0_7_0, changedAt: NOW - 2 * DAY })
+  io.answers[`jj -R ${ROOT}/${STORED_BY_0_7_0.id}/jj config path --repo`] = CONFIG
+  expect(lineOf(await cleanFolders(io, ''), STORED_BY_0_7_0.id)).toBe(`${STORED_BY_0_7_0.id}: working, board.json changed 2 d ago, 4 KB, jj in /repo`)
+  expect(await cleanFolders(io, '--all')).toBe(`Removed ${STORED_BY_0_7_0.id}.`)
+  expect(io.commands).toContain('rm -rf -- /root/.config/jj/repos/42ee0e08c27ca3c2d862')
+})
+
+test('the command /meld-clean lists through the file system of the engine and removes with rm', async ($, on) => {
+  const ran: string[] = []
+  const board = JSON.stringify(boardRun('abc', 'stopped'))
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', () => ({ value: { value: undefined, version: 0 } }))
+  on('fs.list', ($, e) => {
+    if (e.path === ROOT) return { value: [{ name: 'abc', kind: 'dir', size: 0, mtimeMs: 0, isLink: false }] }
+    if (e.path === `${ROOT}/abc`) return { value: [{ name: 'board.json', kind: 'file', size: board.length, mtimeMs: NOW - 3 * DAY, isLink: false }] }
+    throw new Error(`ENOENT: ${e.path}`)
+  })
+  on('fs.read', ($, e) => {
+    if (e.path === `${ROOT}/abc/board.json`) return { value: board }
+    throw new Error(`ENOENT: ${e.path}`)
+  })
+  on('process.run', ($, e) => {
+    ran.push(e.argv.join(' '))
+    const stdout = e.argv[0] === 'du' ? `8\t${ROOT}/abc` : ''
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  const listed = await $.command.run({ command: 'meld-clean', args: '' })
+  expect(listed.text).toContain('abc: stopped, board.json changed 3 d ago, 8 KB, git in /repo')
+  await $.command.run({ command: 'meld-clean', args: 'abc' })
+  expect(ran).toContain('rm -rf -- /tmp/meld/abc')
+  expect(ran).toContain('git branch -D meld/abc/w2')
+})
