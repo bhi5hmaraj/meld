@@ -32,7 +32,7 @@ import {
   workerOf,
 } from '../hooks/board'
 import type { Change, NewTask, Run, TaskSize, WorkerId } from '../types'
-import { STORED_BY_0_6_0 } from './stored-runs'
+import { STORED_BY_0_6_0, STORED_BY_0_7_0 } from './stored-runs'
 
 const NOW = 1_800_000_000_000
 const AGENT = { type: 'meld:worker' }
@@ -622,6 +622,37 @@ test('a run that meld 0.6.0 stored takes claims, finishes and tasks that need it
 test('the tasks of a run that meld 0.6.0 stored get no ready time later', () => {
   const done = runOf(finishTask(STORED_BY_0_6_0, 'w1', 2, 2, 'aaa1111', 'Toggle added', NOW + 11))
   expect(done.tasks.map(task => task.readyAt)).toEqual([undefined, undefined, undefined])
+})
+
+test('a board read of a run that meld 0.7.0 stored carries its current entries one time, and counts its reader', () => {
+  const read = boardFor(STORED_BY_0_7_0, 'w3')
+  expect(read.view.context.map(entry => [entry.id, entry.seenBy])).toEqual([
+    [3, ['w1', 'w3']],
+    [2, ['w1', 'w2']],
+  ])
+  expect(read.view.tasks.map(task => [task.id, task.state])).toEqual([
+    [1, 'open'],
+    [2, 'done'],
+    [3, 'open'],
+    [4, 'claimed'],
+    [5, 'claimed'],
+  ])
+  expect(boardFor(read.run, 'w3').view.context).toEqual([])
+})
+
+test('a split in a run that meld 0.7.0 stored needs the task list version of the run', () => {
+  const parts: NewTask[] = [{ title: 'Light colours', size: 'S' }, { title: 'Dark colours', size: 'S' }]
+  expect(splitTask(STORED_BY_0_7_0, 'w1', { task: 4, version: 1, seen: 1, tasks: parts }, NOW)).toMatchObject({ error: 'STALE_VERSION', taskList: 2 })
+  const split = splitTask(STORED_BY_0_7_0, 'w1', { task: 4, version: 1, seen: 2, tasks: parts }, NOW)
+  expect(split).toMatchObject({ value: { taskList: 3, tasks: [{ id: 6, parent: 4, state: 'claimed', owner: 'w1' }, { id: 7, parent: 4, state: 'open' }] } })
+})
+
+test('a run that meld 0.7.0 stored nudges at once its S task over 30 calls, and its task with no size at 60 calls', () => {
+  expect(takeSplitNudge(STORED_BY_0_7_0, 'w1').task).toMatchObject({ id: 4, calls: 35, nudged: true })
+  let run = STORED_BY_0_7_0
+  for (let call = 38; call < 59; call++) run = countCall(run, 'w2')
+  expect(takeSplitNudge(run, 'w2').task).toBeUndefined()
+  expect(takeSplitNudge(countCall(run, 'w2'), 'w2').task).toMatchObject({ id: 5, calls: 60, nudged: true })
 })
 
 test('a board read of a run that meld 0.6.0 stored shows its tasks and context', () => {
