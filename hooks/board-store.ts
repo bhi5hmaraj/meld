@@ -2,7 +2,7 @@ import type { HttpResponse, McpToolResult } from 'claude-code'
 
 import { ACP_PREFIX, isAcpAgent } from '../core/options'
 import type { FactsStore, Runner, Store } from '../core/ports'
-import { remoteStore } from '../core/remote-store'
+import { remoteStore, sameRun } from '../core/remote-store'
 import type { Adopted, BoardRead, BoardServer } from '../core/remote-store'
 import type { Run } from '../types'
 
@@ -127,8 +127,4 @@ export function storeNote(session: SessionBoard): StoreNote {
 export function withNote(replied: { result: string }, note: StoreNote): { result: string } {
   const value = JSON.parse(replied.result) as Record<string, unknown>
   return { result: JSON.stringify({ ...value, ...note }) }
-}
-
-function sameRun(cached: Run | null, run: Run | null): boolean {
-  return JSON.stringify(cached) === JSON.stringify(run)
 }

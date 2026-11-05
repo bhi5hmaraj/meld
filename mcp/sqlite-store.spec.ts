@@ -124,6 +124,19 @@ test('a file keeps the board for the next process, in WAL mode', async () => {
   rmSync(path, { force: true })
 })
 
+test('a change that leaves the run as it was stores nothing: the version stays', async () => {
+  const boards = new SqliteBoards(':memory:')
+  await boards.board('b1').write(newRun)
+  await boards.board('b1').write(run => run && { ...run })
+  expect(boards.read('b1').version).toBe(1)
+})
+
+test('a change that leaves an empty board empty adds no board', async () => {
+  const boards = new SqliteBoards(':memory:')
+  await boards.board('b1').write(() => null)
+  expect(boards.read('b1')).toEqual({ run: null, version: 0, owner: null, ownerAt: null })
+})
+
 test('a commit names the version that it read: a commit after another one is stale, and stores nothing', () => {
   const boards = new SqliteBoards(':memory:')
   expect(boards.read('b1')).toEqual({ run: null, version: 0, owner: null, ownerAt: null })

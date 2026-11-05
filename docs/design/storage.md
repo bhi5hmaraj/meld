@@ -55,7 +55,7 @@ Search is the one part that differs: SQLite uses FTS5, and Postgres uses `pg_trg
 
 ## The board file as built in 0.9
 
-One table holds the 0.8 board shape: `boards (id, run, version, owner, owner_at)`. Each session writes its run to its own board, with the Run JSON in `run`. The facts of the pane stay in the session state: the session reads them from the version control again. A commit names the version that it read, and stores the run only when the board is still at that version. A commit of another session while the owner wrote in the last 60 s is refused, and an adopt (a resume) moves the version, so a commit of the old owner from its last read is stale. `PRAGMA user_version` holds the schema version: a meld that knows only an older one reads the file and writes nothing.
+One table holds the 0.8 board shape: `boards (id, run, version, owner, owner_at)`. Each session writes its run to its own board, with the Run JSON in `run`. The facts of the pane stay in the session state: the session reads them from the version control again. A commit names the version that it read, and stores the run only when the board is still at that version. A commit of another session while the owner wrote in the last 60 s is refused, and an adopt (a resume) moves the version, so a commit of the old owner from its last read is stale. A write whose change leaves the run as it was stores nothing: the version stays, so no reader sees a new write, and the lease of the owner runs from its last change. `PRAGMA user_version` holds the schema version: a meld that knows only an older one reads the file and writes nothing.
 
 Step 0c adds four tables, and gives each board a party, `local` for now:
 

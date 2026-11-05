@@ -70,3 +70,23 @@ test('a read of a run that another process changed refreshes the cache once', as
   await store.read()
   expect(cached).toEqual([null, 5])
 })
+
+test('a write whose change leaves the run as it was commits nothing', async () => {
+  const server = new VersionedBoard()
+  const store = remoteStore(server)
+  await store.write(newRun)
+  expect(await store.write(run => run && { ...run })).toEqual(newRun())
+  expect(server.version).toBe(1)
+})
+
+test('a write that changes nothing still refreshes the cache with a run that another process changed', async () => {
+  const server = new VersionedBoard()
+  const cached: unknown[] = []
+  const store = remoteStore(server, async run => cached.push(run?.revision ?? null))
+  await store.write(newRun)
+  server.run = { ...newRun(), revision: 5 }
+  server.version = 4
+  await store.write(run => run)
+  expect(cached).toEqual([newRun().revision, 5])
+  expect(server.version).toBe(4)
+})

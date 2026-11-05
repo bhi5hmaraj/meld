@@ -45,7 +45,8 @@ const REFUSED: Record<Exclude<Committed, 'committed' | 'stale'>, string> = {
 
 /**
  * A Store over a board server. A write reads the board, runs the change, and commits it at the version that it read;
- * after a lost race it reads and runs the change again. A read that finds a new version refreshes the cache.
+ * after a lost race it reads and runs the change again. A change that leaves the run as it was commits nothing. A read
+ * that finds a new version refreshes the cache.
  */
 export function remoteStore(server: BoardServer, cache?: BoardCache): Store {
   let seen: number | undefined
@@ -60,6 +61,10 @@ export function remoteStore(server: BoardServer, cache?: BoardCache): Store {
       for (let attempt = 0; attempt < TRIES; attempt++) {
         const board = await server.read()
         const next = change(board.run)
+        if (sameRun(next, board.run)) {
+          await refreshed(board)
+          return next
+        }
         const done = await server.commit(next, board.version)
         if (done === 'committed') {
           await refreshed({ ...board, run: next, version: board.version + 1 })
@@ -70,4 +75,9 @@ export function remoteStore(server: BoardServer, cache?: BoardCache): Store {
       throw new Error(`meld: the board is busy: another write came first ${TRIES} times`)
     },
   }
+}
+
+/** Whether two runs hold the same values, as the JSON of a board gives them. */
+export function sameRun(one: Run | null, other: Run | null): boolean {
+  return JSON.stringify(one) === JSON.stringify(other)
 }

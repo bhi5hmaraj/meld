@@ -147,7 +147,7 @@ export class SqliteBoards {
         const row = this.row(id)
         if ((row?.version ?? 0) !== version) return 'stale'
         if (row && holdsLease(row, owner, now)) return 'taken'
-        this.put(id, run, version + 1, owner, now)
+        this.put(id, textOf(run), version + 1, owner, now)
         if (run) this.addRows(row?.party ?? LOCAL_PARTY, run)
         return 'committed'
       })
@@ -256,13 +256,16 @@ export class SqliteBoards {
     this.db.close()
   }
 
+  /** A change that leaves the run as it was stores nothing, so the version stays and no reader sees a new write. */
   private change(id: string, change: (run: Run | null) => Run | null): Run | null {
     if (this.newer) throw new Error(NEWER)
     return this.db
       .transaction(() => {
         const row = this.row(id)
         const next = change(parsed(row?.run))
-        this.put(id, next, (row?.version ?? 0) + 1, row?.owner ?? null, row?.owner_at ?? null)
+        const text = textOf(next)
+        if (text === (row?.run ?? null)) return next
+        this.put(id, text, (row?.version ?? 0) + 1, row?.owner ?? null, row?.owner_at ?? null)
         if (next) this.addRows(row?.party ?? LOCAL_PARTY, next)
         return next
       })
@@ -273,8 +276,7 @@ export class SqliteBoards {
     return this.db.query('SELECT id, run, version, owner, owner_at, party FROM boards WHERE id = ?').get(id) as Row | null
   }
 
-  private put(id: string, run: Run | null, version: number, owner: string | null, ownerAt: number | null): void {
-    const text = run === null ? null : JSON.stringify(run)
+  private put(id: string, text: string | null, version: number, owner: string | null, ownerAt: number | null): void {
     this.db
       .query(
         `INSERT INTO boards (id, run, version, owner, owner_at) VALUES (?, ?, ?, ?, ?)
@@ -312,6 +314,11 @@ export class SqliteBoards {
 /** Another session wrote the board within the time of a lease. */
 function holdsLease(row: Row, owner: string, now: number): boolean {
   return row.owner !== null && row.owner !== owner && row.owner_at !== null && now - row.owner_at < LEASE_MS
+}
+
+/** The text of a run as the boards table keeps it. */
+function textOf(run: Run | null): string | null {
+  return run === null ? null : JSON.stringify(run)
 }
 
 function parsed<T>(text: string | null | undefined): T | null {
