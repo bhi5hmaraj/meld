@@ -34,6 +34,13 @@ export function boardTools(boards: SqliteBoards, now: () => number): ServedTool[
       answer: () => ({ boards: boards.list() }),
     },
     {
+      name: 'run_records',
+      description: `${ONLY_MELD} Gives what the file keeps of each run beside the boards: its board, state, version control, repository, base and workers, and its last change.`,
+      inputSchema: schema({}),
+      annotations: READ_ONLY,
+      answer: () => ({ runs: boards.runRecords() }),
+    },
+    {
       name: 'adopt_board',
       description: `${ONLY_MELD} Gives a board to a session, when its owner wrote nothing for the time of a lease.`,
       inputSchema: schema({ board: BOARD, owner: OWNER }),

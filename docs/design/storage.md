@@ -70,6 +70,10 @@ Each commit of a board adds the new entries of its run in the same transaction, 
 
 Step 10b adds the table `actions` (schema 3): the work that only the leader of a board can do, a message to an agent or a toast to the person. A worker of `meld mcp` writes these rows, and the leader takes each row once.
 
+Schema 4 adds the table `runs`: a record of each run, for `/meld-clean`. A record holds the board of the run, its state, version control, repository, base and workers, and the time of its last change. Each write of a board updates the record of its run in the same transaction. A run that leaves its board keeps its record, and its board is null from then on. A value that the run lacks is null in its record, so the write of an odd run does not fail. Each board also records the time of its last change (`changed_at`). The migration makes a record of each run that a board holds, with the time of its last commit.
+
+So with Bun, meld writes no `board.json`. Before, the core wrote the full board there after each write, so that the run outlived the session. Only a store that ends with the session keeps that file now: the session state, without Bun (`core/board-file.ts`). `/meld-clean` reads the record of a folder from `run_records`, and else from its `board.json`, which an older meld wrote.
+
 ## Several sessions on one machine
 
 - All runs live in `~/.meld/meld.db`, in WAL mode. Each editor session starts its own `meld mcp` process, and all the processes open the same file. There is no daemon.

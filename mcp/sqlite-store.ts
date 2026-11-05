@@ -4,12 +4,12 @@ import { chmodSync, existsSync, writeFileSync } from 'node:fs'
 import { ACP_AGENT_PREFIX } from '../core/options'
 import { LOCAL_PARTY, MEMBER_LEASE_MS, rowsOf } from '../core/party'
 import type { ContextRow, EventRow, Member, Members, Party, PartyRows, RowKey } from '../core/party'
-import type { Store } from '../core/ports'
+import type { RunRecord, Store } from '../core/ports'
 import type { Action, Adopted, BoardRead, BoardSummary, Committed } from '../core/remote-store'
 import type { Run } from '../types'
 
 /** The version of the tables in the file. A meld that knows only an older version reads the file and writes nothing. */
-export const SCHEMA_VERSION = 3
+export const SCHEMA_VERSION = 4
 /** How long the owner of a board holds it with no write. After that, another session can adopt the board, as a resume does. */
 export const LEASE_MS = 60_000
 /** How long a write waits for the write lock that another process holds. */
@@ -19,10 +19,11 @@ const MEMORY = ':memory:'
 const OWNER_ONLY = 0o600
 const NEWER = 'a newer meld wrote this board file: restart the session, so it loads the newer meld'
 
-/** A board as a client reads it, with the session that owns it. */
-export type BoardRow = BoardRead & { owner: string | null; ownerAt: number | null }
+/** A board as a client reads it, with the session that owns it and the time of its last change. */
+export type BoardRow = BoardRead & { owner: string | null; ownerAt: number | null; changedAt: number | null }
 
-type Row = { id: string; run: string | null; version: number; owner: string | null; owner_at: number | null; party: string }
+type Row = { id: string; run: string | null; version: number; owner: string | null; owner_at: number | null; party: string; changed_at: number | null }
+type RecordRow = { id: string; board: string | null; state: string | null; vcs: string | null; repo: string | null; base: string | null; workers: string; changed_at: number }
 type PartyRow = { id: string; name: string; leader: string | null; host: string; policies: string; created_at: number }
 type EntryRow = { run: string; id: number; party: string; entry: string; uploaded?: number }
 type MemberRow = { party: string; id: string; kind: string; slots: number; seen_at: number }
@@ -85,6 +86,23 @@ const MIGRATIONS: ((db: Database, now: number) => void)[] = [
       text TEXT NOT NULL,
       at INTEGER NOT NULL
     )`),
+  (db, now) => {
+    db.exec(`CREATE TABLE runs (
+      id TEXT PRIMARY KEY,
+      board TEXT,
+      state TEXT,
+      vcs TEXT,
+      repo TEXT,
+      base TEXT,
+      workers TEXT NOT NULL,
+      changed_at INTEGER NOT NULL
+    )`)
+    db.exec('CREATE INDEX runs_of_board ON runs (board)')
+    db.exec('ALTER TABLE boards ADD COLUMN changed_at INTEGER')
+    db.exec('UPDATE boards SET changed_at = owner_at')
+    const rows = db.query('SELECT id, run, owner_at FROM boards WHERE run IS NOT NULL').all() as Pick<Row, 'id' | 'run' | 'owner_at'>[]
+    for (const row of rows) recordRun(db, row.id, parsed(row.run), row.owner_at ?? now)
+  },
 ]
 
 /**
@@ -96,16 +114,16 @@ export class SqliteBoards {
   private readonly db: Database
   private readonly newer: boolean
 
-  /** `now` is the time that a new file records for its local party. */
+  /** `clock` gives the time of each write through the Store port, and the time that a new file records for its local party. */
   constructor(
     readonly path: string,
-    now = Date.now(),
+    private readonly clock: () => number = Date.now,
   ) {
     if (path !== MEMORY) keepPrivate(path)
     this.db = new Database(path, { create: true })
     this.db.exec(`PRAGMA busy_timeout = ${BUSY_MS}`)
     this.db.exec('PRAGMA journal_mode = WAL')
-    this.newer = this.migrate(now)
+    this.newer = this.migrate(clock())
   }
 
   /** The Store port for one board, for the logic that runs in this process. */
@@ -132,7 +150,7 @@ export class SqliteBoards {
 
   read(id: string): BoardRow {
     const row = this.row(id)
-    return { run: parsed(row?.run), version: row?.version ?? 0, owner: row?.owner ?? null, ownerAt: row?.owner_at ?? null }
+    return { run: parsed(row?.run), version: row?.version ?? 0, owner: row?.owner ?? null, ownerAt: row?.owner_at ?? null, changedAt: row?.changed_at ?? null }
   }
 
   /**
@@ -147,7 +165,8 @@ export class SqliteBoards {
         const row = this.row(id)
         if ((row?.version ?? 0) !== version) return 'stale'
         if (row && holdsLease(row, owner, now)) return 'taken'
-        this.put(id, textOf(run), version + 1, owner, now)
+        this.put(id, textOf(run), version + 1, owner, now, now)
+        recordRun(this.db, id, run, now)
         if (run) this.addRows(row?.party ?? LOCAL_PARTY, run)
         return 'committed'
       })
@@ -243,6 +262,12 @@ export class SqliteBoards {
       .immediate()
   }
 
+  /** What the file keeps of each run beside the boards, for /meld-clean: the run of each board, and each run that left its board. */
+  runRecords(): RunRecord[] {
+    const rows = this.db.query('SELECT id, board, state, vcs, repo, base, workers, changed_at FROM runs ORDER BY id').all() as RecordRow[]
+    return rows.map(row => ({ id: row.id, board: row.board, state: row.state, vcs: row.vcs, repo: row.repo, base: row.base, workers: JSON.parse(row.workers) as (string | null)[], changedAt: row.changed_at }))
+  }
+
   /** The boards with a run, the latest write first. */
   list(): BoardSummary[] {
     const rows = this.db.query('SELECT id, run, version, owner, owner_at FROM boards WHERE run IS NOT NULL ORDER BY owner_at DESC').all() as Row[]
@@ -265,7 +290,9 @@ export class SqliteBoards {
         const next = change(parsed(row?.run))
         const text = textOf(next)
         if (text === (row?.run ?? null)) return next
-        this.put(id, text, (row?.version ?? 0) + 1, row?.owner ?? null, row?.owner_at ?? null)
+        const now = this.clock()
+        this.put(id, text, (row?.version ?? 0) + 1, row?.owner ?? null, row?.owner_at ?? null, now)
+        recordRun(this.db, id, next, now)
         if (next) this.addRows(row?.party ?? LOCAL_PARTY, next)
         return next
       })
@@ -273,16 +300,16 @@ export class SqliteBoards {
   }
 
   private row(id: string): Row | null {
-    return this.db.query('SELECT id, run, version, owner, owner_at, party FROM boards WHERE id = ?').get(id) as Row | null
+    return this.db.query('SELECT id, run, version, owner, owner_at, party, changed_at FROM boards WHERE id = ?').get(id) as Row | null
   }
 
-  private put(id: string, text: string | null, version: number, owner: string | null, ownerAt: number | null): void {
+  private put(id: string, text: string | null, version: number, owner: string | null, ownerAt: number | null, changedAt: number): void {
     this.db
       .query(
-        `INSERT INTO boards (id, run, version, owner, owner_at) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET run = excluded.run, version = excluded.version, owner = excluded.owner, owner_at = excluded.owner_at`,
+        `INSERT INTO boards (id, run, version, owner, owner_at, changed_at) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET run = excluded.run, version = excluded.version, owner = excluded.owner, owner_at = excluded.owner_at, changed_at = excluded.changed_at`,
       )
-      .run(id, text, version, owner, ownerAt)
+      .run(id, text, version, owner, ownerAt, changedAt)
   }
 
   /** Inserts each log and context entry of the run that the file does not hold. Call it inside a transaction. */
@@ -309,6 +336,25 @@ export class SqliteBoards {
       })
       .immediate()
   }
+}
+
+/**
+ * Keeps the record of the run that a board holds now. A run that the board held before keeps its record, and no board
+ * holds it from then on. A value that the run lacks is null in its record, so the write of an odd run does not fail.
+ */
+function recordRun(db: Database, board: string, run: Run | null, now: number): void {
+  db.query('UPDATE runs SET board = NULL, changed_at = ? WHERE board = ? AND id IS NOT ?').run(now, board, run?.id ?? null)
+  if (!run) return
+  const entries: unknown[] = Array.isArray(run.workers) ? run.workers : []
+  const workers = entries.map(worker => (typeof worker === 'object' && worker !== null && 'id' in worker ? textOrNull(worker.id) : null))
+  db.query(
+    `INSERT INTO runs (id, board, state, vcs, repo, base, workers, changed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET board = excluded.board, state = excluded.state, vcs = excluded.vcs, repo = excluded.repo, base = excluded.base, workers = excluded.workers, changed_at = excluded.changed_at`,
+  ).run(run.id, board, textOrNull(run.state), textOrNull(run.vcs), textOrNull(run.repo), textOrNull(run.base), JSON.stringify(workers), now)
+}
+
+function textOrNull(value: unknown): string | null {
+  return typeof value === 'string' ? value : null
 }
 
 /** Another session wrote the board within the time of a lease. */

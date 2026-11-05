@@ -1,11 +1,12 @@
+import { withBoardFile } from '../core/board-file'
 import { MemoryStore } from '../core/memory-store'
-import type { AgentState, Files, FolderEntry, Io, ProcessResult, SpawnArgs, Spawned } from '../core/ports'
+import type { AgentState, Files, FolderEntry, Io, ProcessResult, RunRecord, RunRecords, SpawnArgs, Spawned } from '../core/ports'
 import type { Run } from '../types'
 
 export const HEAD = 'abc1234def5678abc1234def5678abc1234def56'
 
 /** The engine as the logic of meld sees it: the run in a memory store, commands that answer from tables, and every call recorded. */
-export class FakeIo extends MemoryStore implements Io, Files {
+export class FakeIo extends MemoryStore implements Io, Files, RunRecords {
   repos = ['/repo', '/elsewhere']
   answers: Record<string, string> = {}
   /** Whole results by command, for a command that fails with an output, as git merge-tree does on a conflict. */
@@ -18,6 +19,8 @@ export class FakeIo extends MemoryStore implements Io, Files {
   commands: string[] = []
   cwds: Record<string, string> = {}
   files: Record<string, string> = {}
+  /** The path of each file write, in order. */
+  fileWrites: string[] = []
   unwritable: string[] = []
   spawned: SpawnArgs[] = []
   ranCommands: string[] = []
@@ -29,6 +32,8 @@ export class FakeIo extends MemoryStore implements Io, Files {
   toasts: string[] = []
   usd: number | undefined = undefined
   agentStates: Map<string, AgentState> | undefined = undefined
+  /** What the board file of meld mcp keeps of each run beside the boards. */
+  records: RunRecord[] = []
   /** The entries of each folder that list answers; a folder that is not here is missing. An rm -rf of a folder drops it. */
   listings: Record<string, FolderEntry[]> = {}
   /** Folders that are gone: a command that runs in one cannot start. */
@@ -90,6 +95,7 @@ export class FakeIo extends MemoryStore implements Io, Files {
 
   async writeFile(path: string, text: string): Promise<void> {
     if (this.unwritable.includes(path)) throw new Error(`EACCES: ${path}`)
+    this.fileWrites.push(path)
     this.files[path] = text
   }
 
@@ -125,6 +131,10 @@ export class FakeIo extends MemoryStore implements Io, Files {
     return undefined
   }
 
+  async runRecords(): Promise<RunRecord[]> {
+    return this.records
+  }
+
   async list(path: string): Promise<FolderEntry[]> {
     const entries = this.listings[path]
     if (!entries) throw new Error(`ENOENT: no such file or directory, scandir '${path}'`)
@@ -154,6 +164,14 @@ export class FakeIo extends MemoryStore implements Io, Files {
     const parent = path.slice(0, cut)
     const entries = this.listings[parent]
     if (entries) this.listings[parent] = entries.filter(entry => entry.name !== path.slice(cut + 1))
+  }
+}
+
+/** The engine with no meld mcp: the session state keeps the run, and board.json in the folder of the run keeps a record of it. */
+export class SessionStateIo extends FakeIo {
+  override async write(change: (run: Run | null) => Run | null): Promise<Run | null> {
+    await withBoardFile({ read: () => super.read(), write: next => super.write(next) }, (path, text) => this.writeFile(path, text)).write(change)
+    return this.current
   }
 }
 

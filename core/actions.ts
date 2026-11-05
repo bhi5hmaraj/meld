@@ -37,7 +37,6 @@ type Made = { run: Run; value: unknown; extra?: object } | Failure
 let pendingSpawns = 0
 let restarting = false
 let starting = false
-let mirroring: Promise<void> = Promise.resolve()
 let merging: Promise<void> = Promise.resolve()
 /**
  * The agents that meld told to end and that no worker holds: the agents of a discarded run, and an agent that started
@@ -52,16 +51,13 @@ const STOPPED_CALL = 'meld stopped you. End your turn now with a one-line summar
 /** ACP tool kinds that change files: the paths of such a call must stay in the folder of the worker. */
 const ACP_EDIT_KINDS = new Set(['edit', 'delete', 'move'])
 
-/** What a write of the board needs: the store, and the machine where meld mirrors the board to board.json. */
-type Board = Store & CodeHost
-
 export async function readRun(io: Store): Promise<Run | null> {
   return (await io.read()) ?? null
 }
 
-export async function writeRun(io: Board, change: (run: Run) => Run): Promise<Run | null> {
+export async function writeRun(io: Store, change: (run: Run) => Run): Promise<Run | null> {
   let written: Run | null = null
-  await save(io, run => {
+  await io.write(run => {
     written = run ? change(run) : null
     return written
   })
@@ -72,28 +68,8 @@ export async function writeRun(io: Board, change: (run: Run) => Run): Promise<Ru
  * Writes the run `id` only. A spawn or a merge takes seconds, and the person can discard the run and start another one
  * meanwhile: the write after such a step leaves the other run as it is.
  */
-function writeRunOf(io: Board, id: string, change: (run: Run) => Run): Promise<Run | null> {
+function writeRunOf(io: Store, id: string, change: (run: Run) => Run): Promise<Run | null> {
   return writeRun(io, current => (current.id === id ? change(current) : current))
-}
-
-/** Each write of the run goes through here. After the write, meld mirrors the board. */
-async function save(io: Board, change: (run: Run | null) => Run | null): Promise<void> {
-  await io.write(change)
-  await mirrorBoard(io)
-}
-
-/**
- * Writes the board to board.json in the folder of the run, so that the shared context outlives the session. One mirror
- * writes at a time, and each one reads the newest run. A delivered run has no folder, and a failed mirror fails no call.
- */
-function mirrorBoard(io: Board): Promise<void> {
-  mirroring = mirroring
-    .then(async () => {
-      const run = await readRun(io)
-      if (run && run.state !== 'delivered') await io.writeFile(`${runHome(run.id)}/board.json`, `${JSON.stringify(run, null, 2)}\n`)
-    })
-    .catch(() => undefined)
-  return mirroring
 }
 
 const RUN_ACTIVE = 'A run is active. Deliver, discard or stop it first: /meld-deliver, /meld-discard or /meld-stop, or the meld pane.'
@@ -142,7 +118,7 @@ async function startAlone(io: Io, cwd: string, options: StartOptions): Promise<C
   const workspaces = prepared.workspaces
   const workers = ids.map((wid, index) => ({ id: wid, agent: options.agents[index] ?? { type: 'meld:worker' }, path: workspaces[index]?.path ?? '', ref: workspaces[index]?.ref ?? '' }))
   const run = board.startRun({ id, request, repo, base, vcs: kind, now, costAtStart: await io.cost(), workers })
-  await save(io, () => run)
+  await io.write(() => run)
   await io.writeFacts(null)
   void io.openPane(false)
   const refused = await spawnWorkers(io, run)
@@ -198,7 +174,7 @@ async function namedRepo(io: CodeHost, request: string): Promise<{ repo: string;
  * Starts each worker in its own folder and binds it by the agent id the engine answers. Returns the reasons of the
  * refused spawns, and of the agents that meld could not bind: those workers are refused too, so none stays starting.
  */
-async function spawnWorkers(io: Board & Clock & Runner, run: Run, workers: readonly Worker[] = run.workers): Promise<string[]> {
+async function spawnWorkers(io: Store & Clock & Runner, run: Run, workers: readonly Worker[] = run.workers): Promise<string[]> {
   const refused: string[] = []
   for (const worker of workers) {
     pendingSpawns += 1
@@ -230,7 +206,7 @@ async function spawnWorkers(io: Board & Clock & Runner, run: Run, workers: reado
  * stay starting with no agent, which no beat starts and which keeps the run from being idle. A worker with another agent
  * keeps it, and a run that the person discarded during the spawn binds nothing. Gives the reason when meld bound no agent.
  */
-async function bindOrRefuse(io: Board, runId: string, id: WorkerId, agentId: string, now: number): Promise<string | undefined> {
+async function bindOrRefuse(io: Store, runId: string, id: WorkerId, agentId: string, now: number): Promise<string | undefined> {
   let reason: string | undefined = RUN_ENDED
   await writeRunOf(io, runId, current => {
     const bound = board.bindWorker(current, id, agentId, now)
@@ -291,7 +267,7 @@ export async function serveTool(io: Io, e: ToolCall, cwd = ''): Promise<ToolRepl
   const checked = await withResolvedCommit(io, tool, e as unknown as Args, worker)
   let answer: unknown = { error: 'RUN_ENDED', message: 'There is no meld run.' }
   let nudge: Task | undefined
-  await save(io, run => {
+  await io.write(run => {
     if (!run) return run
     const done = answered(run, worker.id, 'error' in checked ? checked : mutate(run, worker.id, tool, checked.args, now, checked.held))
     const passed = board.passContext(done.run, worker.id)
@@ -313,13 +289,13 @@ export async function serveTool(io: Io, e: ToolCall, cwd = ''): Promise<ToolRepl
  * time, as the line moves only from the head that a merge read. The done tasks that the line lacks wait for the
  * integrator, and finish refuses a final commit that lacks one of them.
  */
-function mergeFinished(io: Board & Clock & Runner, by: WorkerId, id: number): Promise<void> {
+function mergeFinished(io: Store & CodeHost & Clock & Runner, by: WorkerId, id: number): Promise<void> {
   merging = merging.then(() => mergeTask(io, by, id)).catch(() => undefined)
   return merging
 }
 
 /** Merges #id when it is a done task that the line lacks, with no task "integrate #id": a finish that leaves its task undone merges nothing. */
-async function mergeTask(io: Board & Clock & Runner, by: WorkerId, id: number): Promise<void> {
+async function mergeTask(io: Store & CodeHost & Clock & Runner, by: WorkerId, id: number): Promise<void> {
   const run = await readRun(io)
   const task = run && ACTIVE_RUN.has(run.state) ? board.unmergedTasks(run).find(one => one.id === id) : undefined
   if (!run || !task) return
@@ -369,7 +345,7 @@ function reply(value: unknown): ToolReply {
  * conflict is refused. For a final commit, the version control reads which done tasks it holds. A share that gives no
  * commit needs no resolve.
  */
-async function withResolvedCommit(io: Board, tool: string, args: Args, worker: Worker): Promise<Checked | Refused> {
+async function withResolvedCommit(io: Store & CodeHost, tool: string, args: Args, worker: Worker): Promise<Checked | Refused> {
   if (!COMMIT_TOOLS.has(tool) && !(tool === TOOL.share && text(args.commit))) return { args }
   const run = await readRun(io)
   if (!run) return { args }
@@ -498,10 +474,10 @@ function paths(value: unknown): string[] {
 }
 
 /** The board of a worker; its first read also carries its rules, for an agent of any type. */
-async function readBoard(io: Board & Runner, id: WorkerId, now: number): Promise<BoardView | Refused> {
+async function readBoard(io: Store & Runner, id: WorkerId, now: number): Promise<BoardView | Refused> {
   let view: BoardView | undefined
   let nudge: Task | undefined
-  await save(io, run => {
+  await io.write(run => {
     if (!run) return run
     const seen = board.boardFor(run, id)
     const briefed = seen.run.workers.find(worker => worker.id === id)?.briefed ?? true
@@ -543,7 +519,7 @@ async function overview(io: Store): Promise<unknown> {
   }
 }
 
-async function afterChange(io: Board & Runner & Surface, by: WorkerId, tool: string): Promise<void> {
+async function afterChange(io: Store & Runner & Surface, by: WorkerId, tool: string): Promise<void> {
   const run = await readRun(io)
   if (!run) return
   const peers = run.workers.filter(worker => worker.id !== by)
@@ -571,7 +547,7 @@ function retire(io: Runner, agentId: string): void {
  * for that worker, in its folder, with the step in its prompt. When the person stopped the worker or the run during the
  * start, the new agent takes no place: it ends, and the worker stays as the person left it.
  */
-async function restart(io: Board & Clock & Runner & Surface, worker: Worker, step: string): Promise<boolean> {
+async function restart(io: Store & Clock & Runner & Surface, worker: Worker, step: string): Promise<boolean> {
   const run = await readRun(io)
   if (!run) return false
   if (await resumed(io, run, worker, step)) return true
@@ -602,7 +578,7 @@ async function restart(io: Board & Clock & Runner & Surface, worker: Worker, ste
  * more task (board.keepsSession). Else, or when the host cannot reach the agent, the worker gets a fresh agent, and its
  * claim gives that agent the handovers of the tasks that it needs.
  */
-async function resumed(io: Board & Clock & Runner, run: Run, worker: Worker, step: string): Promise<boolean> {
+async function resumed(io: Store & Clock & Runner, run: Run, worker: Worker, step: string): Promise<boolean> {
   if (!worker.agentId || !board.keepsSession(worker) || !io.resume) return false
   if (!(await io.resume(worker.agentId, step).catch(() => false))) return false
   const now = await io.now()
@@ -614,7 +590,7 @@ async function resumed(io: Board & Clock & Runner, run: Run, worker: Worker, ste
  * A deny reason for a tool call of a worker, or undefined; records the call as the worker's activity. A hand-back ends
  * the turn of the agent: its worker is idle at once, as meld does not see the end of a turn that a restart started.
  */
-export async function guardCall(io: Board & Clock & Runner, e: ToolCall): Promise<string | undefined> {
+export async function guardCall(io: Store & Clock & Runner, e: ToolCall): Promise<string | undefined> {
   if (e.agentId === undefined) return undefined
   if (String(e.tool) === HANDBACK_TOOL) {
     await markWorker(io, e.agentId, 'idle')
@@ -631,7 +607,7 @@ export async function guardCall(io: Board & Clock & Runner, e: ToolCall): Promis
 }
 
 /** Why meld refuses what an ACP worker asks to do, or undefined: the rules of guardCall, for the paths of a call that changes files. */
-export async function acpRefusal(io: Board, agentId: string, ask: { kind: string; paths: readonly string[] }): Promise<string | undefined> {
+export async function acpRefusal(io: Store, agentId: string, ask: { kind: string; paths: readonly string[] }): Promise<string | undefined> {
   const run = await readRun(io)
   const worker = run ? board.workerOf(run, agentId) : undefined
   if (!run || !worker) return STOPPED_CALL
@@ -639,7 +615,7 @@ export async function acpRefusal(io: Board, agentId: string, ask: { kind: string
 }
 
 /** A tool call of an ACP worker becomes the activity of its worker, and counts as a call, as a tool call of a subagent does. */
-export async function recordActivity(io: Board & Clock & Runner, agentId: string, activity: string): Promise<void> {
+export async function recordActivity(io: Store & Clock & Runner, agentId: string, activity: string): Promise<void> {
   const run = await readRun(io)
   const worker = run ? board.workerOf(run, agentId) : undefined
   if (worker) await recordCall(io, worker, activity)
@@ -664,7 +640,7 @@ function refusalOf(run: Run, worker: Worker, edited: readonly string[]): string 
 }
 
 /** Records a call as the activity of the worker and counts it; a worker with many calls on one task gets a nudge to split it. */
-async function recordCall(io: Board & Clock & Runner, worker: Worker, activity: string): Promise<void> {
+async function recordCall(io: Store & Clock & Runner, worker: Worker, activity: string): Promise<void> {
   const now = await io.now()
   let nudge: Task | undefined
   await writeRun(io, current => {
@@ -728,7 +704,7 @@ function contextTokens(usage: TokenUsage): number {
  * a count at the end of the turn showed 0 tokens while it worked. With the window of the model of the agent, the call
  * also gives the context of the agent. The main session and agents that are no worker count nothing.
  */
-export async function countStep(io: Board, agentId: string | undefined, usage: TokenUsage | null | undefined, window?: number): Promise<void> {
+export async function countStep(io: Store, agentId: string | undefined, usage: TokenUsage | null | undefined, window?: number): Promise<void> {
   const tokens = freshTokens(usage ?? undefined)
   if (agentId === undefined || !usage || !tokens) return
   const run = await readRun(io)
@@ -741,14 +717,14 @@ export async function countStep(io: Board, agentId: string | undefined, usage: T
 }
 
 /** An ACP agent reported its context window. */
-export async function recordContext(io: Board, agentId: string, context: AgentContext): Promise<void> {
+export async function recordContext(io: Store, agentId: string, context: AgentContext): Promise<void> {
   const run = await readRun(io)
   const worker = run ? board.workerOf(run, agentId) : undefined
   if (worker) await writeRun(io, current => board.setContext(current, worker.id, context))
 }
 
 /** A worker's turn ended: it is idle. Its tokens added up at each model call (countStep). The clock of meld starts workers again (see restartIdleWorkers). */
-export async function markWorker(io: Board & Clock, agentId: string | undefined, state: WorkerState, tokens = 0): Promise<void> {
+export async function markWorker(io: Store & Clock, agentId: string | undefined, state: WorkerState, tokens = 0): Promise<void> {
   if (agentId === undefined) return
   const run = await readRun(io)
   const worker = run ? board.workerOf(run, agentId) : undefined
@@ -772,7 +748,7 @@ type Restart = { worker: Worker; step: string }
  * Each worker has one host that starts it again, so no worker gets two agents: the main session starts the workers of
  * its engine, and meld mcp starts its ACP workers (`owns`).
  */
-export async function restartIdleWorkers(io: Board & Clock & Runner & Surface, owns: (worker: Worker) => boolean = ownedByEngine): Promise<WorkerId[]> {
+export async function restartIdleWorkers(io: Store & Clock & Runner & Surface, owns: (worker: Worker) => boolean = ownedByEngine): Promise<WorkerId[]> {
   if (restarting) return []
   restarting = true
   try {
@@ -795,7 +771,7 @@ export async function restartIdleWorkers(io: Board & Clock & Runner & Surface, o
 }
 
 /** Marks the owned workers whose agents ended as idle. A beat where no agent ended writes nothing. */
-async function settleEnded(io: Board & Clock & Runner, owns: (worker: Worker) => boolean): Promise<void> {
+async function settleEnded(io: Store & Clock & Runner, owns: (worker: Worker) => boolean): Promise<void> {
   const run = await readRun(io)
   if (!run || run.state !== 'working') return
   const agents = await io.agents()
@@ -863,7 +839,7 @@ function leadStep(run: Run, lead: Worker): string {
 const STEER_TRIES = 3
 const NO_RUN_TO_STEER = 'There is no run to steer.'
 
-export async function steerRun(io: Board & Clock & Runner & Surface, instruction: string): Promise<string> {
+export async function steerRun(io: Store & CodeHost & Clock & Runner & Surface, instruction: string): Promise<string> {
   if (!instruction) return 'Write the instruction after /meld-steer.'
   let steered = await trySteer(io, instruction)
   for (let tries = 1; steered.again && tries < STEER_TRIES; tries++) steered = await trySteer(io, instruction)
@@ -896,12 +872,12 @@ type Steered = { revision: number; outcome: string; again: boolean }
  * declare the final commit after the move read a working run: board.steer then refuses the ready run with
  * LINE_NOT_MOVED, the run stays as it is, and the next try moves the line to that commit.
  */
-async function trySteer(io: Board & Clock, instruction: string): Promise<Steered> {
+async function trySteer(io: Store & CodeHost & Clock, instruction: string): Promise<Steered> {
   const line = await lineToFinal(io)
   if ('error' in line) return { revision: 0, outcome: line.error, again: false }
   const now = await io.now()
   let steered: Steered = { revision: 0, outcome: NO_RUN_TO_STEER, again: false }
-  await save(io, run => {
+  await io.write(run => {
     if (!run) return run
     const change = board.steer(run, instruction, now, line.moved)
     if (board.isFailure(change)) {
@@ -922,7 +898,7 @@ async function trySteer(io: Board & Clock, instruction: string): Promise<Steered
  * A steer of a run that is not ready waits for no merge: when the run becomes ready before the steer saves, the board
  * refuses the steer, and the next try moves the line.
  */
-async function lineToFinal(io: Board): Promise<{ moved?: string } | { error: string }> {
+async function lineToFinal(io: Store & CodeHost): Promise<{ moved?: string } | { error: string }> {
   const current = await readRun(io)
   if (current?.state !== 'ready' || !current.final) return {}
   const moved = merging.then(async () => {
@@ -939,7 +915,7 @@ async function lineToFinal(io: Board): Promise<{ moved?: string } | { error: str
   return moved
 }
 
-export async function stopAll(io: Board & Clock & Runner): Promise<string> {
+export async function stopAll(io: Store & Clock & Runner): Promise<string> {
   const now = await io.now()
   const run = await writeRun(io, current => board.stopRun(current, now))
   if (!run) return 'There is no run.'
@@ -947,7 +923,7 @@ export async function stopAll(io: Board & Clock & Runner): Promise<string> {
   return 'Stopped. The workspaces stay until you discard them with /meld-discard or in the meld pane.'
 }
 
-export async function stopOne(io: Board & Clock & Runner, id: WorkerId): Promise<string> {
+export async function stopOne(io: Store & Clock & Runner, id: WorkerId): Promise<string> {
   const now = await io.now()
   const run = await writeRun(io, current => board.stopWorker(current, id, now))
   const worker = run?.workers.find(one => one.id === id)
@@ -982,7 +958,7 @@ function cutAtSpace(text: string, limit: number): string {
 const NO_RUN_AT_WORK = 'There is no meld run at work. A worker can join a run that starts or works.'
 
 /** What the main session does to a run with a tool or a command, as the meld pane does. */
-export function controlRun(io: Board & FactsStore & Clock & Runner & Surface, control: Control, input = ''): Promise<string> {
+export function controlRun(io: Store & CodeHost & FactsStore & Clock & Runner & Surface, control: Control, input = ''): Promise<string> {
   if (control === 'steer') return steerRun(io, input.trim())
   if (control === 'stop') return stopAll(io)
   if (control === 'deliver') return deliver(io)
@@ -994,7 +970,7 @@ export function controlRun(io: Board & FactsStore & Clock & Runner & Surface, co
  * A worker joins a live run: the next id, a workspace from the head of the integration line (or the base with no line),
  * and its agent at once. The agent is the one that the person names, else the agent of w1.
  */
-export async function addWorker(io: Board & Clock & Runner, agentText: string): Promise<string> {
+export async function addWorker(io: Store & CodeHost & Clock & Runner, agentText: string): Promise<string> {
   const run = await readRun(io)
   if (!run || !ACTIVE_RUN.has(run.state)) return NO_RUN_AT_WORK
   if (run.workers.length >= MAX_AGENTS) return `A run has ${MAX_AGENTS} workers at most.`
@@ -1021,10 +997,10 @@ function nextWorkerId(run: Run): WorkerId {
 }
 
 /**
- * Merges the final commit into the branch of the person. The run is delivered before meld removes its folder, as meld
- * mirrors no delivered run: a worker that ends its turn during the removal does not make the folder again.
+ * Merges the final commit into the branch of the person. The run is delivered before meld removes its folder, as a
+ * board file keeps no delivered run: a worker that ends its turn during the removal does not make the folder again.
  */
-export async function deliver(io: Board & Clock): Promise<string> {
+export async function deliver(io: Store & CodeHost & Clock): Promise<string> {
   const run = await readRun(io)
   if (!run || run.state !== 'ready' || !run.final) return 'There is no final commit to deliver.'
   const missing = lackingWork(run, await heldInFinal(io, run, run.final.commit))
@@ -1047,7 +1023,7 @@ function lackingDelivery(final: string, missing: readonly Task[]): string {
   return `Nothing changed: the final commit ${final.slice(0, 7)} lacks the work of ${tasks}, which ${one ? 'is' : 'are'} done on the board. Steer the run so that an agent merges ${one ? 'it' : 'them'}, for example /meld-steer Merge ${ids} into the final commit. Then deliver the new final commit.`
 }
 
-export async function discard(io: Board & FactsStore & Clock & Runner): Promise<string> {
+export async function discard(io: Store & CodeHost & FactsStore & Clock & Runner): Promise<string> {
   const run = await readRun(io)
   if (!run) return 'There is no run.'
   if (LIVE_STATES.has(run.state)) await stopAll(io)
@@ -1057,18 +1033,18 @@ export async function discard(io: Board & FactsStore & Clock & Runner): Promise<
 
 /**
  * Drops the run and its facts, then removes the workspaces of a run that meld did not deliver. The run goes first: a
- * worker that ends its turn during the removal then writes no run, so no mirror of the board makes its folder again.
+ * worker that ends its turn during the removal then writes no run, so no board file makes its folder again.
  * Its agents retire, so the guard refuses the calls of an agent that still runs during the removal.
  */
-async function dropRun(io: Board & FactsStore, run: Run): Promise<void> {
+async function dropRun(io: Store & FactsStore & CodeHost, run: Run): Promise<void> {
   for (const worker of run.workers) if (worker.agentId) retired.add(worker.agentId)
-  await save(io, () => null)
+  await io.write(() => null)
   await io.writeFacts(null)
   if (run.state !== 'delivered') await vcsFor(run.vcs).remove(io, run)
 }
 
 /** Reads what the version control shows of the run, for the pane: the commits of each worker, and the change of the final commit. */
-export async function refreshFacts(io: Board & FactsStore): Promise<void> {
+export async function refreshFacts(io: Store & FactsStore & CodeHost): Promise<void> {
   const run = await readRun(io)
   if (!run || run.state === 'delivered') return
   const vcs = vcsFor(run.vcs)

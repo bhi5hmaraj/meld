@@ -10,7 +10,7 @@ import { Client } from './client.spec-helper'
 const HEAD = 'abc1234def5678abc1234def5678abc1234def56'
 const STUB_AGENT = join(import.meta.dir, 'stub-agent.spec-helper.ts')
 const NOW = 1_800_000_000_000
-const TOOLS = ['read_board', 'commit_board', 'list_boards', 'adopt_board', 'board_channel', 'lead_board', 'spawn_worker', 'send_worker', 'stop_worker', 'acp_agents', 'take_actions']
+const TOOLS = ['read_board', 'commit_board', 'list_boards', 'run_records', 'adopt_board', 'board_channel', 'lead_board', 'spawn_worker', 'send_worker', 'stop_worker', 'acp_agents', 'take_actions']
 
 function newRun(): Run {
   const workers = [{ id: 'w1' as const, path: '/tmp/meld/r1/w1', ref: 'meld/r1/w1', agent: { type: 'meld:worker' } }]
@@ -42,7 +42,7 @@ test('meld mcp answers initialize with its name and the tools capability, and li
   const listed = await client.request('tools/list')
   const tools = listed.result?.tools as { name: string; annotations?: { readOnlyHint?: boolean } }[]
   expect(tools.map(tool => tool.name)).toEqual(TOOLS)
-  expect(tools.filter(tool => tool.annotations?.readOnlyHint).map(tool => tool.name)).toEqual(['read_board', 'list_boards', 'board_channel', 'acp_agents'])
+  expect(tools.filter(tool => tool.annotations?.readOnlyHint).map(tool => tool.name)).toEqual(['read_board', 'list_boards', 'run_records', 'board_channel', 'acp_agents'])
   expect(await client.end()).toBe(0)
 })
 
@@ -50,6 +50,14 @@ test('meld mcp speaks the version of the protocol that Claude Code 2.1.318 asks 
   const client = new Client(tempDb())
   expect((await client.request('initialize', { protocolVersion: '2025-11-25' })).result?.protocolVersion).toBe('2025-11-25')
   expect((await client.request('initialize', { protocolVersion: '2099-01-01' })).result?.protocolVersion).toBe('2025-11-25')
+  await client.end()
+})
+
+test('run_records gives the record of each run that the file keeps', async () => {
+  const client = new Client(tempDb())
+  await client.call('commit_board', { board: 'b1', run: newRun(), version: 0, owner: 's1' })
+  const { runs } = (await client.call('run_records', {})) as { runs: { id: string; board: string; state: string; workers: string[] }[] }
+  expect(runs.map(record => [record.id, record.board, record.state, record.workers])).toEqual([['r1', 'b1', 'starting', ['w1']]])
   await client.end()
 })
 

@@ -4,7 +4,7 @@ import { deliver, discard, markWorker, startRun } from '../core/actions'
 import { bindWorker, declareFinal, isFailure, startRun as startBoard, stopRun, takeIntegration } from '../core/board'
 import type { ProcessResult } from '../core/ports'
 import type { AgentSpec, Change, Run, VcsKind, WorkerId } from '../types'
-import { FakeIo, HEAD } from './fake-io'
+import { HEAD, SessionStateIo } from './fake-io'
 
 const NOW = 1_800_000_000_000
 const FULL = 'f'.repeat(40)
@@ -33,10 +33,10 @@ function ready(vcs: VcsKind = 'git'): Run {
 
 /**
  * w1 ends its turn while meld removes the folder of the run, as a worker that meld told to stop, or that ends after the
- * final commit, can do. The end of its turn writes the run, and each write of the run mirrors the board. The files that
- * meld writes in the folder of the run after it removed the folder are in late.
+ * final commit, can do. The end of its turn writes the run, and with no meld mcp each write of the run updates its
+ * board.json. The files that meld writes in the folder of the run after it removed the folder are in late.
  */
-class LateStepIo extends FakeIo {
+class LateStepIo extends SessionStateIo {
   removed = false
   late: string[] = []
 

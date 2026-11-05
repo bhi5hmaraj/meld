@@ -38,6 +38,13 @@ The steps of 0.10.0:
 | 10d | Affinity: an idle worker continues its session while its context stays under a share of the window of its model. Else a fresh agent starts with the handover. Built: the share is one half. A Claude worker gets its context from each model call, and an ACP worker from `usage_update`. A live check in this session showed that a message to a subagent that ended its turn continues it with its context. | Tests cover both cases, for Claude workers and for ACP workers. |
 | 10e | A live run with Codex (`npx -y @agentclientprotocol/codex-acp`) on a machine with an OpenAI login. Check these open points: the name that Codex gives to the tools of meld (the prompts say `mcp__meld__board`), whether Codex reports its MCP calls as tool calls (then the leader counts each board call twice), the approval mode of Codex against the verdicts of meld, and whether codex-acp sends `usage_update` (without it, a Codex worker gets a new agent for each task). | Claude Code and Codex finish one request together. |
 
+The upkeep of the board file:
+
+| Step | Delivers | Done when |
+|---|---|---|
+| u1 | A write that changes nothing stores nothing: the version of the board stays, and the plugin calls `commit_board` only for a change. Built. | The specs of both stores pass. |
+| u2 | A record of each run in the board file (the table `runs`, schema 4), which `/meld-clean` reads through `run_records`. The core writes no `board.json`. Only the session state keeps one, as it ends with the session. Built. | `/meld-clean` lists and removes a folder from the record of its run, and a write through `meld mcp` writes no `board.json`. |
+
 ## Phase 4: hosted (later)
 
 | Step | Delivers | Done when |

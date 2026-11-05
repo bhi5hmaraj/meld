@@ -6,7 +6,7 @@ import { cleanFolders } from '../core/clean'
 import type { Action, BoardRead, Boards, BoardSummary, Committed } from '../core/remote-store'
 import { resumeRun } from '../core/resume'
 import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL, TOOL_PREFIX, TOOL_SPECS, WORKER_SYSTEM } from '../core/contract'
-import type { AgentState, FactsStore, Files, Io, Spawned, Store } from '../core/ports'
+import type { AgentState, FactsStore, Files, Io, RunRecord, RunRecords, Spawned, Store } from '../core/ports'
 import { parseStart, WORKER_TYPE } from '../core/options'
 import { adoptedOf, BOARD_STORE_TOOLS, boardVerdict, copyFromChannel, problemOf, sessionRunner, sessionStore, storeNote, valueOf, withNote, workerOffer } from './board-store'
 import type { SessionBoard } from './board-store'
@@ -85,6 +85,7 @@ export const register: Register = on => {
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
         },
         sessionState,
+        (path, text) => $.fs.write(path, text),
       ),
       writeFile: (path, text) => $.fs.write(path, text),
       ...sessionRunner(
@@ -149,7 +150,7 @@ export const register: Register = on => {
   )
 
   on('command.run', { command: ['meld', 'meld-steer', 'meld-status', 'meld-stop', 'meld-clean', 'meld-deliver', 'meld-discard', 'meld-add', 'meld-resume'] }, async ($, e) => {
-    const io: Io & Files = {
+    const io: Io & Files & RunRecords = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
       random: count => crypto.getRandomValues(new Uint8Array(count)),
@@ -167,6 +168,7 @@ export const register: Register = on => {
           readFacts: () => read($, factsRef),
           writeFacts: facts => update($, factsRef, () => facts),
         },
+        (path, text) => $.fs.write(path, text),
       ),
       writeFile: (path, text) => $.fs.write(path, text),
       ...sessionRunner(
@@ -191,6 +193,7 @@ export const register: Register = on => {
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
       list: path => $.fs.list(path),
       readText: path => $.fs.read(path),
+      runRecords: async () => (board.server ? valueOf<{ runs: RunRecord[] }>(await $.mcp.call(board.server, 'run_records', {})).runs : []),
     }
     const args = e.args.trim()
     if (e.command === 'meld') {
@@ -238,6 +241,7 @@ export const register: Register = on => {
           readFacts: () => read($, factsRef),
           writeFacts: facts => update($, factsRef, () => facts),
         },
+        (path, text) => $.fs.write(path, text),
       ),
       writeFile: (path, text) => $.fs.write(path, text),
       ...sessionRunner(
@@ -288,6 +292,7 @@ export const register: Register = on => {
             readFacts: () => read($, factsRef),
             writeFacts: facts => update($, factsRef, () => facts),
           },
+          (path, text) => $.fs.write(path, text),
         ),
         writeFile: (path, text) => $.fs.write(path, text),
         ...sessionRunner(
@@ -336,6 +341,7 @@ export const register: Register = on => {
           readFacts: () => read($, factsRef),
           writeFacts: facts => update($, factsRef, () => facts),
         },
+        (path, text) => $.fs.write(path, text),
       ),
       writeFile: (path, text) => $.fs.write(path, text),
       ...sessionRunner(
@@ -386,6 +392,7 @@ export const register: Register = on => {
           readFacts: () => read($, factsRef),
           writeFacts: facts => update($, factsRef, () => facts),
         },
+        (path, text) => $.fs.write(path, text),
       ),
       writeFile: (path, text) => $.fs.write(path, text),
       ...sessionRunner(
@@ -434,6 +441,7 @@ export const register: Register = on => {
           readFacts: () => read($, factsRef),
           writeFacts: facts => update($, factsRef, () => facts),
         },
+        (path, text) => $.fs.write(path, text),
       ),
       writeFile: (path, text) => $.fs.write(path, text),
       ...sessionRunner(
@@ -488,6 +496,7 @@ export const register: Register = on => {
           readFacts: () => read($, factsRef),
           writeFacts: facts => update($, factsRef, () => facts),
         },
+        (path, text) => $.fs.write(path, text),
       ),
       writeFile: (path, text) => $.fs.write(path, text),
       ...sessionRunner(
@@ -543,6 +552,7 @@ export const register: Register = on => {
           readFacts: () => read($, factsRef),
           writeFacts: facts => update($, factsRef, () => facts),
         },
+        (path, text) => $.fs.write(path, text),
       ),
       writeFile: (path, text) => $.fs.write(path, text),
       ...sessionRunner(
@@ -593,6 +603,7 @@ export const register: Register = on => {
           readFacts: () => read($, factsRef),
           writeFacts: facts => update($, factsRef, () => facts),
         },
+        (path, text) => $.fs.write(path, text),
       ),
       writeFile: (path, text) => $.fs.write(path, text),
       ...sessionRunner(

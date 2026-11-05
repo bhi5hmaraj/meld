@@ -3,6 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import { startRun as startBoard } from '../core/board'
 import { cleanFolders } from '../core/clean'
 import { JJ_LANE_TEMPLATE, jjConfigMark } from '../core/vcs'
+import type { RunRecord } from '../core/ports'
 import type { Run, RunState, VcsKind, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
 import { STORED_BY_0_7_0 } from './stored-runs'
@@ -20,6 +21,11 @@ function boardRun(id: string, state: RunState, vcs: VcsKind = 'git', repo = '/re
   const ids: WorkerId[] = ['w1', 'w2']
   const workers = ids.map(wid => ({ id: wid, agent: { type: 'meld:worker' }, path: `${ROOT}/${id}/${wid}`, ref: vcs === 'jj' ? `${wid}@` : `meld/${id}/${wid}` }))
   return { ...startBoard({ id, request: 'Add a dark theme', repo, base: HEAD, vcs, now: NOW - 4 * DAY, workers }), state }
+}
+
+/** What the board file of meld mcp keeps of the run of the folder `id`: two workers on git in /repo. */
+function recordOf(id: string, state: RunState, changedAt = NOW - 3 * DAY): RunRecord {
+  return { id, board: `board-${id}`, state, vcs: 'git', repo: '/repo', base: HEAD, workers: ['w1', 'w2'], changedAt }
 }
 
 type Setup = { board?: Run | string; changedAt?: number; kb?: number }
@@ -81,8 +87,8 @@ test('with no argument, /meld-clean lists each folder but the stored run: its id
   folder(io, 'lq3x9a1', { board: boardRun('lq3x9a1', 'stopped'), changedAt: NOW - 3 * DAY, kb: 7_025_459 })
   folder(io, 'lq4b2c3', { kb: 120 * 1024 })
   const text = await cleanFolders(io, '')
-  expect(lineOf(text, 'lq3x9a1')).toBe('lq3x9a1: stopped, board.json changed 3 d ago, 6.7 GB, git in /repo, no work')
-  expect(lineOf(text, 'lq4b2c3')).toBe('lq4b2c3: no board.json, 120 MB')
+  expect(lineOf(text, 'lq3x9a1')).toBe('lq3x9a1: stopped, changed 3 d ago, 6.7 GB, git in /repo, no work')
+  expect(lineOf(text, 'lq4b2c3')).toBe('lq4b2c3: no record, 120 MB')
   expect(lineOf(text, 'r1')).toBe('')
   expect(io.ran('rm ')).toBe(false)
 })
@@ -101,20 +107,20 @@ test('the list line of a folder that is not maybe live ends with what its worksp
   folder(io, 'eee', { board: boardRun('eee', 'stopped') })
   io.failing = [gitLog('eee', 'w2')]
   const text = await cleanFolders(io, '')
-  expect(lineOf(text, 'aaa')).toBe('aaa: stopped, board.json changed 3 d ago, 4 KB, git in /repo, no work')
-  expect(lineOf(text, 'bbb')).toBe('bbb: ready, board.json changed 2 d ago, 4 KB, git in /repo, holds work: 2 commits')
-  expect(lineOf(text, 'ccc')).toBe('ccc: stopped, board.json changed 3 d ago, 4 KB, jj in /repo, holds work: 1 commit and uncommitted edits in w2')
-  expect(lineOf(text, 'ddd')).toBe('ddd: stopped, board.json changed 3 d ago, 4 KB, jj in /repo, holds work: uncommitted edits in w1 and w2')
-  expect(lineOf(text, 'eee')).toBe('eee: stopped, board.json changed 3 d ago, 4 KB, git in /repo, workspaces not readable')
+  expect(lineOf(text, 'aaa')).toBe('aaa: stopped, changed 3 d ago, 4 KB, git in /repo, no work')
+  expect(lineOf(text, 'bbb')).toBe('bbb: ready, changed 2 d ago, 4 KB, git in /repo, holds work: 2 commits')
+  expect(lineOf(text, 'ccc')).toBe('ccc: stopped, changed 3 d ago, 4 KB, jj in /repo, holds work: 1 commit and uncommitted edits in w2')
+  expect(lineOf(text, 'ddd')).toBe('ddd: stopped, changed 3 d ago, 4 KB, jj in /repo, holds work: uncommitted edits in w1 and w2')
+  expect(lineOf(text, 'eee')).toBe('eee: stopped, changed 3 d ago, 4 KB, git in /repo, workspaces not readable')
   expect(io.ran('rm ')).toBe(false)
 })
 
-test('the list says what --all keeps: the maybe live folders, those that hold work or whose workspaces meld cannot read, and those with no board.json it can read', async () => {
+test('the list says what --all keeps: the maybe live folders, those that hold work or whose workspaces meld cannot read, and those with no record it can read', async () => {
   const io = session()
   folder(io, 'aaa', { board: boardRun('aaa', 'stopped') })
   const text = await cleanFolders(io, '')
   expect(text.split('\n').at(-1)).toBe(
-    '/meld-clean <id> removes a folder with its workspaces and any work in them. /meld-clean --all removes only the folders that hold no work: it keeps those maybe live, as a run of another session can use them, those that hold work or whose workspaces meld cannot read, and those with no board.json that meld can read.',
+    '/meld-clean <id> removes a folder with its workspaces and any work in them. /meld-clean --all removes only the folders that hold no work: it keeps those maybe live, as a run of another session can use them, those that hold work or whose workspaces meld cannot read, and those with no record that meld can read.',
   )
 })
 
@@ -122,7 +128,7 @@ test('the list reads no workspace of a maybe live folder, as a run of another se
   const io = session()
   folder(io, 'aaa', { board: boardRun('aaa', 'working', 'jj'), changedAt: NOW - HOUR })
   const text = await cleanFolders(io, '')
-  expect(lineOf(text, 'aaa')).toBe('aaa: working, board.json changed 1 h ago, 4 KB, jj in /repo, maybe live')
+  expect(lineOf(text, 'aaa')).toBe('aaa: working, changed 1 h ago, 4 KB, jj in /repo, maybe live')
   expect(io.ran('jj ')).toBe(false)
 })
 
@@ -150,7 +156,7 @@ test('a board.json whose base is not a commit id is not readable, so no text of 
   const io = session()
   folder(io, 'aaa', { board: { ...boardRun('aaa', 'stopped'), base: '--output=/tmp/x' } })
   const text = await cleanFolders(io, '')
-  expect(lineOf(text, 'aaa')).toBe('aaa: board.json not readable, changed 3 d ago, 4 KB')
+  expect(lineOf(text, 'aaa')).toBe('aaa: record not readable, changed 3 d ago, 4 KB')
   expect(io.ran('git ')).toBe(false)
 })
 
@@ -160,10 +166,10 @@ test('a board.json with no workers, or with a worker that meld does not name, is
   const run = boardRun('bbb', 'stopped')
   folder(io, 'bbb', { board: JSON.stringify({ ...run, workers: [...run.workers, { id: 'x3', path: '/repo', ref: 'main' }] }) })
   const text = await cleanFolders(io, '')
-  expect(lineOf(text, 'aaa')).toBe('aaa: board.json not readable, changed 3 d ago, 4 KB')
-  expect(lineOf(text, 'bbb')).toBe('bbb: board.json not readable, changed 3 d ago, 4 KB')
+  expect(lineOf(text, 'aaa')).toBe('aaa: record not readable, changed 3 d ago, 4 KB')
+  expect(lineOf(text, 'bbb')).toBe('bbb: record not readable, changed 3 d ago, 4 KB')
   expect(await cleanFolders(io, '--all')).toBe(
-    'Kept aaa (board.json not readable) and bbb (board.json not readable). /meld-clean <id> removes one, with any work in it.',
+    'Kept aaa (record not readable) and bbb (record not readable). /meld-clean <id> removes one, with any work in it.',
   )
   expect(folderNames(io)).toEqual(['r1', 'aaa', 'bbb'])
   expect(io.ran('git ')).toBe(false)
@@ -177,10 +183,10 @@ test('the list marks a folder maybe live when its board.json says starting, work
   folder(io, 'ccc', { board: boardRun('ccc', 'stopped'), changedAt: NOW - HOUR })
   folder(io, 'ddd', { board: boardRun('ddd', 'starting'), changedAt: NOW - 10 * 60_000 })
   const text = await cleanFolders(io, '')
-  expect(lineOf(text, 'aaa')).toBe('aaa: ready, board.json changed 2 h ago, 4 KB, git in /repo, maybe live')
+  expect(lineOf(text, 'aaa')).toBe('aaa: ready, changed 2 h ago, 4 KB, git in /repo, maybe live')
   expect(lineOf(text, 'bbb')).not.toContain('maybe live')
   expect(lineOf(text, 'ccc')).not.toContain('maybe live')
-  expect(lineOf(text, 'ddd')).toContain('board.json changed 10 min ago')
+  expect(lineOf(text, 'ddd')).toContain('changed 10 min ago')
   expect(lineOf(text, 'ddd')).toContain('maybe live')
 })
 
@@ -189,8 +195,53 @@ test('a board.json that meld cannot read is maybe live while it is new, as a liv
   folder(io, 'aaa', { board: '{"id": "aaa", "state": "work', changedAt: NOW - HOUR })
   folder(io, 'bbb', { board: 'not json', changedAt: NOW - 2 * DAY })
   const text = await cleanFolders(io, '')
-  expect(lineOf(text, 'aaa')).toBe('aaa: board.json not readable, changed 1 h ago, 4 KB, maybe live')
-  expect(lineOf(text, 'bbb')).toBe('bbb: board.json not readable, changed 2 d ago, 4 KB')
+  expect(lineOf(text, 'aaa')).toBe('aaa: record not readable, changed 1 h ago, 4 KB, maybe live')
+  expect(lineOf(text, 'bbb')).toBe('bbb: record not readable, changed 2 d ago, 4 KB')
+})
+
+test('a folder of a run that meld mcp keeps gets its state, its workspaces and its last change from the record of the run', async () => {
+  const io = session()
+  folder(io, 'aaa')
+  io.records = [recordOf('aaa', 'stopped')]
+  expect(lineOf(await cleanFolders(io, ''), 'aaa')).toBe('aaa: stopped, changed 3 d ago, 4 KB, git in /repo, no work')
+  expect(io.commands).toContain(gitLog('aaa', 'w2'))
+})
+
+test('the record of a run comes before the board.json that an older meld wrote in its folder', async () => {
+  const io = session()
+  folder(io, 'aaa', { board: boardRun('aaa', 'working'), changedAt: NOW - HOUR })
+  io.records = [recordOf('aaa', 'stopped', NOW - 2 * DAY)]
+  expect(lineOf(await cleanFolders(io, ''), 'aaa')).toBe('aaa: stopped, changed 2 d ago, 4 KB, git in /repo, no work')
+})
+
+test('a record that says working and changed in the last 24 hours is maybe live, so meld reads none of its workspaces', async () => {
+  const io = session()
+  folder(io, 'aaa')
+  io.records = [recordOf('aaa', 'working', NOW - HOUR)]
+  expect(lineOf(await cleanFolders(io, ''), 'aaa')).toBe('aaa: working, changed 1 h ago, 4 KB, git in /repo, maybe live')
+  expect(io.ran('git ')).toBe(false)
+})
+
+test('a record that lacks a value, or names a base that is not a commit id, is not readable: --all keeps its folder', async () => {
+  const io = session()
+  folder(io, 'aaa')
+  folder(io, 'bbb')
+  io.records = [{ ...recordOf('aaa', 'stopped'), vcs: null }, { ...recordOf('bbb', 'stopped'), base: '--output=/tmp/x' }]
+  const text = await cleanFolders(io, '')
+  expect(lineOf(text, 'aaa')).toBe('aaa: record not readable, changed 3 d ago, 4 KB')
+  expect(lineOf(text, 'bbb')).toBe('bbb: record not readable, changed 3 d ago, 4 KB')
+  expect(await cleanFolders(io, '--all')).toBe('Kept aaa (record not readable) and bbb (record not readable). /meld-clean <id> removes one, with any work in it.')
+  expect(io.ran('git ')).toBe(false)
+  expect(folderNames(io)).toEqual(['r1', 'aaa', 'bbb'])
+})
+
+test('--all removes the folder of a run that meld mcp keeps, with the worktrees and branches in the repository of its record', async () => {
+  const io = session()
+  folder(io, 'aaa')
+  io.records = [{ ...recordOf('aaa', 'stopped'), repo: '/elsewhere' }]
+  expect(await cleanFolders(io, '--all')).toBe('Removed aaa.')
+  expect(io.cwds['git branch -D meld/aaa/w2']).toBe('/elsewhere')
+  expect(folderNames(io)).toEqual(['r1'])
 })
 
 test('with nothing to clean, /meld-clean says so', async () => {
@@ -231,7 +282,7 @@ test('the workspaces that a removal names come from the id of the folder, never 
   expect(io.commands).not.toContain('git worktree remove --force /repo')
 })
 
-test('a folder with no board.json, or a board.json of another run, loses only its folder', async () => {
+test('a folder with no record, or a board.json of another run, loses only its folder', async () => {
   const io = session()
   folder(io, 'aaa')
   folder(io, 'bbb', { board: boardRun('zzz', 'stopped', 'git', '/elsewhere') })
@@ -286,7 +337,7 @@ test('--all removes only a folder with a readable board.json, not maybe live, an
   const text = await cleanFolders(io, '--all')
   expect(folderNames(io)).toEqual(['r1', 'bbb', 'ccc', 'ddd', 'eee', 'fff'])
   expect(text).toBe(
-    'Removed aaa. Kept bbb (holds work: 1 commit), ccc (workspaces not readable), ddd (no board.json) and eee (board.json not readable). Skipped fff, maybe live: a run of another session can use it. /meld-clean <id> removes one, with any work in it.',
+    'Removed aaa. Kept bbb (holds work: 1 commit), ccc (workspaces not readable), ddd (no record) and eee (record not readable). Skipped fff, maybe live: a run of another session can use it. /meld-clean <id> removes one, with any work in it.',
   )
   expect(io.commands.filter(command => command.startsWith('rm ') || command.startsWith('git worktree') || command.startsWith('git branch'))).toEqual([
     'rm -rf -- /tmp/meld/aaa',
@@ -354,7 +405,7 @@ test('a folder that meld 0.7.0 mirrored lists with its state, and goes with its 
   folder(io, STORED_BY_0_7_0.id, { board: STORED_BY_0_7_0, changedAt: NOW - 2 * DAY })
   io.answers[`jj -R ${ROOT}/${STORED_BY_0_7_0.id}/jj config path --repo`] = CONFIG
   io.files[CONFIG] = '[revset-aliases]\n"immutable_heads()" = "builtin_immutable_heads() | meld_base"\n'
-  expect(lineOf(await cleanFolders(io, ''), STORED_BY_0_7_0.id)).toBe(`${STORED_BY_0_7_0.id}: working, board.json changed 2 d ago, 4 KB, jj in /repo, no work`)
+  expect(lineOf(await cleanFolders(io, ''), STORED_BY_0_7_0.id)).toBe(`${STORED_BY_0_7_0.id}: working, changed 2 d ago, 4 KB, jj in /repo, no work`)
   expect(await cleanFolders(io, '--all')).toBe(`Removed ${STORED_BY_0_7_0.id}.`)
   expect(io.commands).toContain(`rm -rf -- ${ROOT}/${STORED_BY_0_7_0.id}`)
   expect(io.commands).not.toContain('rm -rf -- /root/.config/jj/repos/42ee0e08c27ca3c2d862')
@@ -380,7 +431,7 @@ test('the command /meld-clean lists through the file system of the engine and re
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   const listed = await $.command.run(typed(''))
-  expect(listed.text).toContain('abc: stopped, board.json changed 3 d ago, 8 KB, git in /repo')
+  expect(listed.text).toContain('abc: stopped, changed 3 d ago, 8 KB, git in /repo')
   await $.command.run(typed('abc'))
   expect(ran).toContain('rm -rf -- /tmp/meld/abc')
   expect(ran).toContain('git branch -D meld/abc/w2')

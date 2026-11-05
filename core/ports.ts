@@ -50,6 +50,25 @@ export type Files = {
   readText(path: string): Promise<string>
 }
 
+/**
+ * What the board file of meld mcp keeps of a run beside the run, for /meld-clean: the board that holds it (null once it
+ * left its board), what a read and a removal of its workspaces need, and when it last changed. A value that the run
+ * lacked is null.
+ */
+export type RunRecord = {
+  id: string
+  board: string | null
+  state: string | null
+  vcs: string | null
+  repo: string | null
+  base: string | null
+  workers: (string | null)[]
+  changedAt: number
+}
+
+/** The records of the runs that a store keeps beside the boards; none from a store that keeps no record. */
+export type RunRecords = { runRecords(): Promise<RunRecord[]> }
+
 /** What starts the agents of a run, sends them text, and lists them. */
 export type Runner = {
   spawn(args: SpawnArgs): Promise<Spawned>

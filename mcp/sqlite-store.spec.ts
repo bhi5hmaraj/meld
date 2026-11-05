@@ -81,7 +81,7 @@ test('an action for the leader of a board is taken once, oldest first, by the ru
 })
 
 test('a new file holds the local party of the machine', () => {
-  const boards = new SqliteBoards(':memory:', NOW)
+  const boards = new SqliteBoards(':memory:', () => NOW)
   expect(boards.parties()).toEqual([{ id: LOCAL_PARTY, name: 'local', leader: null, host: 'meld mcp', policies: {}, createdAt: NOW }])
 })
 
@@ -92,8 +92,8 @@ test('a file of schema 1 gets the tables of schema 2, and its boards stay, in th
   old.query('INSERT INTO boards (id, run, version, owner, owner_at) VALUES (?, ?, ?, ?, ?)').run('b1', JSON.stringify(newRun()), 3, 's1', NOW)
   old.exec('PRAGMA user_version = 1')
   old.close()
-  const boards = new SqliteBoards(path, NOW)
-  expect(boards.read('b1')).toEqual({ run: newRun(), version: 3, owner: 's1', ownerAt: NOW })
+  const boards = new SqliteBoards(path, () => NOW)
+  expect(boards.read('b1')).toEqual({ run: newRun(), version: 3, owner: 's1', ownerAt: NOW, changedAt: NOW })
   expect(boards.commit('b1', { ...newRun(), log: [note(1)] }, 3, 's1', NOW)).toBe('committed')
   expect((await boards.partyStore().events('r1')).map(row => row.party)).toEqual([LOCAL_PARTY])
   boards.close()
@@ -101,10 +101,26 @@ test('a file of schema 1 gets the tables of schema 2, and its boards stay, in th
   rmSync(path, { force: true })
 })
 
+test('a file of schema 3 gets the records of the runs on its boards, with the time of their last commit', () => {
+  const path = tempFile()
+  new SqliteBoards(path, () => NOW).close()
+  const old = new Database(path)
+  old.exec('DROP TABLE runs')
+  old.exec('ALTER TABLE boards DROP COLUMN changed_at')
+  old.query('INSERT INTO boards (id, run, version, owner, owner_at) VALUES (?, ?, ?, ?, ?)').run('b1', JSON.stringify(newRun()), 3, 's1', NOW - 1)
+  old.exec('PRAGMA user_version = 3')
+  old.close()
+  const boards = new SqliteBoards(path, () => NOW)
+  expect(boards.runRecords()).toEqual([{ id: 'r1', board: 'b1', state: 'starting', vcs: 'git', repo: '/repo', base: HEAD, workers: ['w1'], changedAt: NOW - 1 }])
+  expect(boards.read('b1')).toEqual({ run: newRun(), version: 3, owner: 's1', ownerAt: NOW - 1, changedAt: NOW - 1 })
+  boards.close()
+  rmSync(path, { force: true })
+})
+
 test('a second open of a file changes nothing of its schema', () => {
   const path = tempFile()
-  new SqliteBoards(path, NOW).close()
-  const again = new SqliteBoards(path, NOW + 1)
+  new SqliteBoards(path, () => NOW).close()
+  const again = new SqliteBoards(path, () => NOW + 1)
   expect(again.parties().map(party => party.createdAt)).toEqual([NOW])
   again.close()
   rmSync(path, { force: true })
@@ -134,15 +150,57 @@ test('a change that leaves the run as it was stores nothing: the version stays',
 test('a change that leaves an empty board empty adds no board', async () => {
   const boards = new SqliteBoards(':memory:')
   await boards.board('b1').write(() => null)
-  expect(boards.read('b1')).toEqual({ run: null, version: 0, owner: null, ownerAt: null })
+  expect(boards.read('b1')).toEqual({ run: null, version: 0, owner: null, ownerAt: null, changedAt: null })
+})
+
+test('each write keeps a record of the run: its board, state, version control, repository, base, workers, and its last change', async () => {
+  const boards = new SqliteBoards(':memory:', () => NOW + 5)
+  boards.commit('b1', newRun(), 0, 's1', NOW + 1)
+  expect(boards.runRecords()).toEqual([{ id: 'r1', board: 'b1', state: 'starting', vcs: 'git', repo: '/repo', base: HEAD, workers: ['w1'], changedAt: NOW + 1 }])
+  await boards.board('b1').write(run => run && { ...run, state: 'working' })
+  expect(boards.runRecords()).toEqual([{ id: 'r1', board: 'b1', state: 'working', vcs: 'git', repo: '/repo', base: HEAD, workers: ['w1'], changedAt: NOW + 5 }])
+})
+
+test('a run that leaves its board keeps its record, and no board holds it then', async () => {
+  const boards = new SqliteBoards(':memory:', () => NOW + 9)
+  boards.commit('b1', newRun(), 0, 's1', NOW)
+  await boards.board('b1').write(() => ({ ...newRun(), id: 'r2' }))
+  await boards.board('b2').write(newRun)
+  await boards.board('b2').write(() => null)
+  expect(boards.runRecords().map(record => [record.id, record.board, record.changedAt])).toEqual([
+    ['r1', null, NOW + 9],
+    ['r2', 'b1', NOW + 9],
+  ])
+})
+
+test('a run that lacks a value still stores, and its record holds null for it', () => {
+  const boards = new SqliteBoards(':memory:')
+  const odd = { ...newRun(), vcs: undefined } as unknown as Run
+  expect(boards.commit('b1', odd, 0, 's1', NOW)).toBe('committed')
+  expect(boards.runRecords()[0]).toMatchObject({ id: 'r1', vcs: null, repo: '/repo' })
+})
+
+test('a run with a value of another kind, or a worker that is no object, still stores, and its record holds null there', () => {
+  const boards = new SqliteBoards(':memory:')
+  const odd = { ...newRun(), base: { at: 1 }, workers: [null, { id: 'w2' }] } as unknown as Run
+  expect(boards.commit('b1', odd, 0, 's1', NOW)).toBe('committed')
+  expect(boards.runRecords()[0]).toMatchObject({ id: 'r1', base: null, workers: [null, 'w2'] })
+})
+
+test('each write of a board records when it changed', async () => {
+  const boards = new SqliteBoards(':memory:', () => NOW + 7)
+  boards.commit('b1', newRun(), 0, 's1', NOW)
+  expect(boards.read('b1').changedAt).toBe(NOW)
+  await boards.board('b1').write(() => null)
+  expect(boards.read('b1').changedAt).toBe(NOW + 7)
 })
 
 test('a commit names the version that it read: a commit after another one is stale, and stores nothing', () => {
   const boards = new SqliteBoards(':memory:')
-  expect(boards.read('b1')).toEqual({ run: null, version: 0, owner: null, ownerAt: null })
+  expect(boards.read('b1')).toEqual({ run: null, version: 0, owner: null, ownerAt: null, changedAt: null })
   expect(boards.commit('b1', newRun(), 0, 's1', NOW)).toBe('committed')
   expect(boards.commit('b1', { ...newRun(), revision: 9 }, 0, 's1', NOW)).toBe('stale')
-  expect(boards.read('b1')).toEqual({ run: newRun(), version: 1, owner: 's1', ownerAt: NOW })
+  expect(boards.read('b1')).toEqual({ run: newRun(), version: 1, owner: 's1', ownerAt: NOW, changedAt: NOW })
 })
 
 test('a session adopts a board only when its owner wrote nothing for the time of a lease', () => {

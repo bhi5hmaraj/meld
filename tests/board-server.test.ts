@@ -3,6 +3,7 @@ import type { MockClock } from 'claude-code/testing'
 import type { McpToolResult, On, TurnUsage } from 'claude-code'
 
 import { addTasks, bindWorker, isFailure, setWorkerState, startRun } from '../core/board'
+import type { RunRecord } from '../core/ports'
 import type { Change, Run, WorkerId } from '../types'
 import { HEAD } from './fake-io'
 
@@ -55,6 +56,7 @@ function working(id = 'r1'): Run {
 /** meld mcp as the plugin calls it: boards with versions and owners, and each call recorded. */
 class FakeMcp {
   boards: Record<string, Row> = {}
+  records: RunRecord[] = []
   calls: Call[] = []
   actions: Action[] = []
   channel = CHANNEL
@@ -85,6 +87,7 @@ class FakeMcp {
       this.boards[id] = { ...row, owner: String(args.owner), ownerAt: NOW, version: row.version + 1 }
       return { result: 'adopted' }
     }
+    if (tool === 'run_records') return { runs: this.records }
     if (tool === 'board_channel') return { socketPath: this.channel }
     if (tool === 'lead_board') return { ok: true }
     if (tool === 'spawn_worker') return { agentId: 'acp-1' }
@@ -202,6 +205,54 @@ test('without meld mcp, a command keeps the run in the session state, as meld 0.
   const replied = await $.command.run({ command: 'meld-stop', args: '', ...TYPED })
   expect(replied.text).toContain('Stopped.')
   expect(written).toContain('run stopped')
+})
+
+test('without meld mcp, a command writes the run to board.json in the folder of the run, for /meld-clean of a later session', async ($, on) => {
+  const files: Record<string, string> = {}
+  let stored: unknown = { ...STORED, value: working() }
+  answerTheEngine(on, undefined)
+  on('state.get', ($, e) => ({ value: e.key === 'run' ? { value: stored, version: 1 } : { value: undefined, version: 0 } }))
+  on('state.set', ($, e) => {
+    if (e.key === 'run') stored = e.value
+    return { value: { isSet: true, version: 2 } }
+  })
+  on('fs.write', ($, e) => {
+    files[e.path] = e.text
+    return { value: undefined }
+  })
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  await $.command.run({ command: 'meld-stop', args: '', ...TYPED })
+  expect((JSON.parse(files['/tmp/meld/r1/board.json'] ?? 'null') as Run | null)?.state).toBe('stopped')
+})
+
+test('with meld mcp, a command writes no board.json: the board file of meld mcp keeps the run', async ($, on) => {
+  const mcp = new FakeMcp()
+  const paths: string[] = []
+  answerTheEngine(on, mcp)
+  on('fs.write', ($, e) => {
+    paths.push(e.path)
+    return { value: undefined }
+  })
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  mcp.boards[SESSION] = { run: working(), version: 4, owner: SESSION, ownerAt: NOW }
+  await $.command.run({ command: 'meld-stop', args: '', ...TYPED })
+  expect(mcp.boards[SESSION]?.run?.state).toBe('stopped')
+  expect(paths.filter(path => path.endsWith('/board.json'))).toEqual([])
+})
+
+test('with meld mcp, /meld-clean reads the run of a folder from the record that meld mcp keeps', async ($, on) => {
+  const mcp = new FakeMcp()
+  mcp.records = [{ id: 'abc', board: 'session-0', state: 'stopped', vcs: 'git', repo: '/repo', base: HEAD, workers: ['w1', 'w2'], changedAt: NOW - 2 * 86_400_000 }]
+  answerTheEngine(on, mcp)
+  on('fs.list', ($, e) => {
+    if (e.path === '/tmp/meld') return { value: [{ name: 'abc', kind: 'dir', size: 0, mtimeMs: 0, isLink: false }] }
+    throw new Error(`ENOENT: ${e.path}`)
+  })
+  on('process.run', ($, e) => gitAnswer(e.argv))
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  const listed = await $.command.run({ command: 'meld-clean', args: '', ...TYPED })
+  expect(listed.text).toContain('abc: stopped, changed 2 d ago')
+  expect(mcp.calls.map(call => call.tool)).toContain('run_records')
 })
 
 test('at its start, the plugin makes its meld mcp the leader of the ACP workers of the board of the session', async ($, on) => {

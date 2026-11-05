@@ -946,56 +946,6 @@ test('a worker that finishes its leaf before 60 tool calls is not told to split 
   expect(io.sent).toEqual([])
 })
 
-const BOARD_FILE = '/tmp/meld/r1/board.json'
-
-function mirrorOf(io: FakeIo, path = BOARD_FILE): Run | undefined {
-  const text = io.files[path]
-  return text === undefined ? undefined : (JSON.parse(text) as Run)
-}
-
-test('a new run mirrors its board to board.json in the folder of the run', async () => {
-  const io = ioWith(null)
-  await startRun(io, '/repo', { request: 'Add a dark theme', agents: TWO, vcs: 'git' })
-  expect(mirrorOf(io, `/tmp/meld/${ID}/board.json`)).toEqual(io.current ?? undefined)
-})
-
-test('a share mirrors the board with its context', async () => {
-  const io = ioWith(working())
-  await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'The tokens are in src/theme.css.', agentId: 'agent-1' }))
-  expect(mirrorOf(io)?.context?.map(entry => [entry.kind, entry.by, entry.text])).toEqual([['fact', 'w1', 'The tokens are in src/theme.css.']])
-})
-
-test('the mirror holds the board of the newest write', async () => {
-  const io = ioWith(working())
-  await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'The tokens are in src/theme.css.', agentId: 'agent-1' }))
-  await serveTool(io, call({ tool: 'mcp__meld__board', agentId: 'agent-2' }))
-  expect(mirrorOf(io)?.context?.[0]?.seenBy).toEqual(['w2'])
-  expect(mirrorOf(io)).toEqual(io.current ?? undefined)
-})
-
-test('a guarded tool call and a steer mirror the board', async () => {
-  const io = ioWith(working())
-  await guardCall(io, call({ tool: 'Bash', command: 'pnpm test', agentId: 'agent-1' }))
-  expect(mirrorOf(io)?.workers[0]?.activity).toBe('Bash: pnpm test')
-  await steerRun(io, 'Use the brand colours')
-  expect(mirrorOf(io)?.revision).toBe(2)
-})
-
-test('a mirror that cannot be written does not fail the board call', async () => {
-  const io = ioWith(working())
-  io.unwritable = [BOARD_FILE]
-  const replied = await serveTool(io, call({ tool: 'mcp__meld__share', kind: 'fact', text: 'The tokens are in src/theme.css.', agentId: 'agent-1' }))
-  expect(parsed(replied.result)).toMatchObject({ ok: true })
-  expect(io.current?.context).toHaveLength(1)
-})
-
-test('deliver writes no mirror into the folder that it removed', async () => {
-  const io = ioWith(runOf(declareFinal(runOf(takeIntegration(working(), 'w2', NOW)), 'w2', FULL, 'Done', NOW)))
-  await deliver(io)
-  expect(io.current?.state).toBe('delivered')
-  expect(io.files[BOARD_FILE]).toBeUndefined()
-})
-
 test('a start while another start makes its workspaces, as a second click on Start does, makes and starts nothing', async () => {
   const io = ioWith(null)
   let release = () => {}

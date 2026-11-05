@@ -112,7 +112,7 @@ test('/meld-clean --all keeps a jj folder whose snapshot jj refused, and its lis
   const io = new FakeIo()
   leftFolder(io, stopRun(working('bbb', 'jj'), NOW - 3 * DAY))
   io.outcomes[jjFreshLog('bbb', 'w1')] = { exitCode: 0, stdout: `${FULL}\t1\t-e\tw1@\t\n`, stderr: REFUSED }
-  expect(await cleanFolders(io, '')).toContain('bbb: stopped, board.json changed 3 d ago, jj in /repo, workspaces not readable')
+  expect(await cleanFolders(io, '')).toContain('bbb: stopped, changed 3 d ago, jj in /repo, workspaces not readable')
   expect(await cleanFolders(io, '--all')).toBe('Kept bbb (workspaces not readable). /meld-clean bbb removes it, with any work in it.')
   expect(io.ran('rm ')).toBe(false)
 })
