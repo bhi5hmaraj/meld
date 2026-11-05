@@ -30,6 +30,8 @@ import { workerTools } from './worker'
 /** The signals that end a session: Claude Code sends SIGINT to its MCP servers, a closed terminal SIGHUP. */
 const END_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const
 const CHAT_AGENT = 'codex'
+/** A new folder of the board file is open to its user only, as the file holds the runs of every session. */
+const PRIVATE_FOLDER = 0o700
 /** The owner of the board of a chat: it writes with no lease, so no other session holds it. */
 const CHAT_OWNER = 'chat'
 const path = process.env.MELD_DB || join(homedir(), '.meld', 'meld.db')
@@ -40,7 +42,7 @@ if (mode === 'worker' && (!place.board || !place.agent)) {
   console.error('meld mcp --worker needs MELD_BOARD and MELD_AGENT')
   process.exit(1)
 }
-mkdirSync(dirname(path), { recursive: true })
+mkdirSync(dirname(path), { recursive: true, mode: PRIVATE_FOLDER })
 const boards = new SqliteBoards(path)
 if (mode === 'worker') {
   await serveStdio(workerTools(mcpIo(boards, place.board), place), info)

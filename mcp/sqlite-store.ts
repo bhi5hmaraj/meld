@@ -1,4 +1,5 @@
 import { Database } from 'bun:sqlite'
+import { chmodSync, existsSync, writeFileSync } from 'node:fs'
 
 import { ACP_AGENT_PREFIX } from '../core/options'
 import { LOCAL_PARTY, MEMBER_LEASE_MS, rowsOf } from '../core/party'
@@ -13,6 +14,9 @@ export const SCHEMA_VERSION = 3
 export const LEASE_MS = 60_000
 /** How long a write waits for the write lock that another process holds. */
 const BUSY_MS = 5000
+const MEMORY = ':memory:'
+/** The board file holds the runs of every session on the machine, so only its user reads it. */
+const OWNER_ONLY = 0o600
 const NEWER = 'a newer meld wrote this board file: restart the session, so it loads the newer meld'
 
 /** A board as a client reads it, with the session that owns it. */
@@ -97,6 +101,7 @@ export class SqliteBoards {
     readonly path: string,
     now = Date.now(),
   ) {
+    if (path !== MEMORY) keepPrivate(path)
     this.db = new Database(path, { create: true })
     this.db.exec(`PRAGMA busy_timeout = ${BUSY_MS}`)
     this.db.exec('PRAGMA journal_mode = WAL')
@@ -311,4 +316,10 @@ function holdsLease(row: Row, owner: string, now: number): boolean {
 
 function parsed<T>(text: string | null | undefined): T | null {
   return text ? (JSON.parse(text) as T) : null
+}
+
+/** Gives the board file, its write-ahead log and its shared memory to their user only. SQLite makes a new log with the mode of the file. */
+function keepPrivate(path: string): void {
+  if (!existsSync(path)) writeFileSync(path, '', { mode: OWNER_ONLY })
+  for (const file of [path, `${path}-wal`, `${path}-shm`]) if (existsSync(file)) chmodSync(file, OWNER_ONLY)
 }

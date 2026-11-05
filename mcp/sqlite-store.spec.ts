@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Database } from 'bun:sqlite'
@@ -15,6 +15,8 @@ const HEAD = 'abc1234def5678abc1234def5678abc1234def56'
 const NOW = 1_800_000_000_000
 const WRITER = join(import.meta.dir, 'writer.spec-helper.ts')
 const WRITES = 40
+const OWNER_ONLY = 0o600
+const WORLD_READABLE = 0o644
 
 function newRun(): Run {
   const workers = [{ id: 'w1' as const, path: '/tmp/meld/r1/w1', ref: 'meld/r1/w1', agent: { type: 'meld:worker' } }]
@@ -36,6 +38,17 @@ function tempFile(): string {
 for (const [name, check] of STORE_CHECKS) test(`the SQLite store: ${name}`, () => check(new SqliteBoards(':memory:').board('b1')))
 for (const [name, check] of ROW_CHECKS) test(`the SQLite party store: ${name}`, () => check(new SqliteBoards(':memory:').partyStore()))
 for (const [name, check] of MEMBER_CHECKS) test(`the SQLite party store: ${name}`, () => check(new SqliteBoards(':memory:').partyStore()))
+
+test('only its user reads the board file and its write-ahead log, also a file that was open to others', () => {
+  const path = tempFile()
+  writeFileSync(path, '')
+  chmodSync(path, WORLD_READABLE)
+  const boards = new SqliteBoards(path)
+  boards.commit('b1', newRun(), 0, 's1', NOW)
+  expect(statSync(path).mode & 0o777).toBe(OWNER_ONLY)
+  expect(statSync(`${path}-wal`).mode & 0o777).toBe(OWNER_ONLY)
+  boards.close()
+})
 
 test('each commit keeps the log entries of the run as rows of the local party, also after the run trims them', async () => {
   const boards = new SqliteBoards(':memory:')

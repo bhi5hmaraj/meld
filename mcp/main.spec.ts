@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -74,6 +74,14 @@ test('meld mcp names its board channel next to its board file, the channel answe
   expect(await (await fetch('http://meld/boards/b1', { unix: socketPath })).json()).toMatchObject({ run: { id: 'r1' }, version: 1 })
   expect(await client.end()).toBe(0)
   expect(existsSync(socketPath)).toBe(false)
+})
+
+test('meld mcp makes the folder of a new board file open to its user only', async () => {
+  const db = join(dirname(tempDb()), 'new', 'meld.db')
+  const client = new Client(db)
+  await client.call('list_boards', {})
+  expect(statSync(dirname(db)).mode & 0o777).toBe(0o700)
+  expect(await client.end()).toBe(0)
 })
 
 test('SIGINT, which Claude Code sends at the end of a session, stops the ACP agents of meld mcp and removes its socket', async () => {
