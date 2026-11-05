@@ -8,7 +8,7 @@ import { resumeRun } from '../core/resume'
 import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL, TOOL_PREFIX, TOOL_SPECS, WORKER_SYSTEM } from '../core/contract'
 import type { AgentState, FactsStore, Files, Io, Spawned, Store } from '../core/ports'
 import { parseStart, WORKER_TYPE } from '../core/options'
-import { adoptedOf, BOARD_STORE_TOOLS, boardVerdict, copyFromChannel, problemOf, sessionRunner, sessionStore, storeNote, valueOf, withNote } from './board-store'
+import { adoptedOf, BOARD_STORE_TOOLS, boardVerdict, copyFromChannel, problemOf, sessionRunner, sessionStore, storeNote, valueOf, withNote, workerOffer } from './board-store'
 import type { SessionBoard } from './board-store'
 import { DEFAULT_VIEW, paneTree } from './pane'
 
@@ -125,7 +125,7 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('agent.offer', { agent: WORKER_TYPE }, () => ({ isOffered: false }))
+  on('agent.offer', { agent: WORKER_TYPE }, ($, e, next) => workerOffer(next.origin.plugin) ?? next(e)).catch(($, e, next) => (next.called ? next(e) : { isOffered: false }))
 
   on('tool.check', { tool: BOARD_STORE_TOOLS }, ($, e, next) => boardVerdict(String(e.tool), board.server, next.origin.plugin) ?? next(e)).catch(() => ({
     decision: 'deny',

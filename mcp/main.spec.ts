@@ -8,6 +8,7 @@ import type { Run } from '../types'
 import { Client } from './client.spec-helper'
 
 const HEAD = 'abc1234def5678abc1234def5678abc1234def56'
+const STUB_AGENT = join(import.meta.dir, 'stub-agent.spec-helper.ts')
 const NOW = 1_800_000_000_000
 const TOOLS = ['read_board', 'commit_board', 'list_boards', 'adopt_board', 'board_channel', 'lead_board', 'spawn_worker', 'send_worker', 'stop_worker', 'acp_agents', 'take_actions']
 
@@ -17,6 +18,11 @@ function newRun(): Run {
 }
 
 const folders: string[] = []
+
+/** Whether a process with the marker in its command line runs. */
+function running(marker: string): boolean {
+  return Bun.spawnSync(['pgrep', '-f', marker]).exitCode === 0
+}
 
 function tempDb(): string {
   const folder = mkdtempSync(join(tmpdir(), 'meld-mcp-'))
@@ -68,6 +74,19 @@ test('meld mcp names its board channel next to its board file, the channel answe
   expect(await (await fetch('http://meld/boards/b1', { unix: socketPath })).json()).toMatchObject({ run: { id: 'r1' }, version: 1 })
   expect(await client.end()).toBe(0)
   expect(existsSync(socketPath)).toBe(false)
+})
+
+test('SIGINT, which Claude Code sends at the end of a session, stops the ACP agents of meld mcp and removes its socket', async () => {
+  const db = tempDb()
+  const marker = `meld-sigint-${process.pid}`
+  const client = new Client(db, [], { MELD_ACP_AGENTS: JSON.stringify({ stub: ['bun', STUB_AGENT, marker] }) })
+  const { socketPath } = (await client.call('board_channel', {})) as { socketPath: string }
+  const spawned = await client.call('spawn_worker', { board: 'b1', subagentType: 'acp:stub', cwd: dirname(db), prompt: 'Go', description: 'meld w1' })
+  expect(spawned).toMatchObject({ agentId: expect.stringMatching(/^acp-/) })
+  expect(running(marker)).toBe(true)
+  await client.signal('SIGINT')
+  expect(existsSync(socketPath)).toBe(false)
+  expect(running(marker)).toBe(false)
 })
 
 test('an adopt waits for the lease of the owner, and a resume after it takes the board', async () => {

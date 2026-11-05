@@ -255,6 +255,13 @@ test('at the end of a turn, an idle worker with a small context gets the step in
   expect(written.at(-1)?.workers[0]).toMatchObject({ agentId: 'agent-1', state: 'working', activity: 'goes on' })
 })
 
+test('the engine does not offer the meld:worker type to the model, so only meld starts its workers', async ($, on) => {
+  answerTheEngine(on, undefined)
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  const offered = await $.agent.offer({ agent: 'meld:worker', description: 'A meld worker.', source: 'plugin', provider: { plugin: 'meld', tier: 'user' } })
+  expect(offered).toEqual({ isOffered: false })
+})
+
 test('the permission check refuses a model call of a tool of the board store, as only meld calls it', async ($, on) => {
   answerTheEngine(on, new FakeMcp())
   await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })

@@ -20,6 +20,8 @@ import { workerTools } from './worker'
  * reads of boards on a Unix socket in the folder `channels` next to the board file. MELD_ACP_AGENTS adds ACP agents
  * (mcp/agents.ts).
  */
+/** The signals that end a session: Claude Code sends SIGINT to its MCP servers, a closed terminal SIGHUP. */
+const END_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const
 const path = process.env.MELD_DB || join(homedir(), '.meld', 'meld.db')
 const info = { name: 'meld', version: manifest.version }
 const asWorker = process.argv.includes('--worker')
@@ -35,8 +37,9 @@ if (asWorker) {
 } else {
   const runner = new AcpRunner(boards, { commands: acpCommands(process.env.MELD_ACP_AGENTS) })
   const channel = BoardChannel.open(boards, join(dirname(path), 'channels'))
-  const close = () => runner.stopAll().finally(() => channel?.stop())
-  process.on('SIGTERM', () => void close().finally(() => process.exit(0)))
+  let closing: Promise<void> | undefined
+  const close = () => (closing ??= runner.stopAll().finally(() => channel?.stop()))
+  for (const signal of END_SIGNALS) process.on(signal, () => void close().finally(() => process.exit(0)))
   await serveStdio([...boardTools(boards, Date.now), channelTool(channel?.socketPath ?? ''), ...runnerTools(runner, boards)], info)
   await close()
 }

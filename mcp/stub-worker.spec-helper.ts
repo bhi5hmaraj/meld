@@ -127,3 +127,4 @@ async function git(...args: string[]): Promise<void> {
 }
 
 await readLines(Bun.stdin.stream(), line => acp.receive(line))
+process.exit(0)

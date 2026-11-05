@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { AgentState, Runner, SpawnArgs, Spawned } from '../core/ports'
-import { boardVerdict, problemOf, sessionRunner, storeNote, withNote } from '../hooks/board-store'
+import { boardVerdict, problemOf, sessionRunner, storeNote, withNote, workerOffer } from '../hooks/board-store'
 
 const SERVER = 'plugin:meld:board'
 const READ = 'mcp__plugin_meld_board__read_board'
@@ -48,6 +48,12 @@ test('the permission check refuses a call of a tool of meld mcp from the model o
 test('the permission check gives no verdict for another tool, or when meld mcp did not connect', () => {
   expect(boardVerdict('mcp__meld__claim', SERVER, 'engine')).toBeUndefined()
   expect(boardVerdict(READ, '', 'engine')).toBeUndefined()
+})
+
+test('the meld:worker type stays hidden from the model and from other plugins, and meld itself may resume a worker of that type', () => {
+  expect(workerOffer('engine')).toEqual({ isOffered: false })
+  expect(workerOffer('notes')).toEqual({ isOffered: false })
+  expect(workerOffer('meld')).toBeUndefined()
 })
 
 test('an unlisted meld mcp names the reload that starts it, and another refusal keeps its message', () => {

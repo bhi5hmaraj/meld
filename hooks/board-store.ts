@@ -104,6 +104,15 @@ export function boardVerdict(tool: string, server: string, origin: string): Verd
   return origin === MELD ? { decision: 'allow', reason: 'meld keeps the board of its run in meld mcp.' } : { decision: 'deny', reason: ONLY_MELD }
 }
 
+/**
+ * The verdict on an offer of the meld:worker type: hidden from the model and from other plugins, as only meld starts its
+ * workers. No verdict for a call of meld itself: a message of meld resumes a worker that ended its turn, and the engine
+ * offers the type of that agent again first.
+ */
+export function workerOffer(origin: string): { isOffered: false } | undefined {
+  return origin === MELD ? undefined : { isOffered: false }
+}
+
 /** Why meld mcp did not connect: the refusal of the engine, with the step that starts meld mcp when the session holds an old manifest. */
 export function problemOf(refusal: { reason: string; message: string }): string {
   return refusal.reason === 'unlisted' ? `${refusal.message} ${RELOAD}` : refusal.message

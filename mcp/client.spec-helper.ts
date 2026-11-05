@@ -45,6 +45,12 @@ export class Client {
     return this.server.exited
   }
 
+  /** Sends a signal to meld mcp, as Claude Code sends SIGINT at the end of a session, and waits for its exit. */
+  async signal(name: NodeJS.Signals): Promise<number | null> {
+    this.server.kill(name)
+    return this.server.exited
+  }
+
   private async collect(): Promise<void> {
     let buffer = ''
     for await (const chunk of this.server.stdout) {
