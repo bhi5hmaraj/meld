@@ -9,7 +9,11 @@ export const ACP_PREFIX = 'acp:'
 /** The start of the agent id of each agent that meld mcp runs through ACP: the plugin sends its messages there. */
 export const ACP_AGENT_PREFIX = 'acp-'
 /** The ACP agents that meld knows by name, with the command that starts each one. */
-export const ACP_AGENTS: Readonly<Record<string, readonly string[]>> = { codex: ['npx', '-y', '@agentclientprotocol/codex-acp'] }
+export const ACP_AGENTS: Readonly<Record<string, readonly string[]>> = {
+  codex: ['npx', '-y', '@agentclientprotocol/codex-acp'],
+  gemini: ['npx', '-y', '@google/gemini-cli', '--acp'],
+  cursor: ['agent', 'acp'],
+}
 
 const FLAG = /^--([a-z-]+)(?:\s+(\S+))?\s*/
 const VCS_CHOICES = new Set<string>(['auto', 'jj', 'git'])

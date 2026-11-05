@@ -104,7 +104,7 @@ In Claude Code, the plugin declares `meld mcp` as its MCP server. The engine API
 - A `tool.call` hook adds the worker id to each board call of a subagent, and refuses board calls from other agents.
 - `$.mcp.call` calls a tool on a connected MCP server with the engine's own credentials. The pane reads the board this way, and the plugin forwards a call to a hosted board with the login of the user.
 
-In Cursor, `.cursor/mcp.json` runs the same `meld mcp`. meld starts each worker through ACP, and gives each worker its own `meld mcp` process. All the processes on a machine open the same SQLite file, and one of them holds a lease as the supervisor.
+In Cursor, `.cursor/mcp.json` runs the same `meld mcp` with `--chat`. The chat gets the tools of the main session (start, board, steer, stop, deliver, discard, add a worker), and each call runs `serveTool` of the core, as in the plugin. meld starts each worker through ACP, and gives each worker its own `meld mcp` process. All the processes on a machine open the same SQLite file. The board of a chat is MELD_BOARD, or `chat:<folder>`, and one chat leads a folder at a time.
 
 ## The supervisor
 

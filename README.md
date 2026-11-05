@@ -51,7 +51,8 @@ Or fill in the start form of the pane, which `/meld-status` opens. Or ask Claude
 | `/meld --agents opus,general-purpose@haiku <request>` | Starts one agent for each item: a model, an agent type, or a type and a model with `@` between them. |
 | `/meld --model sonnet <request>` | Starts each agent that names no model on `sonnet`. |
 | `/meld --agents opus,codex <request>` | Starts a Claude agent and a Codex agent. `meld mcp` runs Codex through ACP with `npx -y @agentclientprotocol/codex-acp`, which needs Node and an OpenAI login. Needs Bun. |
-| `/meld --agents acp:<name> <request>` | Starts the ACP agent that `MELD_ACP_AGENTS` names. Set it in the environment of Claude Code to a JSON object from a name to its command, for example `{"gemini":["gemini","--experimental-acp"]}`. |
+| `/meld --agents gemini,cursor <request>` | Starts the Gemini CLI (`npx -y @google/gemini-cli --acp`) and the agent of Cursor (`agent acp`) through ACP. Each needs its own login. Not checked live yet. |
+| `/meld --agents acp:<name> <request>` | Starts the ACP agent that `MELD_ACP_AGENTS` names. Set it in the environment of Claude Code to a JSON object from a name to its command, for example `{"mine":["node","/path/to/agent.js"]}`. A name of the table, such as `codex`, gets the command that you give. |
 | `/meld --vcs git <request>` | Makes git worktrees. `--vcs jj` makes jj workspaces. `--vcs auto`, the default, uses jj when jj is installed. |
 | `/meld /path/to/repo <request>` | Starts the run in another repository. |
 | `/meld-steer <instruction>` | Sends a new instruction to every agent. |
@@ -117,6 +118,16 @@ The result card shows the final commit, the changed files, the lines added and r
 `--all` removes a folder only when meld can read its `board.json`, the folder is not maybe live, and its workspaces hold no work. It keeps each other folder, and the reply tells why: the folder holds work, meld cannot read its workspaces, the folder has no `board.json`, or meld cannot read its `board.json`. A `board.json` with no workers, or with an entry that is not a worker of meld, counts as not readable, because the work check would miss workspaces of the folder. To remove a kept folder, give its id.
 
 A folder is maybe live when its `board.json` changed in the last 24 hours, and says starting, working or ready, or cannot be read. A run of another session on this computer can use such a folder, so meld does not read its workspaces, `--all` skips it, and its id removes it. The state alone shows nothing: a run that no session stores keeps the last state that it wrote.
+
+## Cursor and other MCP clients
+
+A chat that speaks MCP, such as a chat of Cursor, can lead a run. `meld mcp --chat` gives it the tools of the main session: `start`, `board`, `steer`, `stop`, `deliver`, `discard` and `add_worker`. All its agents are ACP agents: `codex`, `gemini`, `cursor`, or a name of `MELD_ACP_AGENTS`. Clone meld, and add it to `.cursor/mcp.json`:
+
+```json
+{ "mcpServers": { "meld": { "command": "bun", "args": ["/path/to/meld/mcp/main.ts", "--chat"] } } }
+```
+
+Then ask the chat, for example "start a meld run with 2 codex agents to add a dark theme". meld works in the folder where the chat starts the server. To work in another repository, begin the request with its path. A start with no agents, or with a count, takes the agent of `MELD_CHAT_AGENT`, `codex` when it is not set. The board of the chat is `MELD_BOARD`, or `chat:<folder>`. The board reply gives the notices that Claude Code shows as toasts. This mode is new in 0.10, and a live check with Cursor is still to come.
 
 ## How it works
 
@@ -302,6 +313,7 @@ node scripts/shots.mjs
 - `mcp/acp.ts` is the ACP client that starts the agents of other vendors, such as Codex, over the JSON-RPC link of `mcp/json-rpc.ts`. Its spec runs against a stub ACP agent.
 - `mcp/worker.ts` is the worker mode, `meld mcp --worker`: the board tools of one ACP worker, with the commands of `mcp/code-host.ts`. A message of a worker to another agent becomes an action for the leader.
 - `mcp/leader.ts` is the ACP runner of the leader. For each ACP worker, `meld mcp` starts an ACP agent with its own `meld mcp --worker`, sends its prompts, and starts the idle ACP workers again at the end of each prompt. `mcp/io.ts` gives the ports of the core in `meld mcp`.
+- `mcp/chat.ts` is the chat mode, `meld mcp --chat`: the tools of the main session for an MCP client such as Cursor. `mcp/agents.ts` reads the ACP agents of MELD_ACP_AGENTS.
 - `mcp/channel.ts` answers the reads of boards on a Unix socket. The timer of the pane reads its board there, as a timer cannot call `meld mcp`.
 - `hooks/board-store.ts` connects the hooks to `meld mcp`.
 - `hooks/pane.tsx` and `hooks/drawing.ts` draw the pane.

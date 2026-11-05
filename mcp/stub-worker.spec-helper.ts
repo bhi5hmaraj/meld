@@ -1,15 +1,16 @@
 /**
  * An ACP agent that works as a meld worker, for the run specs of the leader. It connects to the MCP server that the leader
- * gives it, its own meld mcp --worker. Each prompt goes on with its claimed task, or waits for a ready open task whose
- * detail names a file and claims it. It asks for permission to write that file in its folder, commits it, and finishes the task.
- * When every task is done, it integrates: it merges the integration line and declares the final commit. Each prompt ends
- * with a usage update, a context of 10,000 tokens more for each turn.
+ * gives it, its own meld mcp --worker. A prompt on a board with no task plans one task for each file that the request
+ * names after "files:". Each prompt goes on with its claimed task, or waits for a ready open task whose detail names a
+ * file and claims it. It asks for permission to write that file in its folder, commits it, and finishes the task. When
+ * every task is done, it integrates: it merges the integration line and declares the final commit. Each prompt ends with
+ * a usage update, a context of 10,000 tokens more for each turn.
  */
 import { Peer, readLines } from './json-rpc'
 
 type Server = { command: string; args: string[]; env: { name: string; value: string }[] }
 type BoardTask = { id: number; title: string; detail: string; state: string; owner?: string; version: number; needs?: number[] }
-type BoardView = { you: { id: string; path: string; ref: string }; state: string; tasks: BoardTask[]; integrator?: string }
+type BoardView = { you: { id: string; path: string; ref: string }; request: string; state: string; taskList: number; tasks: BoardTask[]; integrator?: string }
 type Reply = { ok?: boolean; error?: string }
 
 const SESSION = 'stub-worker-session'
@@ -19,6 +20,7 @@ const MCP_VERSION = '2025-06-18'
 const WINDOW = 200_000
 const TOKENS_PER_TURN = 10_000
 const FILE_NAME = /[\w.-]+\.\w+/
+const PLAN = /files:\s*([^\n]+)/
 
 let cwd = ''
 let meld: Peer | undefined
@@ -67,11 +69,20 @@ async function call<T>(name: string, args: Record<string, unknown> = {}): Promis
 }
 
 async function work(): Promise<void> {
+  await plan()
   const task = await openTask()
   if (task) await doTask(task)
   const view = await call<BoardView>('board')
   const allDone = view.tasks.length > 0 && view.tasks.every(one => one.state === 'done')
   if (view.state === 'working' && allDone && (!view.integrator || view.integrator === view.you.id)) await integrate(view)
+}
+
+/** Plans one task for each file that the request names after "files:", when the board has no task. The first plan wins. */
+async function plan(): Promise<void> {
+  const view = await call<BoardView>('board')
+  const files = PLAN.exec(view.request)?.[1]?.split(',').map(file => file.trim()).filter(Boolean) ?? []
+  if (view.tasks.length || !files.length) return
+  await call('add_tasks', { seen: view.taskList, tasks: files.map(file => ({ title: `Add ${file}`, detail: file })) })
 }
 
 /** The task this worker claimed, or the first ready open task whose detail names a file, while the run works and some task is not done. */

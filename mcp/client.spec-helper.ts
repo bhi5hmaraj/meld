@@ -10,8 +10,8 @@ export class Client {
   private readonly replies: Reply[] = []
   private nextId = 1
 
-  constructor(db: string, args: string[] = [], env: Record<string, string> = {}) {
-    this.server = Bun.spawn(['bun', MAIN, ...args], { env: { ...process.env, MELD_DB: db, ...env }, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' })
+  constructor(db: string, args: string[] = [], env: Record<string, string> = {}, cwd?: string) {
+    this.server = Bun.spawn(['bun', MAIN, ...args], { cwd, env: { ...process.env, MELD_DB: db, ...env }, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' })
     void this.collect()
   }
 

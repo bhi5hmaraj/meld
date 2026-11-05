@@ -52,6 +52,12 @@ test('codex in --agents is the ACP agent codex, which runs through the codex-acp
   expect(acpCommandOf({ type: 'meld:worker' })).toBeUndefined()
 })
 
+test('gemini and cursor in --agents are the ACP modes of the Gemini CLI and of the agent of Cursor', () => {
+  expect(parseStart('--agents gemini,cursor Add a dark theme')).toMatchObject({ agents: [{ type: 'acp:gemini' }, { type: 'acp:cursor' }] })
+  expect(acpCommandOf({ type: 'acp:gemini' })).toEqual(['npx', '-y', '@google/gemini-cli', '--acp'])
+  expect(acpCommandOf({ type: 'acp:cursor' })).toEqual(['agent', 'acp'])
+})
+
 test('the plugin starts only the workers of its engine again, and meld mcp only its ACP workers, so no worker gets two agents', async () => {
   const acp = ioWith(idleWithTasks())
   await restartIdleWorkers(acp, ownedByAcp)

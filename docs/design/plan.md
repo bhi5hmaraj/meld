@@ -26,7 +26,7 @@ From 0.9, users need Bun. Compiled binaries come when users ask for them.
 | Release | Delivers | Done when |
 |---|---|---|
 | 0.10.0 | The ACP runner. Codex workers in a local party, with the Claude Code session as the leader. Affinity. A channel for the timer of the leader, which cannot call `meld mcp` ([architecture.md](architecture.md)). | Claude Code and Codex finish one request together on one machine. |
-| 0.10.x | Cursor solo and the Gemini CLI, through the same ACP runner. | A Cursor chat leads a local party. |
+| 0.10.x | Cursor solo and the Gemini CLI, through the same ACP runner. Built on `next`: `meld mcp --chat` gives the tools of the main session to an MCP client, and `gemini` (`npx -y @google/gemini-cli --acp`) and `cursor` (`agent acp`) are built-in ACP agents. A spec runs a chat with two stub ACP workers from the start to the delivery. Not checked live: a Cursor chat, the Gemini CLI, and the agent of Cursor, which also asks questions with methods of its own, such as `cursor/ask_question`. | A Cursor chat leads a local party. |
 
 The steps of 0.10.0:
 
@@ -55,6 +55,7 @@ The model-based tests of the proposal (no task has two owners, a parent is done 
 - A message of an ACP worker to a Claude worker waits for the next end of a turn of the main session.
 - When one task is ready and two workers are idle, the restart rule gives the task to the first idle worker. When that worker is a Claude worker, the task waits for the next end of a turn of the main session, while an idle Codex worker could start at once. A better rule can prefer the worker that did the tasks that the task needs, then a worker whose host acts now.
 - A SIGKILL of `meld mcp` leaves its ACP agents running, when they do not stop at the end of their input.
+- Two chats on one folder lead the same board, as no lease holds it. Then both start its idle ACP workers again.
 - The repository has no package file, so nothing checks the types of `mcp/`, which needs the types of Bun. A check with `bun-types` 1.4.4 passes today, and it would have found the verdict that the ACP client did not wait for.
 
 ## Open choices
