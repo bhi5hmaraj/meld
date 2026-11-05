@@ -353,7 +353,9 @@ The tests use a fake `Io` over the memory store, and mount the pane on each surf
 
 ## Design notes
 
-[docs/design](docs/design/README.md) holds draft notes for meld after 0.8.0: one core with many hosts, SQLite for solo and Postgres for team, parties, how a solo session joins a team, the shared context store, and the build plan. None of it is built.
+[docs/design](docs/design/README.md) holds draft notes for meld after 0.8.0: one core with many hosts, SQLite for solo and Postgres for team, parties, how a solo session joins a team, the shared context store, and the build plan. 0.10.0 builds the local parts: [plan.md](docs/design/plan.md) gives the status of each step.
+
+[The handover of 5 November 2026](docs/handover-2026-11-05.md) gives the state of the project, the open work and the traps, for a new maintainer.
 
 ## License
 

@@ -1,6 +1,6 @@
 # meld design notes
 
-Status: draft. These notes record the design of meld after 0.8.0: solo on a new local host, parties, and a hosted service. They give the options and the reasons for each choice. Some decisions are agreed and some are open. [decisions.md](decisions.md) gives the status of each one. None of it is built.
+Status: draft. These notes record the design of meld after 0.8.0: solo on a new local host, parties, and a hosted service. They give the options and the reasons for each choice. Some decisions are agreed and some are open. [decisions.md](decisions.md) gives the status of each one. 0.10.0 builds the local parts, and [plan.md](plan.md) gives the status of each step.
 
 The notes start from a design proposal of November 2026 for a hosted meld service: one task queue and one shared context for coding agents from any vendor. The proposal was written against meld 0.7.0. [service-review.md](service-review.md) checks it against meld 0.8.0.
 
