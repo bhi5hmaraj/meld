@@ -300,6 +300,11 @@ export class SqliteBoards {
       .immediate()
   }
 
+  /** Writes a copy of the file to `path`, an empty file or none, as one consistent read: writers go on meanwhile. */
+  copyTo(path: string): void {
+    this.db.query('VACUUM INTO ?').run(path)
+  }
+
   /** The boards with a run, the latest write first. */
   list(): BoardSummary[] {
     const rows = this.db.query('SELECT id, run, version, owner, owner_at FROM boards WHERE run IS NOT NULL ORDER BY owner_at DESC').all() as Row[]

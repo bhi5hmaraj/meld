@@ -1,6 +1,7 @@
 import { chmodSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { isAlive } from './processes'
 import type { SqliteBoards } from './sqlite-store'
 
 const PRIVATE = 0o700
@@ -56,14 +57,5 @@ function removeEnded(folder: string, pid: number): void {
   for (const name of readdirSync(folder)) {
     const owner = Number(SOCKET_NAME.exec(name)?.[1] ?? Number.NaN)
     if (owner === pid || (Number.isInteger(owner) && !isAlive(owner))) rmSync(join(folder, name), { force: true })
-  }
-}
-
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM'
   }
 }

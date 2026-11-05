@@ -86,6 +86,15 @@ At its start, `meld mcp` in the plugin mode and in the chat mode removes the row
 
 The `context` rows stay: they are the knowledge that later runs read, and the outbox of the hosted phase. A stopped run stays on its board at any age, as its workspaces can hold work. SQLite does not make the file smaller after a removal: new rows use the free pages, so the file stops growing.
 
+Before the prune, `meld mcp` copies the board file to `backups/meld-<UTC date>.db` next to it, once a day, with `VACUUM INTO`: a compact copy from one consistent read, while other sessions write. The copy goes to a part file first and then takes its name, so a process that stops during the copy leaves no broken backup. A later start removes the part file of a process that ended. The five newest copies stay (`BACKUPS_KEPT`). The folder is open to its user only (0700), and each copy too (0600).
+
+To restore a copy:
+
+1. Close each session and each chat that runs meld, so no `meld mcp` has the file open.
+2. Remove the write-ahead log and the shared memory: `rm -f ~/.meld/meld.db-wal ~/.meld/meld.db-shm`. Else SQLite applies the old log to the copy.
+3. Copy the backup to the board file: `cp ~/.meld/backups/meld-2027-01-15.db ~/.meld/meld.db`.
+4. Start a session.
+
 ## Several sessions on one machine
 
 - All runs live in `~/.meld/meld.db`, in WAL mode. Each editor session starts its own `meld mcp` process, and all the processes open the same file. There is no daemon.

@@ -164,6 +164,8 @@ The first board reply to a new agent carries the 20 newest current entries. Each
 
 **Board store.** With Bun, the run lives on a board in `~/.meld/meld.db`, in WAL mode, and each session has its own board. The plugin reads the board, runs the rules of meld, and commits the run at the version that it read, through the tools of `meld mcp`. When another write came first, it reads and tries again. The session that writes a board owns it for 60 s from its last write, and another session can adopt the board only after that time, so two sessions do not drive one run. The session state keeps a copy of the run, and the facts that the pane shows. The file also keeps each log entry and context entry of each run as a row, after the run trims them, and a record of each run for `/meld-clean`, also after the run leaves its board. A write that changes nothing stores nothing. Only meld calls the tools of `meld mcp`. The permission check allows the calls of meld, and refuses the calls of agents and of the main session. The board tool of the main session names the store, and why `meld mcp` did not connect. When the session loaded a meld before 0.9, `/reload-plugins` or a new session starts `meld mcp`.
 
+**Backups.** Once a day, at the start of a session, `meld mcp` copies the board file to `~/.meld/backups/meld-<date>.db`, and keeps the five newest copies. Then it removes the rows older than 30 days that no run needs. To restore a copy, close each session that runs meld, remove `~/.meld/meld.db-wal` and `~/.meld/meld.db-shm`, and copy the backup to `~/.meld/meld.db`.
+
 **Edit guard.** meld refuses an edit that an agent makes outside its own workspace. It refuses each tool call of an agent that you stopped, of an agent of a stopped or discarded run, and of a new agent that took no place on the board, and tells that agent to end its turn.
 
 </details>
@@ -229,6 +231,7 @@ These releases are on the branch `next`, and are not out yet.
 - **A write that changes nothing stores nothing (0.10).** The version of the board stays, so the pane does not draw again, and the lease of the owner runs from its last change.
 - **No `board.json` with Bun (0.10).** `~/.meld/meld.db` keeps a record of each run for `/meld-clean`. Before, meld also wrote the full board to `board.json` after each write, while SQLite kept it.
 - **Old rows go (0.10).** At the start of a session, `meld mcp` removes the boards with no run or a delivered run that changed more than 30 days ago, with the records and events of their runs. The shared context stays.
+- **A backup each day (0.10).** At the start of a session, `meld mcp` copies the board file to `~/.meld/backups/`, once a day, and keeps the five newest copies.
 
 ## What changed in 0.8.1
 

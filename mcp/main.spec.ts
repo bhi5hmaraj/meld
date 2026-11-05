@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -71,6 +71,14 @@ test('at its start, meld mcp removes a board that changed more than 30 days ago 
   const client = new Client(db)
   expect(await client.call('read_board', { board: 'old' })).toMatchObject({ version: 0 })
   expect(await client.call('read_board', { board: 'new' })).toMatchObject({ version: 1 })
+  await client.end()
+})
+
+test('at its start, meld mcp makes the backup of the day next to the board file', async () => {
+  const db = tempDb()
+  const client = new Client(db)
+  await client.request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } })
+  expect(readdirSync(join(dirname(db), 'backups'))).toEqual([`meld-${new Date().toISOString().slice(0, 10)}.db`])
   await client.end()
 })
 
