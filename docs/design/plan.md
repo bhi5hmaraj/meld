@@ -44,6 +44,7 @@ The upkeep of the board file:
 |---|---|---|
 | u1 | A write that changes nothing stores nothing: the version of the board stays, and the plugin calls `commit_board` only for a change. Built. | The specs of both stores pass. |
 | u2 | A record of each run in the board file (the table `runs`, schema 4), which `/meld-clean` reads through `run_records`. The core writes no `board.json`. Only the session state keeps one, as it ends with the session. Built. | `/meld-clean` lists and removes a folder from the record of its run, and a write through `meld mcp` writes no `board.json`. |
+| u3 | A retention rule: at its start, `meld mcp` removes the rows older than 30 days that no step needs: boards with no run or a delivered run, records of runs with no board and no folder, their events, old actions and members. The context stays. Built. | The specs of each rule pass, and a start of `meld mcp` removes an old empty board. |
 
 ## Phase 4: hosted (later)
 

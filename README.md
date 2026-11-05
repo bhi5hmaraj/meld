@@ -228,6 +228,7 @@ These releases are on the branch `next`, and are not out yet.
 - **The end of a session stops the ACP agents (0.10).** Claude Code sends SIGINT to `meld mcp`, which then stops its agents and removes its socket.
 - **A write that changes nothing stores nothing (0.10).** The version of the board stays, so the pane does not draw again, and the lease of the owner runs from its last change.
 - **No `board.json` with Bun (0.10).** `~/.meld/meld.db` keeps a record of each run for `/meld-clean`. Before, meld also wrote the full board to `board.json` after each write, while SQLite kept it.
+- **Old rows go (0.10).** At the start of a session, `meld mcp` removes the boards with no run or a delivered run that changed more than 30 days ago, with the records and events of their runs. The shared context stays.
 
 ## What changed in 0.8.1
 

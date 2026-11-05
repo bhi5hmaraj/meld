@@ -6,10 +6,10 @@ import { Database } from 'bun:sqlite'
 
 import { startRun } from '../core/board'
 import { LOCAL_PARTY } from '../core/party'
-import type { ContextEntry, Entry, Run } from '../types'
+import type { ContextEntry, Entry, Run, RunState } from '../types'
 import { MEMBER_CHECKS, ROW_CHECKS } from '../tests/party-conformance'
 import { STORE_CHECKS } from '../tests/store-conformance'
-import { LEASE_MS, SCHEMA_VERSION, SqliteBoards } from './sqlite-store'
+import { LEASE_MS, NOTHING_PRUNED, RETENTION_MS, SCHEMA_VERSION, SqliteBoards } from './sqlite-store'
 
 const HEAD = 'abc1234def5678abc1234def5678abc1234def56'
 const NOW = 1_800_000_000_000
@@ -17,10 +17,17 @@ const WRITER = join(import.meta.dir, 'writer.spec-helper.ts')
 const WRITES = 40
 const OWNER_ONLY = 0o600
 const WORLD_READABLE = 0o644
+const DAY = 86_400_000
+const OLD = NOW - RETENTION_MS - DAY
+const RECENT = NOW - DAY
 
 function newRun(): Run {
   const workers = [{ id: 'w1' as const, path: '/tmp/meld/r1/w1', ref: 'meld/r1/w1', agent: { type: 'meld:worker' } }]
   return startRun({ id: 'r1', request: 'Add a dark theme', repo: '/repo', base: HEAD, vcs: 'git', now: NOW, workers })
+}
+
+function runIn(id: string, state: RunState): Run {
+  return { ...newRun(), id, state }
 }
 
 function note(id: number): Entry {
@@ -246,5 +253,66 @@ test('a file of a newer schema refuses each write, so an old meld does not damag
   const boards = new SqliteBoards(path)
   expect(await boards.board('b1').write(newRun).then(() => 'stored', (error: unknown) => String(error))).toContain('a newer meld')
   expect(boards.commit('b1', newRun(), 0, 's1', NOW)).toBe('newer schema')
+  rmSync(path, { force: true })
+})
+
+test('a prune removes each board with no run or a delivered run that changed more than 30 days ago, and keeps the others', () => {
+  const boards = new SqliteBoards(':memory:')
+  boards.commit('empty', null, 0, 's1', OLD)
+  boards.commit('delivered', runIn('r2', 'delivered'), 0, 's1', OLD)
+  boards.commit('stopped', runIn('r3', 'stopped'), 0, 's1', OLD)
+  boards.commit('recent', runIn('r4', 'delivered'), 0, 's1', RECENT)
+  expect(boards.prune(NOW, () => false)).toMatchObject({ boards: 2 })
+  expect(['empty', 'delivered', 'stopped', 'recent'].filter(id => boards.read(id).version > 0)).toEqual(['stopped', 'recent'])
+})
+
+test('a prune removes the record of a run that no board holds, that changed more than 30 days ago, and whose folder is gone', () => {
+  const boards = new SqliteBoards(':memory:')
+  boards.commit('b1', runIn('r1', 'stopped'), 0, 's1', OLD)
+  boards.commit('b1', null, 1, 's1', OLD)
+  boards.commit('b2', runIn('r2', 'stopped'), 0, 's1', OLD)
+  boards.commit('b2', null, 1, 's1', OLD)
+  boards.commit('b3', runIn('r3', 'stopped'), 0, 's1', OLD)
+  boards.commit('b3', null, 1, 's1', RECENT)
+  boards.commit('b4', runIn('r4', 'stopped'), 0, 's1', OLD)
+  boards.prune(NOW, run => run === 'r2')
+  expect(boards.runRecords().map(record => record.id)).toEqual(['r2', 'r3', 'r4'])
+})
+
+test('a prune removes a delivered run with its board, its record and its old events, and keeps every context entry', async () => {
+  const boards = new SqliteBoards(':memory:')
+  boards.commit('b1', { ...runIn('r1', 'delivered'), log: [{ ...note(1), at: OLD }], context: [{ ...fact(1), at: OLD }] }, 0, 's1', OLD)
+  expect(boards.prune(NOW, () => false)).toEqual({ ...NOTHING_PRUNED, boards: 1, runs: 1, events: 1 })
+  expect(boards.runRecords()).toEqual([])
+  expect(await boards.partyStore().events('r1')).toEqual([])
+  expect((await boards.partyStore().context(LOCAL_PARTY)).map(row => row.id)).toEqual([1])
+})
+
+test('a prune keeps the old events of a run that a board holds', async () => {
+  const boards = new SqliteBoards(':memory:')
+  boards.commit('b1', { ...runIn('r1', 'stopped'), log: [{ ...note(1), at: OLD }] }, 0, 's1', OLD)
+  boards.prune(NOW, () => false)
+  expect((await boards.partyStore().events('r1')).map(row => row.id)).toEqual([1])
+})
+
+test('a prune removes the actions that no leader took in 30 days, and the members last seen more than 30 days ago', () => {
+  const boards = new SqliteBoards(':memory:')
+  boards.addAction({ board: 'b1', kind: 'toast', agent: '', text: 'old', at: OLD })
+  boards.addAction({ board: 'b1', kind: 'toast', agent: '', text: 'new', at: RECENT })
+  boards.join({ party: LOCAL_PARTY, id: 'codex-1', kind: 'codex', slots: 1, seenAt: OLD })
+  boards.join({ party: LOCAL_PARTY, id: 'codex-2', kind: 'codex', slots: 1, seenAt: RECENT })
+  expect(boards.prune(NOW, () => false)).toEqual({ ...NOTHING_PRUNED, actions: 1, members: 1 })
+  expect(boards.takeActions('b1', 'engine').map(action => action.text)).toEqual(['new'])
+})
+
+test('a prune of a file of a newer schema removes nothing', () => {
+  const path = tempFile()
+  const first = new SqliteBoards(path)
+  first.commit('b1', null, 0, 's1', OLD)
+  first.close()
+  new Database(path).exec(`PRAGMA user_version = ${SCHEMA_VERSION + 1}`)
+  const boards = new SqliteBoards(path)
+  expect(boards.prune(NOW, () => false)).toEqual(NOTHING_PRUNED)
+  expect(boards.read('b1').version).toBe(1)
   rmSync(path, { force: true })
 })

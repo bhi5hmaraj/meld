@@ -12,12 +12,19 @@ import type { Run } from '../types'
 export const SCHEMA_VERSION = 4
 /** How long the owner of a board holds it with no write. After that, another session can adopt the board, as a resume does. */
 export const LEASE_MS = 60_000
+/** How long the file keeps a board with no run or a delivered run, the record of a run that left its board, and old events. */
+export const RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 /** How long a write waits for the write lock that another process holds. */
 const BUSY_MS = 5000
 const MEMORY = ':memory:'
 /** The board file holds the runs of every session on the machine, so only its user reads it. */
 const OWNER_ONLY = 0o600
 const NEWER = 'a newer meld wrote this board file: restart the session, so it loads the newer meld'
+
+/** What a prune removed, by table. */
+export type Pruned = { boards: number; runs: number; events: number; actions: number; members: number }
+
+export const NOTHING_PRUNED: Pruned = { boards: 0, runs: 0, events: 0, actions: 0, members: 0 }
 
 /** A board as a client reads it, with the session that owns it and the time of its last change. */
 export type BoardRow = BoardRead & { owner: string | null; ownerAt: number | null; changedAt: number | null }
@@ -99,7 +106,7 @@ const MIGRATIONS: ((db: Database, now: number) => void)[] = [
     )`)
     db.exec('CREATE INDEX runs_of_board ON runs (board)')
     db.exec('ALTER TABLE boards ADD COLUMN changed_at INTEGER')
-    db.exec('UPDATE boards SET changed_at = owner_at')
+    db.query('UPDATE boards SET changed_at = COALESCE(owner_at, ?)').run(now)
     const rows = db.query('SELECT id, run, owner_at FROM boards WHERE run IS NOT NULL').all() as Pick<Row, 'id' | 'run' | 'owner_at'>[]
     for (const row of rows) recordRun(db, row.id, parsed(row.run), row.owner_at ?? now)
   },
@@ -266,6 +273,31 @@ export class SqliteBoards {
   runRecords(): RunRecord[] {
     const rows = this.db.query('SELECT id, board, state, vcs, repo, base, workers, changed_at FROM runs ORDER BY id').all() as RecordRow[]
     return rows.map(row => ({ id: row.id, board: row.board, state: row.state, vcs: row.vcs, repo: row.repo, base: row.base, workers: JSON.parse(row.workers) as (string | null)[], changedAt: row.changed_at }))
+  }
+
+  /**
+   * Removes what no step needs any more, in one transaction: each board with no run or a delivered run that changed more
+   * than RETENTION_MS ago; the record of each run that no board holds, that changed that long ago, and whose folder is
+   * gone; the old events of the runs that the file no longer records; and the actions and members of that age. The
+   * context entries stay: they are the knowledge that later runs read.
+   */
+  prune(now: number, hasFolder: (run: string) => boolean): Pruned {
+    if (this.newer) return NOTHING_PRUNED
+    const cutoff = now - RETENTION_MS
+    return this.db
+      .transaction((): Pruned => {
+        const boards = this.db.query(`DELETE FROM boards WHERE changed_at < ? AND (run IS NULL OR json_extract(run, '$.state') = 'delivered')`).run(cutoff).changes
+        this.db.query('UPDATE runs SET board = NULL WHERE board IS NOT NULL AND board NOT IN (SELECT id FROM boards)').run()
+        const old = this.db.query('SELECT id FROM runs WHERE board IS NULL AND changed_at < ?').all(cutoff) as { id: string }[]
+        const gone = old.map(row => row.id).filter(id => !hasFolder(id))
+        const remove = this.db.query('DELETE FROM runs WHERE id = ?')
+        for (const id of gone) remove.run(id)
+        const events = this.db.query('DELETE FROM events WHERE at < ? AND run NOT IN (SELECT id FROM runs)').run(cutoff).changes
+        const actions = this.db.query('DELETE FROM actions WHERE at < ?').run(cutoff).changes
+        const members = this.db.query('DELETE FROM members WHERE seen_at < ?').run(cutoff).changes
+        return { boards, runs: gone.length, events, actions, members }
+      })
+      .immediate()
   }
 
   /** The boards with a run, the latest write first. */

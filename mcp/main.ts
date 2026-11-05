@@ -1,8 +1,9 @@
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 import manifest from '../.claude-plugin/plugin.json'
+import { runHome } from '../core/vcs'
 import { acpCommands } from './agents'
 import { BoardChannel } from './channel'
 import { chatTools } from './chat'
@@ -26,6 +27,7 @@ import { workerTools } from './worker'
  * - `--worker`: the board tools of the agent MELD_AGENT on the board MELD_BOARD, as the ACP runner starts it for a worker.
  *
  * MELD_ACP_AGENTS adds ACP agents (mcp/agents.ts). The plugin and chat modes stop their agents when the session ends.
+ * At their start, they remove the rows of the board file that no step needs any more.
  */
 /** The signals that end a session: Claude Code sends SIGINT to its MCP servers, a closed terminal SIGHUP. */
 const END_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const
@@ -47,6 +49,7 @@ const boards = new SqliteBoards(path)
 if (mode === 'worker') {
   await serveStdio(workerTools(mcpIo(boards, place.board), place), info)
 } else {
+  keepUp(boards)
   const runner = new AcpRunner(boards, { commands: acpCommands(process.env.MELD_ACP_AGENTS) })
   const channel = mode === 'plugin' ? BoardChannel.open(boards, join(dirname(path), 'channels')) : undefined
   let closing: Promise<void> | undefined
@@ -56,6 +59,15 @@ if (mode === 'worker') {
   await close()
 }
 boards.close()
+
+/** The upkeep of the board file at the start of a session. A failure stops no session: the next start tries again. */
+function keepUp(file: SqliteBoards): void {
+  try {
+    file.prune(Date.now(), run => existsSync(runHome(run)))
+  } catch (error) {
+    console.error(`meld mcp: the prune of old rows failed: ${String(error)}`)
+  }
+}
 
 function chatServed(runner: AcpRunner): ServedTool[] {
   const chat = { board: place.board || `chat:${process.cwd()}`, cwd: process.cwd(), defaultAgent: process.env.MELD_CHAT_AGENT || CHAT_AGENT }

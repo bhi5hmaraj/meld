@@ -74,6 +74,18 @@ Schema 4 adds the table `runs`: a record of each run, for `/meld-clean`. A recor
 
 So with Bun, meld writes no `board.json`. Before, the core wrote the full board there after each write, so that the run outlived the session. Only a store that ends with the session keeps that file now: the session state, without Bun (`core/board-file.ts`). `/meld-clean` reads the record of a folder from `run_records`, and else from its `board.json`, which an older meld wrote.
 
+At its start, `meld mcp` in the plugin mode and in the chat mode removes the rows that no step needs any more, in one transaction. A row goes when it is older than 30 days (`RETENTION_MS`):
+
+| Rows | Go when |
+|---|---|
+| `boards` | the board holds no run or a delivered run, and changed more than 30 days ago |
+| `runs` | no board holds the run, its record changed more than 30 days ago, and its folder under `/tmp/meld/` is gone, so `/meld-clean` has nothing to read |
+| `events` | they are older than 30 days, and the file has no record of their run |
+| `actions` | no leader took them in 30 days |
+| `members` | the member was last seen more than 30 days ago |
+
+The `context` rows stay: they are the knowledge that later runs read, and the outbox of the hosted phase. A stopped run stays on its board at any age, as its workspaces can hold work. SQLite does not make the file smaller after a removal: new rows use the free pages, so the file stops growing.
+
 ## Several sessions on one machine
 
 - All runs live in `~/.meld/meld.db`, in WAL mode. Each editor session starts its own `meld mcp` process, and all the processes open the same file. There is no daemon.

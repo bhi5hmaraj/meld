@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path'
 import { startRun } from '../core/board'
 import type { Run } from '../types'
 import { Client } from './client.spec-helper'
+import { RETENTION_MS, SqliteBoards } from './sqlite-store'
 
 const HEAD = 'abc1234def5678abc1234def5678abc1234def56'
 const STUB_AGENT = join(import.meta.dir, 'stub-agent.spec-helper.ts')
@@ -58,6 +59,18 @@ test('run_records gives the record of each run that the file keeps', async () =>
   await client.call('commit_board', { board: 'b1', run: newRun(), version: 0, owner: 's1' })
   const { runs } = (await client.call('run_records', {})) as { runs: { id: string; board: string; state: string; workers: string[] }[] }
   expect(runs.map(record => [record.id, record.board, record.state, record.workers])).toEqual([['r1', 'b1', 'starting', ['w1']]])
+  await client.end()
+})
+
+test('at its start, meld mcp removes a board that changed more than 30 days ago and holds no run', async () => {
+  const db = tempDb()
+  const boards = new SqliteBoards(db)
+  boards.commit('old', null, 0, 's1', Date.now() - RETENTION_MS - 60_000)
+  boards.commit('new', null, 0, 's1', Date.now())
+  boards.close()
+  const client = new Client(db)
+  expect(await client.call('read_board', { board: 'old' })).toMatchObject({ version: 0 })
+  expect(await client.call('read_board', { board: 'new' })).toMatchObject({ version: 1 })
   await client.end()
 })
 
