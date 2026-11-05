@@ -216,9 +216,9 @@ A restarted agent reads its rules at its first board read. meld reads the agent 
 
 </details>
 
-## What changes in 0.9 and 0.10
+## What changed in 0.10.0
 
-These releases are on the branch `next`, and are not out yet.
+0.10.0 holds the changes of 0.9 and 0.10, which ship together. The checks of Codex used a stand-in ACP agent, and Gemini and Cursor have no live check yet: the first runs with the real agents come next.
 
 - **One board file for all sessions (0.9).** With Bun, meld keeps each run in `~/.meld/meld.db`, through `meld mcp`. `/meld-resume` takes the run of a session that ended. Without Bun, the run lives in the state of its session.
 - **Run ids that do not collide (0.9).** Each id ends with four random characters, so two runs that start in one millisecond get two ids.

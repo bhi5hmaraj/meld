@@ -1,6 +1,6 @@
 # Build plan
 
-Status: draft. The order is agreed: first make solo good and give it to people, then local parties with Claude Code and Codex, then the hosted version. Steps 0a, 0b and 0c of phase 2, and steps 10a to 10d of phase 3, are built on the branch `next`. Nothing else in phases 2 to 4 has started.
+Status: draft. The order is agreed: first make solo good and give it to people, then local parties with Claude Code and Codex, then the hosted version. Steps 0a, 0b and 0c of phase 2, steps 10a to 10d of phase 3, the chat mode of 0.10.x and the upkeep of the board file are built, and released in 0.10.0. Step 10e, a live run with real Codex, waits for a machine with an OpenAI login. Nothing of phase 4 has started.
 
 ## Phase 1: solo 0.8.x for users
 

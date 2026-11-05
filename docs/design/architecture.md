@@ -1,6 +1,6 @@
 # Architecture: one meld, many hosts
 
-Status: draft. The rules below are proposals. The ports and `core/` are built on the branch `next` (step 0a of [plan.md](plan.md)).
+Status: draft. The rules below are proposals. The ports and `core/` are built (step 0a of [plan.md](plan.md)), and released in 0.10.0.
 
 ## The rule
 
