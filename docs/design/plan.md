@@ -26,7 +26,7 @@ From 0.9, users need Bun. Compiled binaries come when users ask for them.
 | Release | Delivers | Done when |
 |---|---|---|
 | 0.10.0 | The ACP runner. Codex workers in a local party, with the Claude Code session as the leader. Affinity. A channel for the timer of the leader, which cannot call `meld mcp` ([architecture.md](architecture.md)). | Claude Code and Codex finish one request together on one machine. |
-| 0.10.x | Cursor solo and the Gemini CLI, through the same ACP runner. Built on `next`: `meld mcp --chat` gives the tools of the main session to an MCP client, and `gemini` (`npx -y @google/gemini-cli --acp`) and `cursor` (`agent acp`) are built-in ACP agents. A spec runs a chat with two stub ACP workers from the start to the delivery. Not checked live: a Cursor chat, the Gemini CLI, and the agent of Cursor, which also asks questions with methods of its own, such as `cursor/ask_question`. | A Cursor chat leads a local party. |
+| 0.10.x | Cursor solo and the Gemini CLI, through the same ACP runner. Built on `next`: `meld mcp --chat` gives the tools of the main session to an MCP client, and `gemini` (`npx -y @google/gemini-cli --acp`) and `cursor` (`agent acp`) are built-in ACP agents. A spec runs a chat with two stub ACP workers from the start to the delivery. Checked live with Claude Code as the chat, with no meld plugin: it started the run, read the board until the run was ready, and delivered. Not checked live: a Cursor chat, the Gemini CLI, and the agent of Cursor, which also asks questions with methods of its own, such as `cursor/ask_question`. | A Cursor chat leads a local party. |
 
 The steps of 0.10.0:
 

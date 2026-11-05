@@ -214,6 +214,19 @@ A restarted agent reads its rules at its first board read. meld reads the agent 
 
 </details>
 
+## What changes in 0.9 and 0.10
+
+These releases are on the branch `next`, and are not out yet.
+
+- **One board file for all sessions (0.9).** With Bun, meld keeps each run in `~/.meld/meld.db`, through `meld mcp`. `/meld-resume` takes the run of a session that ended. Without Bun, meld works as in 0.8.
+- **Run ids that do not collide (0.9).** Each id ends with four random characters, so two runs that start in one millisecond get two ids.
+- **Codex workers (0.10).** `--agents opus,codex` starts a Claude worker and a Codex worker. `meld mcp` runs Codex through ACP, and gives it its own `meld mcp` for the board tools. `gemini` and `cursor` start the Gemini CLI and the agent of Cursor in the same way.
+- **One host starts each worker again (0.10).** The plugin starts the Claude workers again, and `meld mcp` the ACP workers. So no worker gets two agents.
+- **A short session, then a new agent (0.10).** An idle worker goes on in its own session while its context fills less than half of the window of its model.
+- **The pane reads the board over a Unix socket (0.10).** So it shows the work of Codex workers while no hook of your session runs.
+- **A chat leads a run (0.10).** `meld mcp --chat` gives the tools of the main session to an MCP client, such as a chat of Cursor.
+- **The end of a session stops the ACP agents (0.10).** Claude Code sends SIGINT to `meld mcp`, which then stops its agents and removes its socket.
+
 ## What changed in 0.8.1
 
 This release fixes six findings of the two reviews of 0.8.0, and three more gaps that the checks of those fixes found. Each fix has a test that failed before the fix. `scripts/adapters.mjs` runs the first two fixes on real git and jj repositories.
