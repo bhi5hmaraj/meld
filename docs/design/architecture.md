@@ -75,6 +75,13 @@ Step 10d adds affinity. An idle worker gets its old agent again while the contex
 - The agent list can show the turn before a resume as ended for a moment. So meld marks a resumed worker idle only after 15 s, or at its hand-back, which the tool guard sees.
 - When a host cannot reach the old agent, the worker gets a fresh agent.
 
+A live run of 0.10 in a headless session, with the stub ACP worker as Codex, found these facts of the engine:
+
+- `$.http.fetch` over a Unix socket works from a timer, with no permission check.
+- The engine checks the offer of the type of an agent before it resumes the agent, with the engine as the origin of the check. meld hides `meld:worker` from the model, so it offers the type while one of its own resumes runs.
+- During a resumed turn, the agent list shows the agent as running.
+- At the end of a session, Claude Code sends SIGINT to its MCP servers. meld mcp then stops its ACP agents and removes its socket.
+
 The pane needs one more channel: the workers of Codex write to the board through their own `meld mcp`, and no hook of the main session sees it. Step 10c built it:
 
 - `meld mcp` answers `GET /boards/<id>` over HTTP on a Unix socket, `channels/<pid>.sock` next to the board file. Only the user of the process can open that folder.

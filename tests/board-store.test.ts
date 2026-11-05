@@ -50,10 +50,9 @@ test('the permission check gives no verdict for another tool, or when meld mcp d
   expect(boardVerdict(READ, '', 'engine')).toBeUndefined()
 })
 
-test('the meld:worker type stays hidden from the model and from other plugins, and meld itself may resume a worker of that type', () => {
-  expect(workerOffer('engine')).toEqual({ isOffered: false })
-  expect(workerOffer('notes')).toEqual({ isOffered: false })
-  expect(workerOffer('meld')).toBeUndefined()
+test('the meld:worker type stays hidden from the model, except while meld resumes one of its workers', () => {
+  expect(workerOffer(false)).toEqual({ isOffered: false })
+  expect(workerOffer(true)).toBeUndefined()
 })
 
 test('an unlisted meld mcp names the reload that starts it, and another refusal keeps its message', () => {

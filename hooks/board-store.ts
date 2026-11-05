@@ -105,12 +105,12 @@ export function boardVerdict(tool: string, server: string, origin: string): Verd
 }
 
 /**
- * The verdict on an offer of the meld:worker type: hidden from the model and from other plugins, as only meld starts its
- * workers. No verdict for a call of meld itself: a message of meld resumes a worker that ended its turn, and the engine
- * offers the type of that agent again first.
+ * The verdict on an offer of the meld:worker type: hidden from the model, as only meld starts its workers. A message of
+ * meld resumes a worker that ended its turn, and the engine checks the offer of its type first, with the engine as the
+ * origin. So meld offers the type while it resumes one of its workers.
  */
-export function workerOffer(origin: string): { isOffered: false } | undefined {
-  return origin === MELD ? undefined : { isOffered: false }
+export function workerOffer(isResuming: boolean): { isOffered: false } | undefined {
+  return isResuming ? undefined : { isOffered: false }
 }
 
 /** Why meld mcp did not connect: the refusal of the engine, with the step that starts meld mcp when the session holds an old manifest. */

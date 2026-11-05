@@ -53,6 +53,8 @@ The model-based tests of the proposal (no task has two owners, a parent is done 
 
 - The writes of ACP workers do not renew the lease of the session that owns the board. While the main session waits through a long Codex prompt, another session can take the board with `/meld-resume`.
 - A message of an ACP worker to a Claude worker waits for the next end of a turn of the main session.
+- When one task is ready and two workers are idle, the restart rule gives the task to the first idle worker. When that worker is a Claude worker, the task waits for the next end of a turn of the main session, while an idle Codex worker could start at once. A better rule can prefer the worker that did the tasks that the task needs, then a worker whose host acts now.
+- A SIGKILL of `meld mcp` leaves its ACP agents running, when they do not stop at the end of their input.
 - The repository has no package file, so nothing checks the types of `mcp/`, which needs the types of Bun. A check with `bun-types` 1.4.4 passes today, and it would have found the verdict that the ACP client did not wait for.
 
 ## Open choices

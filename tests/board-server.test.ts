@@ -14,6 +14,8 @@ const CHANNEL = '/tmp/meld/channels/1.sock'
 const WINDOW = 200_000
 const USAGE = { input_tokens: 1000, cache_creation_input_tokens: 2000, cache_read_input_tokens: 30_000, output_tokens: 500, model: 'claude-opus-5-5' } as TurnUsage
 const STORED = { shape: 'run-4' }
+/** The offer of the worker type, as the engine checks it before it resumes an agent of that type. */
+const WORKER_OFFER = { agent: 'meld:worker', description: 'A meld worker.', source: 'plugin', provider: { plugin: 'meld', tier: 'user' as const } }
 const TYPED = { origin: { kind: 'composer' as const }, presentation: { isFullscreen: false, columns: 80 } }
 
 type Call = { tool: string; args: Record<string, unknown> }
@@ -229,6 +231,7 @@ test('a model call of a subagent records the context of its worker, against the 
 })
 
 test('at the end of a turn, an idle worker with a small context gets the step in its own session, and no new agent', async ($, on) => {
+  const engine = $
   const sent: string[] = []
   const spawned: string[] = []
   const written: (Run | undefined)[] = []
@@ -243,9 +246,11 @@ test('at the end of a turn, an idle worker with a small context gets the step in
     spawned.push(e.description)
     return { model: 'claude-opus-5-5', agentId: 'agent-9' }
   })
-  on('session.send', ($, e) => {
+  on('agent.offer', () => ({ isOffered: true }))
+  on('session.send', async (_, e) => {
+    const offer = await engine.agent.offer(WORKER_OFFER)
     sent.push(`${e.to}: ${e.text}`)
-    return { isDelivered: true as const }
+    return offer.isOffered ? { isDelivered: true as const } : { isDelivered: false as const, reason: 'Agent type meld:worker is not offered in this session.' }
   })
   on('turn.complete', ($, e) => ({ text: e.answer }))
   await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
@@ -258,7 +263,7 @@ test('at the end of a turn, an idle worker with a small context gets the step in
 test('the engine does not offer the meld:worker type to the model, so only meld starts its workers', async ($, on) => {
   answerTheEngine(on, undefined)
   await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
-  const offered = await $.agent.offer({ agent: 'meld:worker', description: 'A meld worker.', source: 'plugin', provider: { plugin: 'meld', tier: 'user' } })
+  const offered = await $.agent.offer(WORKER_OFFER)
   expect(offered).toEqual({ isOffered: false })
 })
 
