@@ -1,8 +1,7 @@
 import type { HttpResponse, McpToolResult } from 'claude-code'
 
 import { ACP_PREFIX, isAcpAgent } from '../core/options'
-import { withBoardFile } from '../core/board-file'
-import type { CodeHost, FactsStore, Runner, Store } from '../core/ports'
+import type { FactsStore, Runner, Store } from '../core/ports'
 import { remoteStore, sameRun } from '../core/remote-store'
 import type { Adopted, BoardRead, BoardServer } from '../core/remote-store'
 import type { Run } from '../types'
@@ -29,11 +28,11 @@ type Verdict = { decision: 'allow' | 'deny'; reason: string }
 
 /**
  * The store of a hook: the run on the board of meld mcp, with a copy in the session state that the pane draws from, and
- * the facts in the session state. Without meld mcp, the session state, which ends with the session, with a record of the
- * run in board.json, as in meld 0.8.
+ * the facts in the session state. Without meld mcp, the session state alone, as in meld 0.8.
  */
-export function sessionStore(session: SessionBoard, remote: BoardServer, local: Store & FactsStore, writeFile: CodeHost['writeFile']): Store & FactsStore {
-  const run = session.server ? remoteStore(remote, copy => local.write(current => (sameRun(current, copy) ? current : copy))) : withBoardFile(local, writeFile)
+export function sessionStore(session: SessionBoard, remote: BoardServer, local: Store & FactsStore): Store & FactsStore {
+  if (!session.server) return local
+  const run = remoteStore(remote, copy => local.write(current => (sameRun(current, copy) ? current : copy)))
   return { ...run, readFacts: () => local.readFacts(), writeFacts: facts => local.writeFacts(facts) }
 }
 

@@ -85,7 +85,6 @@ export const register: Register = on => {
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
         },
         sessionState,
-        (path, text) => $.fs.write(path, text),
       ),
       writeFile: (path, text) => $.fs.write(path, text),
       ...sessionRunner(
@@ -168,7 +167,6 @@ export const register: Register = on => {
           readFacts: () => read($, factsRef),
           writeFacts: facts => update($, factsRef, () => facts),
         },
-        (path, text) => $.fs.write(path, text),
       ),
       writeFile: (path, text) => $.fs.write(path, text),
       ...sessionRunner(
@@ -192,7 +190,6 @@ export const register: Register = on => {
       toast: text => $.ui.toast(text),
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
       list: path => $.fs.list(path),
-      readText: path => $.fs.read(path),
       runRecords: async () => (board.server ? valueOf<{ runs: RunRecord[] }>(await $.mcp.call(board.server, 'run_records', {})).runs : []),
     }
     const args = e.args.trim()
@@ -241,7 +238,6 @@ export const register: Register = on => {
           readFacts: () => read($, factsRef),
           writeFacts: facts => update($, factsRef, () => facts),
         },
-        (path, text) => $.fs.write(path, text),
       ),
       writeFile: (path, text) => $.fs.write(path, text),
       ...sessionRunner(
@@ -292,7 +288,6 @@ export const register: Register = on => {
             readFacts: () => read($, factsRef),
             writeFacts: facts => update($, factsRef, () => facts),
           },
-          (path, text) => $.fs.write(path, text),
         ),
         writeFile: (path, text) => $.fs.write(path, text),
         ...sessionRunner(
@@ -341,7 +336,6 @@ export const register: Register = on => {
           readFacts: () => read($, factsRef),
           writeFacts: facts => update($, factsRef, () => facts),
         },
-        (path, text) => $.fs.write(path, text),
       ),
       writeFile: (path, text) => $.fs.write(path, text),
       ...sessionRunner(
@@ -392,7 +386,6 @@ export const register: Register = on => {
           readFacts: () => read($, factsRef),
           writeFacts: facts => update($, factsRef, () => facts),
         },
-        (path, text) => $.fs.write(path, text),
       ),
       writeFile: (path, text) => $.fs.write(path, text),
       ...sessionRunner(
@@ -441,7 +434,6 @@ export const register: Register = on => {
           readFacts: () => read($, factsRef),
           writeFacts: facts => update($, factsRef, () => facts),
         },
-        (path, text) => $.fs.write(path, text),
       ),
       writeFile: (path, text) => $.fs.write(path, text),
       ...sessionRunner(
@@ -496,7 +488,6 @@ export const register: Register = on => {
           readFacts: () => read($, factsRef),
           writeFacts: facts => update($, factsRef, () => facts),
         },
-        (path, text) => $.fs.write(path, text),
       ),
       writeFile: (path, text) => $.fs.write(path, text),
       ...sessionRunner(
@@ -552,7 +543,6 @@ export const register: Register = on => {
           readFacts: () => read($, factsRef),
           writeFacts: facts => update($, factsRef, () => facts),
         },
-        (path, text) => $.fs.write(path, text),
       ),
       writeFile: (path, text) => $.fs.write(path, text),
       ...sessionRunner(
@@ -603,7 +593,6 @@ export const register: Register = on => {
           readFacts: () => read($, factsRef),
           writeFacts: facts => update($, factsRef, () => facts),
         },
-        (path, text) => $.fs.write(path, text),
       ),
       writeFile: (path, text) => $.fs.write(path, text),
       ...sessionRunner(

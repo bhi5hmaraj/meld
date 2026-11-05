@@ -32,7 +32,7 @@ function runOf<T>(change: Change<T>): Run {
   return change.run
 }
 
-/** A run of two workers in /tmp/meld/<id>, each bound to an agent, as a session stores it and as its board.json holds it. */
+/** A run of two workers in /tmp/meld/<id>, each bound to an agent, as a session stores it. */
 function working(id: string, vcs: VcsKind): Run {
   const ids: WorkerId[] = ['w1', 'w2']
   const workers = ids.map(wid => ({ id: wid, path: `/tmp/meld/${id}/${wid}`, ref: vcs === 'jj' ? `${wid}@` : `meld/${id}/${wid}`, agent: WORKER }))
@@ -41,11 +41,10 @@ function working(id: string, vcs: VcsKind): Run {
   return run
 }
 
-/** The folder of a run under /tmp/meld that another session stopped 3 days ago, with its board.json. */
+/** The folder of a run under /tmp/meld that another session stopped 3 days ago, with the record of the run in meld mcp. */
 function leftFolder(io: FakeIo, run: Run): void {
   io.listings['/tmp/meld'] = [...(io.listings['/tmp/meld'] ?? []), { name: run.id, kind: 'dir', mtimeMs: 0 }]
-  io.listings[`/tmp/meld/${run.id}`] = [{ name: 'board.json', kind: 'file', mtimeMs: NOW - 3 * DAY }]
-  io.files[`/tmp/meld/${run.id}/board.json`] = `${JSON.stringify(run, null, 2)}\n`
+  io.records.push({ id: run.id, board: 'other-session', state: run.state, vcs: run.vcs, repo: run.repo, base: run.base, workers: run.workers.map(worker => worker.id), changedAt: NOW - 3 * DAY })
 }
 
 /** The jj log of the lane of a worker, read in its folder, so jj first records the files there. */

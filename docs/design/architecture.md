@@ -46,7 +46,7 @@ With these ports, `core/actions.ts` (about 1000 lines that start, claim, restart
 Each function of the core takes only the ports that it uses, so the type check shows what each step needs. Step 0a found these needs:
 
 - A board call of a worker needs the Runner as well as the Store: it sends nudges and wake texts to other agents. In `meld mcp`, those messages become rows of the table `actions`, and the leader carries them out (step 10b).
-- Each write of the board needed the CodeHost, as it mirrored `board.json`. The board file of `meld mcp` keeps a record of each run now, so the core writes no `board.json`. Only the session state, which ends with the session, keeps a record there (`core/board-file.ts`).
+- Each write of the board needed the CodeHost, as it mirrored `board.json`. The board file of `meld mcp` keeps a record of each run now, so the core writes no `board.json`, and a write needs the Store alone.
 - Only the start needs every port: the Ledger for the cost at the start, and the Surface to open the pane.
 
 Step 0b found these limits of the engine, in a live session:

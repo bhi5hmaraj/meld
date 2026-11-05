@@ -4,7 +4,7 @@ import { deliver, discard, markWorker, startRun } from '../core/actions'
 import { bindWorker, declareFinal, isFailure, startRun as startBoard, stopRun, takeIntegration } from '../core/board'
 import type { ProcessResult } from '../core/ports'
 import type { AgentSpec, Change, Run, VcsKind, WorkerId } from '../types'
-import { HEAD, SessionStateIo } from './fake-io'
+import { FakeIo, HEAD } from './fake-io'
 
 const NOW = 1_800_000_000_000
 const FULL = 'f'.repeat(40)
@@ -33,55 +33,44 @@ function ready(vcs: VcsKind = 'git'): Run {
 
 /**
  * w1 ends its turn while meld removes the folder of the run, as a worker that meld told to stop, or that ends after the
- * final commit, can do. The end of its turn writes the run, and with no meld mcp each write of the run updates its
- * board.json. The files that meld writes in the folder of the run after it removed the folder are in late.
+ * final commit, can do. The run that the store holds when the removal starts is in atRemoval: a run that is still live
+ * then can get a new agent in a folder that is going away.
  */
-class LateStepIo extends SessionStateIo {
-  removed = false
-  late: string[] = []
+class RemovalIo extends FakeIo {
+  atRemoval: Run | null | undefined = undefined
 
   override async run(argv: string[], cwd: string): Promise<ProcessResult> {
-    const ran = await super.run(argv, cwd)
     if (argv.join(' ') === REMOVE_HOME) {
-      this.removed = true
+      this.atRemoval = this.current
       await markWorker(this, 'agent-1', 'idle', 100)
     }
-    return ran
-  }
-
-  override async writeFile(path: string, text: string): Promise<void> {
-    if (this.removed && path.startsWith(`${HOME}/`)) this.late.push(path)
-    await super.writeFile(path, text)
+    return super.run(argv, cwd)
   }
 }
 
-function ioWith(run: Run): LateStepIo {
-  const io = new LateStepIo()
+function ioWith(run: Run): RemovalIo {
+  const io = new RemovalIo()
   io.current = run
   return io
 }
 
-test('Deliver marks the run delivered before it removes the folder, so a worker that ends its turn then writes no board.json there', async () => {
+test('Deliver marks the run delivered before it removes the folder, and a worker that ends its turn then changes nothing', async () => {
   const io = ioWith(ready())
   expect(await deliver(io)).toBe(`Merged ${FULL.slice(0, 7)} into your branch.`)
-  expect(io.removed).toBe(true)
-  expect(io.late).toEqual([])
+  expect(io.atRemoval?.state).toBe('delivered')
   expect(io.current?.state).toBe('delivered')
 })
 
 test('Deliver on jj marks the run delivered before it removes the folder', async () => {
   const io = ioWith(ready('jj'))
   expect(await deliver(io)).toBe(`Merged ${FULL.slice(0, 7)} into your branch.`)
-  expect(io.removed).toBe(true)
-  expect(io.late).toEqual([])
-  expect(io.current?.state).toBe('delivered')
+  expect(io.atRemoval?.state).toBe('delivered')
 })
 
-test('Discard clears the run before it removes the folder, so a worker that ends its turn then writes no board.json there', async () => {
+test('Discard clears the run and its facts before it removes the folder, and a worker that ends its turn then writes no run', async () => {
   const io = ioWith(working())
   expect(await discard(io)).toBe('The run and its workspaces are gone.')
-  expect(io.removed).toBe(true)
-  expect(io.late).toEqual([])
+  expect(io.atRemoval).toBeNull()
   expect(io.current).toBeNull()
   expect(io.facts).toBeNull()
 })
@@ -89,16 +78,13 @@ test('Discard clears the run before it removes the folder, so a worker that ends
 test('Discard of a stopped jj run clears the run before it removes the folder', async () => {
   const io = ioWith(stopRun(working('jj'), NOW))
   expect(await discard(io)).toBe('The run and its workspaces are gone.')
-  expect(io.removed).toBe(true)
-  expect(io.late).toEqual([])
-  expect(io.current).toBeNull()
+  expect(io.atRemoval).toBeNull()
 })
 
 test('a start over a stopped run with no work clears that run before it removes its folder', async () => {
   const io = ioWith(stopRun(working(), NOW))
   const result = await startRun(io, '/repo', { request: 'More', agents: [WORKER, WORKER], vcs: 'git' })
-  expect(io.removed).toBe(true)
-  expect(io.late).toEqual([])
+  expect(io.atRemoval).toBeNull()
   expect(io.current?.id).toBe(`${NOW.toString(36)}0000`)
   expect(result.text).toBe(`Run ${NOW.toString(36)}0000: 2 workers on git, from commit ${HEAD.slice(0, 7)}.`)
 })

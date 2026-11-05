@@ -1,4 +1,3 @@
-import { withBoardFile } from '../core/board-file'
 import { MemoryStore } from '../core/memory-store'
 import type { AgentState, Files, FolderEntry, Io, ProcessResult, RunRecord, RunRecords, SpawnArgs, Spawned } from '../core/ports'
 import type { Run } from '../types'
@@ -19,9 +18,6 @@ export class FakeIo extends MemoryStore implements Io, Files, RunRecords {
   commands: string[] = []
   cwds: Record<string, string> = {}
   files: Record<string, string> = {}
-  /** The path of each file write, in order. */
-  fileWrites: string[] = []
-  unwritable: string[] = []
   spawned: SpawnArgs[] = []
   ranCommands: string[] = []
   sent: string[] = []
@@ -94,8 +90,6 @@ export class FakeIo extends MemoryStore implements Io, Files, RunRecords {
   }
 
   async writeFile(path: string, text: string): Promise<void> {
-    if (this.unwritable.includes(path)) throw new Error(`EACCES: ${path}`)
-    this.fileWrites.push(path)
     this.files[path] = text
   }
 
@@ -141,12 +135,6 @@ export class FakeIo extends MemoryStore implements Io, Files, RunRecords {
     return entries
   }
 
-  async readText(path: string): Promise<string> {
-    const text = this.files[path]
-    if (text === undefined) throw new Error(`ENOENT: no such file or directory, open '${path}'`)
-    return text
-  }
-
   catOf(path: string): ProcessResult {
     const text = this.files[path]
     return text === undefined ? refusal(`cat: ${path}: No such file or directory`) : answer(text)
@@ -164,14 +152,6 @@ export class FakeIo extends MemoryStore implements Io, Files, RunRecords {
     const parent = path.slice(0, cut)
     const entries = this.listings[parent]
     if (entries) this.listings[parent] = entries.filter(entry => entry.name !== path.slice(cut + 1))
-  }
-}
-
-/** The engine with no meld mcp: the session state keeps the run, and board.json in the folder of the run keeps a record of it. */
-export class SessionStateIo extends FakeIo {
-  override async write(change: (run: Run | null) => Run | null): Promise<Run | null> {
-    await withBoardFile({ read: () => super.read(), write: next => super.write(next) }, (path, text) => this.writeFile(path, text)).write(change)
-    return this.current
   }
 }
 

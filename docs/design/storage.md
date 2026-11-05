@@ -72,7 +72,7 @@ Step 10b adds the table `actions` (schema 3): the work that only the leader of a
 
 Schema 4 adds the table `runs`: a record of each run, for `/meld-clean`. A record holds the board of the run, its state, version control, repository, base and workers, and the time of its last change. Each write of a board updates the record of its run in the same transaction. A run that leaves its board keeps its record, and its board is null from then on. A value that the run lacks is null in its record, so the write of an odd run does not fail. Each board also records the time of its last change (`changed_at`). The migration makes a record of each run that a board holds, with the time of its last commit.
 
-So with Bun, meld writes no `board.json`. Before, the core wrote the full board there after each write, so that the run outlived the session. Only a store that ends with the session keeps that file now: the session state, without Bun (`core/board-file.ts`). `/meld-clean` reads the record of a folder from `run_records`, and else from its `board.json`, which an older meld wrote.
+So meld writes no `board.json`. Before, the core wrote the full board there after each write, so that the run outlived the session. `/meld-clean` reads the record of a folder from `run_records` alone. A folder with no record, from an older meld or from a session without Bun, loses only its folder: meld does not know its repository, so its branches stay.
 
 At its start, `meld mcp` in the plugin mode and in the chat mode removes the rows that no step needs any more, in one transaction. A row goes when it is older than 30 days (`RETENTION_MS`):
 

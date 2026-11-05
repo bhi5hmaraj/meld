@@ -41,13 +41,9 @@ export type CodeHost = {
   writeFile(path: string, text: string): Promise<void>
 }
 
-/**
- * What /meld-clean reads of the machine beside the CodeHost: the entries of a folder, and the text of a file. Each call
- * rejects when the path is missing. Only the hook of the commands gives it.
- */
+/** What /meld-clean reads of the machine beside the CodeHost: the entries of a folder. A list rejects when the folder is missing. Only the hook of the commands gives it. */
 export type Files = {
   list(path: string): Promise<FolderEntry[]>
-  readText(path: string): Promise<string>
 }
 
 /**

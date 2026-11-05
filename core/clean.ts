@@ -1,6 +1,5 @@
 import type { VcsKind, WorkerId } from '../types'
 import { LIVE_STATES } from './actions'
-import { BOARD_FILE } from './board-file'
 import { command } from './git'
 import type { Clock, CodeHost, Files, RunRecord, RunRecords, Store } from './ports'
 import { heldWork, MELD_ROOT, removeFolder, runHome, SAFE_ID, vcsFor, workspaceOf } from './vcs'
@@ -20,14 +19,7 @@ const RECORD_NOT_READABLE = 'record not readable'
 /** What the record of a run tells: its state, and what a read of its workspaces and a removal need. */
 type Board = { state: string; vcs: VcsKind; repo: string; base: string; workers: WorkerId[] }
 
-/** The values of a record as it comes, from the board file of meld mcp or from a board.json, before meld checks them. */
-type Facts = { state: unknown; vcs: unknown; repo: unknown; base: unknown; workers: readonly unknown[] }
-
-/**
- * A folder under /tmp/meld that is not the run of this session. Its record is the record of its run in the board file
- * of meld mcp, or else the board.json in the folder, which meld writes when meld mcp does not run, and which an older
- * meld wrote for each run.
- */
+/** A folder under /tmp/meld that is not the run of this session, with the record of its run that the board file of meld mcp keeps. */
 type Folder = {
   id: string
   /** When its record last changed; absent when it has none. */
@@ -153,8 +145,8 @@ function workText(work: HeldWork): string {
 
 /**
  * The run of a folder as a read of its lanes and a removal need it: the version control, the repository and the base
- * of its record. The workspaces come from the id of the folder and the worker ids, never from the paths and refs in a
- * board.json, so meld reads and removes only what it made for that run.
+ * of its record. The workspaces come from the id of the folder and the worker ids, so meld reads and removes only what
+ * it made for that run.
  */
 function placeOf(id: string, board: Board): LanePlace & { vcs: VcsKind } {
   const workers = board.workers.map(worker => ({ id: worker, ...workspaceOf(board.vcs, id, worker) }))
@@ -168,12 +160,10 @@ async function removeOne(io: CodeHost, folder: Folder): Promise<void> {
   await vcsFor(board.vcs).remove(io, placeOf(folder.id, board))
 }
 
-/** The folders of other runs. Without the records of meld mcp, each folder has only its board.json. */
+/** The folders of other runs, each with the record of its run. Without meld mcp, no folder has a record. */
 async function foldersOf(io: Files & RunRecords, stored: string | undefined): Promise<Folder[]> {
   const records = await io.runRecords().catch((): RunRecord[] => [])
-  const folders: Folder[] = []
-  for (const id of await folderIds(io)) if (id !== stored) folders.push(await folderOf(io, id, records))
-  return folders
+  return (await folderIds(io)).filter(id => id !== stored).map(id => folderOf(id, records))
 }
 
 /** The folders under /tmp/meld whose names are run ids, sorted; none when /tmp/meld is missing. */
@@ -185,32 +175,11 @@ async function folderIds(io: Files): Promise<string[]> {
     .sort()
 }
 
-/** A folder with the record of its run in the board file of meld mcp, or else with its board.json. */
-async function folderOf(io: Files, id: string, records: readonly RunRecord[]): Promise<Folder> {
+function folderOf(id: string, records: readonly RunRecord[]): Folder {
   const record = records.find(one => one.id === id)
-  if (record) return withBoard(id, record.changedAt, checked(record))
-  const entries = await io.list(runHome(id)).catch(() => [])
-  const file = entries.find(entry => entry.name === BOARD_FILE && entry.kind === 'file')
-  if (!file) return { id }
-  const text = await io.readText(`${runHome(id)}/${BOARD_FILE}`).catch(() => undefined)
-  return withBoard(id, file.mtimeMs, text === undefined ? undefined : boardOf(id, text))
-}
-
-function withBoard(id: string, changedAt: number, board: Board | undefined): Folder {
-  return board ? { id, changedAt, board } : { id, changedAt }
-}
-
-/** What a board.json tells of the run of the folder `id`; undefined when it is not JSON of a run with that id that meld can read. */
-function boardOf(id: string, text: string): Board | undefined {
-  let value: unknown
-  try {
-    value = JSON.parse(text)
-  } catch {
-    return undefined
-  }
-  if (!isRecord(value) || value.id !== id || !Array.isArray(value.workers)) return undefined
-  const entries: unknown[] = value.workers
-  return checked({ state: value.state, vcs: value.vcs, repo: value.repo, base: value.base, workers: entries.map(worker => (isRecord(worker) ? worker.id : undefined)) })
+  if (!record) return { id }
+  const board = checked(record)
+  return board ? { id, changedAt: record.changedAt, board } : { id, changedAt: record.changedAt }
 }
 
 /**
@@ -218,23 +187,23 @@ function boardOf(id: string, text: string): Board | undefined {
  * id as its base, and workers that meld names. A list with no workers, or with an entry that is not a worker of meld,
  * would leave workspaces of the folder out of the work check, so --all would find no work in them and remove them.
  */
-function checked(facts: Facts): Board | undefined {
-  const { state, vcs, repo, base } = facts
+function checked(record: RunRecord): Board | undefined {
+  const { state, vcs, repo, base } = record
   if (typeof state !== 'string' || typeof repo !== 'string' || !repo.startsWith('/')) return undefined
   if ((vcs !== 'git' && vcs !== 'jj') || typeof base !== 'string' || !COMMIT_ID.test(base)) return undefined
-  const workers = facts.workers.filter((worker): worker is WorkerId => typeof worker === 'string' && WORKER_ID.test(worker))
-  if (!workers.length || workers.length < facts.workers.length) return undefined
+  const workers = record.workers.filter((worker): worker is WorkerId => typeof worker === 'string' && WORKER_ID.test(worker))
+  if (!workers.length || workers.length < record.workers.length) return undefined
   return { state, vcs, repo, base, workers }
 }
 
 /**
  * A folder can hold the live run of another session on this computer when its record changed in the last 24 hours and
- * says starting, working or ready, or cannot be read while a run writes it. The state alone proves nothing: a run that
- * no session stores any more keeps the last state it wrote.
+ * says starting, working or ready. The state alone proves nothing: a run that no session stores any more keeps the last
+ * state it wrote.
  */
 function isMaybeLive(folder: Folder, now: number): boolean {
-  if (folder.changedAt === undefined || now - folder.changedAt >= MAYBE_LIVE_MS) return false
-  return !folder.board || LIVE_STATES.has(folder.board.state)
+  if (!folder.board || folder.changedAt === undefined || now - folder.changedAt >= MAYBE_LIVE_MS) return false
+  return LIVE_STATES.has(folder.board.state)
 }
 
 /** The size of a folder as du counts it; undefined when du gives no number. */
@@ -248,8 +217,4 @@ function sizeText(kb: number): string {
   if (kb < 1024) return `${kb} KB`
   if (kb < 1024 * 1024) return `${Math.round(kb / 1024)} MB`
   return `${(kb / (1024 * 1024)).toFixed(1)} GB`
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
 }
