@@ -117,8 +117,8 @@ function settled(run: Run): Run {
   return run.workers.some(worker => worker.agentId) ? { ...run, state: 'working' } : { ...run, state: 'stopped', endedAt: run.startedAt }
 }
 
-export function markBriefed(run: Run, id: WorkerId): Run {
-  return replaceWorker(run, { ...findWorker(run, id), briefed: true })
+export function markBriefed(run: Run, id: WorkerId, briefed = true): Run {
+  return replaceWorker(run, { ...findWorker(run, id), briefed })
 }
 
 /** A tool call of a worker counts for the worker and for each leaf that it claimed. */
@@ -128,13 +128,9 @@ export function countCall(run: Run, id: WorkerId): Run {
   return replaceWorker({ ...run, tasks }, { ...worker, calls: (worker.calls ?? 0) + 1 })
 }
 
-/**
- * The first leaf of the worker with no nudge, when the leaf has the calls of its size limit or more, or the context of
- * the worker passed CONTEXT_CAP: it gets its nudge, so meld tells its owner one time.
- */
+/** The first leaf of the worker with the calls of its size limit or more and no nudge: it gets its nudge, so meld tells its owner one time. */
 export function takeSplitNudge(run: Run, by: WorkerId): { run: Run; task?: Task } {
-  const full = overCap(findWorker(run, by))
-  const task = run.tasks.find(one => isClaimedBy(one, by) && !one.nudged && (full || (one.calls ?? 0) >= SPLIT_CALLS[one.size ?? 'M']))
+  const task = run.tasks.find(one => isClaimedBy(one, by) && !one.nudged && (one.calls ?? 0) >= SPLIT_CALLS[one.size ?? 'M'])
   if (!task) return { run }
   const nudged: Task = { ...task, nudged: true }
   return { run: { ...run, tasks: run.tasks.map(one => (one.id === task.id ? nudged : one)) }, task: nudged }
@@ -174,19 +170,15 @@ export function resumeWorker(run: Run, id: WorkerId, now: number): Change<Worker
 export const AFFINITY_SHARE = 0.5
 
 /**
- * The most tokens that the context of an agent holds before meld asks for a fresh agent. Each model call reads the
- * whole context again, so on a window of 1M tokens a long session makes cache reads most of the cost of a run.
+ * The most tokens in the context of an agent: a meld worker compacts its conversation there, and an idle worker past it
+ * gets a fresh agent. Each model call reads the whole context again, so on a window of 1M tokens a long session makes
+ * cache reads most of the cost of a run.
  */
 export const CONTEXT_CAP = 150_000
 
 /** The agent of an idle worker goes on in its own session while its context fills less than AFFINITY_SHARE of its window, and less than CONTEXT_CAP. */
 export function keepsSession(worker: Worker): boolean {
   return worker.agentId !== undefined && worker.context !== undefined && worker.context.used < Math.min(AFFINITY_SHARE * worker.context.size, CONTEXT_CAP)
-}
-
-/** The context of the agent of the worker holds CONTEXT_CAP tokens or more. */
-export function overCap(worker: Worker): boolean {
-  return (worker.context?.used ?? 0) >= CONTEXT_CAP
 }
 
 export function setContext(run: Run, by: WorkerId, context: AgentContext): Run {

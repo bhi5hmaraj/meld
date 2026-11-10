@@ -1,6 +1,6 @@
 import type { AgentContext, BoardView, Change, Facts, Failure, Final, NewTask, PaneView, Run, Task, TaskSize, VcsKind, Worker, WorkerId, WorkerState } from '../types'
 import * as board from './board'
-import { contextNudge, CONTROL_TOOLS, HAND_BACK, integrateDetail, integrateStep, missingWorkText, splitNudge, TOOL, wakeText, workerPrompt, workerRules } from './contract'
+import { COMPACT_KEEP, CONTROL_TOOLS, HAND_BACK, integrateDetail, integrateStep, missingWorkText, splitNudge, TOOL, wakeText, workerPrompt, workerRules } from './contract'
 import type { Control } from './contract'
 import { GIT_MIN, gitVersion, headCommit, isDirty, isOldGit, repoRoot } from './git'
 import type { Clock, CodeHost, CommandReply, FactsStore, Io, Runner, Spawned, Store, Surface, TokenUsage, ToolCall, ToolReply } from './ports'
@@ -318,7 +318,7 @@ function countedCall(run: Run, by: WorkerId, now: number): { run: Run; task?: Ta
 
 async function sendNudge(io: Store & Runner, by: WorkerId, task: Task | undefined): Promise<void> {
   const worker = task ? (await readRun(io))?.workers.find(one => one.id === by) : undefined
-  if (task && worker) tell(io, worker, board.overCap(worker) ? contextNudge(task.id, worker.context?.used ?? 0) : splitNudge(task.id))
+  if (task && worker) tell(io, worker, splitNudge(task.id))
 }
 
 /** A refusal leaves the run as it was; a change answers with its value and the steers that the worker has not seen. */
@@ -714,6 +714,18 @@ export async function countStep(io: Store, agentId: string | undefined, usage: T
     const counted = board.addTokens(current, worker.id, tokens)
     return window ? board.setContext(counted, worker.id, { used: contextTokens(usage), size: window }) : counted
   })
+}
+
+/**
+ * The agent of a worker compacts its conversation: its rules were in its first board reply, so its next board read gives
+ * them again. Gives what the summary keeps, or undefined for an agent that is no worker.
+ */
+export async function compactWorker(io: Store, agentId: string): Promise<string | undefined> {
+  const run = await readRun(io)
+  const worker = run ? board.workerOf(run, agentId) : undefined
+  if (!worker) return undefined
+  await writeRun(io, current => board.markBriefed(current, worker.id, false))
+  return COMPACT_KEEP
 }
 
 /** An ACP agent reported its context window. */

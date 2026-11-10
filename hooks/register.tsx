@@ -1,7 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentStatus, HookFailure, Register } from 'claude-code'
 
-import { controlRun, countStep, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll } from '../core/actions'
+import { compactWorker, controlRun, countStep, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll } from '../core/actions'
+import { CONTEXT_CAP } from '../core/board'
 import { cleanFolders } from '../core/clean'
 import type { Action, BoardRead, Boards, BoardSummary, Committed } from '../core/remote-store'
 import { resumeRun } from '../core/resume'
@@ -118,7 +119,7 @@ export const register: Register = on => {
     }
     for (const spec of TOOL_SPECS) await $.tool.register(spec)
     await $.agent
-      .register({ name: 'worker', description: 'A meld worker. meld starts it for a run; never start it yourself.', prompt: WORKER_SYSTEM })
+      .register({ name: 'worker', description: 'A meld worker. meld starts it for a run; never start it yourself.', prompt: WORKER_SYSTEM, autoCompactWindow: CONTEXT_CAP })
       .catch(() => $.ui.toast('meld: the meld:worker agent type did not register; use --agents with another type.'))
     await $.command.register({ name: 'meld', description: 'Start several agents on one task, each in its own workspace', argumentHint: '[--agents 3] [--model sonnet] [--vcs jj] <task>' })
     await $.command.register({ name: 'meld-steer', description: 'Give every meld worker a new instruction', argumentHint: '<instruction>', immediate: true })
@@ -443,6 +444,29 @@ export const register: Register = on => {
     await countStep(io, e.agentId, response.usage, window).catch(() => undefined)
     return response
   })
+
+  /**
+   * A worker compacts at CONTEXT_CAP: the summary keeps its task, and its next board read gives its rules again.
+   * ponytail: a precompute counts as the compaction, so a board read before the swap can take the rules early.
+   */
+  on('session.compact', async ($, e, next) => {
+    if (e.agentId === undefined) return next(e)
+    const io: Store = sessionStore(
+      board,
+      {
+        read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+        commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
+      },
+      {
+        read: () => read($, runRef),
+        write: change => update($, runRef, change),
+        readFacts: () => read($, factsRef),
+        writeFacts: facts => update($, factsRef, () => facts),
+      },
+    )
+    const keep = await compactWorker(io, e.agentId)
+    return next(keep ? { ...e, instructions: e.instructions ? `${e.instructions}\n\n${keep}` : keep } : e)
+  }).catch(($, e, next) => next(e))
 
 
   on('turn.complete', async ($, e, next) => {

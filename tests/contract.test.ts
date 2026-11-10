@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { startRun } from '../core/board'
-import { BOARD_TOOLS, contextNudge, SESSION_TOOLS, splitNudge, TOOL, TOOL_SPECS, workerPrompt, workerRules } from '../core/contract'
+import { BOARD_TOOLS, SESSION_TOOLS, splitNudge, TOOL, TOOL_SPECS, workerPrompt, workerRules } from '../core/contract'
 import type { Run, VcsKind, WorkerId } from '../types'
 
 const IDS: WorkerId[] = ['w1', 'w2', 'w3']
@@ -130,8 +130,4 @@ test('the rules list WAITING with the board errors that fail one call', () => {
 
 test('the nudge tells the owner of a leaf to split it or finish it', () => {
   expect(splitNudge(4)).toBe('Split #4 into smaller tasks, or finish it.')
-})
-
-test('the context nudge names the tokens in the context, and tells the worker to split or finish so that a fresh agent does the rest', () => {
-  expect(contextNudge(4, 151_400)).toBe('Your context holds 151k tokens. Split #4 into smaller tasks, or finish it, so that a fresh agent does the rest.')
 })

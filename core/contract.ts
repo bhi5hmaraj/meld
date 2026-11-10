@@ -75,7 +75,11 @@ export const STEER_PRESETS = [
 /** The end of each turn of a worker goes to the session of the person: the system prompt and the spawn prompt ask for one line. */
 const LAST_MESSAGE = 'Your last message goes to the session of the person. Make it one line, for example: finished #4, commit 4a0bde04. The board keeps the detail.'
 
-export const WORKER_SYSTEM = `You are a meld worker: one of several agents that make one result together, each in its own folder, through a shared board. Call ${TOOL.board} first. Its first reply holds your rules, your folder, the other workers and the tasks. Follow those rules, and keep each message short. ${LAST_MESSAGE}`
+export const WORKER_SYSTEM = `You are a meld worker: one of several agents that make one result together, each in its own folder, through a shared board. Call ${TOOL.board} first. Its first reply holds your rules, your folder, the other workers and the tasks. Follow those rules, and keep each message short. When your conversation starts with a summary of earlier work, call ${TOOL.board} before anything else: its reply gives your rules again. ${LAST_MESSAGE}`
+
+/** What the summary of a compacted worker keeps: the facts that its work needs and that no board read gives again. */
+export const COMPACT_KEEP =
+  'This agent is a meld worker. Keep the id and version of each task that it claimed, its folder and ref, each commit that it made and what the commit does, what is left to do, the checks that fail and why, and every steer of the person. Leave out file contents and command output that it can read again.'
 
 const TASK_VERSION = {
   task: { type: 'number', description: 'The task number, #n on the board.' },
@@ -319,11 +323,6 @@ function jjGuide(you: Worker, peers: Worker[], line: string): string {
 /** What meld tells the owner of a leaf after the SPLIT_CALLS of its size, with no finish and no split: S 30, M 60, L 120 tool calls. */
 export function splitNudge(task: number): string {
   return `Split #${task} into smaller tasks, or finish it.`
-}
-
-/** What meld tells the owner of a leaf when the context of its agent passed the cap: a fresh agent does the rest, with the handover. */
-export function contextNudge(task: number, used: number): string {
-  return `Your context holds ${Math.round(used / 1000)}k tokens. Split #${task} into smaller tasks, or finish it, so that a fresh agent does the rest.`
 }
 
 /** The longest reason of a failed merge that the detail of a task "integrate #N" quotes. */
