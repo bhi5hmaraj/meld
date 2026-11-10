@@ -230,6 +230,20 @@ A restarted agent reads its rules at its first board read. meld reads the agent 
 
 </details>
 
+## What changed in 0.10.1
+
+These fixes come from the issues of 10 November 2026. A run of two workers in a session with no person checked them live.
+
+- **The reason of a failed hook.** A board or control call whose hook fails says why: the kind of failure and the first 300 characters of the reason. Before, it said only "meld: the board failed. Try the call again." ([#7](https://github.com/bhi5hmaraj/meld/issues/7))
+- **A run with no board file says so.** When `meld mcp` does not connect, a start says that its run ends with the session, and that `/meld-resume` cannot take it. ([#8](https://github.com/bhi5hmaraj/meld/issues/8))
+- **Workers compact.** A `meld:worker` compacts its conversation before 150k tokens, near 120k, and goes on with its task. The summary keeps the claimed task, the folder, the commits and the steers. The next board read gives the rules again. An idle worker past 150k gets a fresh agent. ([#6](https://github.com/bhi5hmaraj/meld/issues/6))
+- **The cost of a worker.** The token count of a worker counts each token at its price against input: a cache read 0.1, a cache write 1.25 and an output token 5. Before, it left out cache reads, which are most of the cost. ([#6](https://github.com/bhi5hmaraj/meld/issues/6))
+- **Version control in the folder of a worker.** The shell of a worker starts in the folder of the session. meld now allows `git -C` and `jj -R` in the own folder of a worker, so a run with no person can commit.
+- **An archive of each run.** Deliver, Discard and a new start write `~/.meld/archive/<run>.json`, with mode 600, before they remove a run. When meld cannot write it, the run stays. ([#5](https://github.com/bhi5hmaraj/meld/issues/5))
+- **A short board for the main session.** `board` with `view: "status"` gives the task counts, a row for each task and each agent, and the new log entries. ([#10](https://github.com/bhi5hmaraj/meld/issues/10))
+- **Rules and notes.** The rules tell each agent to write only in its own folder. The README lists the three `tool.check` hooks, and what stops when another plugin skips them. ([#9](https://github.com/bhi5hmaraj/meld/issues/9)) It also says that Claude Code sends a task notification after each hand-back. ([#11](https://github.com/bhi5hmaraj/meld/issues/11))
+- **The daily backup works.** SQLite 3.51 refused `VACUUM INTO` a file that was there, so `meld mcp` made no backup. Now the copy makes its own part file.
+
 ## What changed in 0.10.0
 
 0.10.0 holds the changes of 0.9 and 0.10, which ship together. The checks of Codex used a stand-in ACP agent, and Gemini and Cursor have no live check yet: the first runs with the real agents come next.
