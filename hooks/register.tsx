@@ -395,7 +395,7 @@ export const register: Register = on => {
   })
 
 
-  /** Each model call of a worker adds its tokens at once: a worker does a task in one long turn. */
+  /** Each model call of a worker adds its cost in input tokens at once: a worker does a task in one long turn. */
   on('turn.step', async function* ($, e, next) {
     const response = yield* next(e)
     if (e.agentId === undefined) return response
