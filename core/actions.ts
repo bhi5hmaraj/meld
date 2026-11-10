@@ -722,10 +722,19 @@ export function spawnVerdict<V extends { decision: string }>(verdict: V, plugin:
   return { decision: 'allow', reason: SPAWN_APPROVAL }
 }
 
-/** The tokens a turn added: its input, the context it wrote to the cache and its output, not the cached context it read again. */
-export function freshTokens(usage: TokenUsage | undefined): number {
+/** The price of a cache read, a cache write and an output token, against an input token. */
+const CACHE_READ_PRICE = 0.1
+const CACHE_WRITE_PRICE = 1.25
+const OUTPUT_PRICE = 5
+
+/**
+ * The cost of a model call in input tokens: each kind of token counts at its price against input. Each call reads the
+ * whole cached context again, so cache reads can be most of the cost of a long run.
+ */
+export function costTokens(usage: TokenUsage | undefined): number {
   if (!usage) return 0
-  return usage.input_tokens + usage.cache_creation_input_tokens + usage.output_tokens
+  const read = (usage.cache_read_input_tokens ?? 0) * CACHE_READ_PRICE
+  return Math.round(usage.input_tokens + read + usage.cache_creation_input_tokens * CACHE_WRITE_PRICE + usage.output_tokens * OUTPUT_PRICE)
 }
 
 /** The tokens in the context of a model call: its whole input, the cached part too. */
@@ -734,12 +743,12 @@ function contextTokens(usage: TokenUsage): number {
 }
 
 /**
- * One model call of an agent: its fresh tokens add up on its worker at once. A worker does a task in one long turn, so
+ * One model call of an agent: its cost in input tokens adds up on its worker at once. A worker does a task in one long turn, so
  * a count at the end of the turn showed 0 tokens while it worked. With the window of the model of the agent, the call
  * also gives the context of the agent. The main session and agents that are no worker count nothing.
  */
 export async function countStep(io: Store, agentId: string | undefined, usage: TokenUsage | null | undefined, window?: number): Promise<void> {
-  const tokens = freshTokens(usage ?? undefined)
+  const tokens = costTokens(usage ?? undefined)
   if (agentId === undefined || !usage || !tokens) return
   const run = await readRun(io)
   const worker = run ? board.workerOf(run, agentId) : undefined
