@@ -111,6 +111,15 @@ Then ask the chat: "start a meld run with 2 codex agents to add a dark theme". T
 
 ## How it works
 
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-dark.svg">
+  <img alt="The parts of meld: the session with the plugin and the pane, meld mcp, the agents, the workspaces and your branch" src="docs/images/architecture-light.svg" width="640">
+</picture>
+</p>
+
+A thick border marks the parts of meld, and a dashed arrow a call of the board tools. Graphviz draws the picture from [docs/images/architecture.dot](docs/images/architecture.dot).
+
 1. **Workspaces:** meld makes one workspace for each agent from `HEAD`, under `/tmp/meld/<run>/`.
 2. **Plan:** the agents plan the request as small tasks on the board. The first plan wins.
 3. **Work:** each agent claims a task, commits in its workspace, and hands back with one line.

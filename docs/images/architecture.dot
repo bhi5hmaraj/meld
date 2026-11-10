@@ -1,0 +1,56 @@
+// The architecture of meld. The colors come from the command line, so one source gives both themes:
+//   dot -Tsvg -Gbgcolor=transparent -Gcolor=#8c959f -Gfontcolor=#1f2328 -Ncolor=#57606a -Nfontcolor=#1f2328 -Ecolor=#6e7781 -Efontcolor=#57606a docs/images/architecture.dot -o docs/images/architecture-light.svg
+//   dot -Tsvg -Gbgcolor=transparent -Gcolor=#6e7681 -Gfontcolor=#e6edf3 -Ncolor=#8b949e -Nfontcolor=#e6edf3 -Ecolor=#8b949e -Efontcolor=#9198a1 docs/images/architecture.dot -o docs/images/architecture-dark.svg
+// A thick border marks the parts that meld owns, a dashed arrow a call of the board tools, and a dashed box an optional client.
+digraph meld {
+  graph [rankdir=TB, fontname="Helvetica", fontsize=13, nodesep=0.5, ranksep=0.55, pad=0.2, newrank=true]
+  node [shape=box, style=rounded, fontname="Helvetica", fontsize=12, margin="0.18,0.08"]
+  edge [fontname="Helvetica", fontsize=10, arrowsize=0.7]
+
+  you [label="You", shape=plaintext, fontsize=13]
+  chat [label="Cursor or another\nMCP chat", style="rounded,dashed"]
+
+  subgraph cluster_session {
+    label="Claude Code session"; labelloc=b; style="rounded,dashed"
+    plugin [label="meld plugin\nrules, guards, restarts", penwidth=2.2]
+    pane [label="meld pane", penwidth=2.2]
+    claude [label="Claude agents\nmeld:worker subagents"]
+  }
+
+  subgraph cluster_host {
+    label="meld mcp (Bun)"; style="rounded,dashed"
+    mcp [label="board tools\nACP runner", penwidth=2.2]
+    db [label="~/.meld/meld.db\nboards, events, context", shape=cylinder, style="", penwidth=2.2]
+  }
+
+  acp [label="ACP agents\nCodex, Gemini, Cursor"]
+
+  subgraph cluster_run {
+    label="/tmp/meld/<run>/"; style="rounded,dashed"
+    ws [label="one workspace\nper agent"]
+    line [label="integration line", penwidth=2.2]
+  }
+
+  branch [label="your branch"]
+
+  { rank=same; you; chat }
+  { rank=same; plugin; pane }
+  { rank=same; claude; mcp; db }
+  { rank=same; acp }
+  { rank=same; ws; line; branch }
+
+  you -> plugin [label=" /meld, steer, deliver"]
+  you -> pane [label=" watch, press"]
+  plugin -> claude [label=" starts, restarts"]
+  claude -> plugin [label=" board tools", style=dashed]
+  plugin -> mcp [label="commits\nthe board"]
+  pane -> mcp [label=" reads the board\n (Unix socket)", constraint=false]
+  chat -> mcp [label=" meld mcp --chat"]
+  mcp -> db [label="SQLite"]
+  mcp -> acp [label=" ACP: prompts,\n verdicts"]
+  acp -> mcp [label=" board tools", style=dashed]
+  claude -> ws [label=" commit"]
+  acp -> ws [label=" commit"]
+  ws -> line [label="merge at each\nfinish, no agent"]
+  line -> branch [label="Deliver: one\nmerge commit"]
+}
