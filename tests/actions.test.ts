@@ -2,7 +2,8 @@ import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
 import { deliver, discard, freshTokens, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, SPAWN_APPROVAL, spawnVerdict, startFromView, startRun, steerRun, stopOne } from '../core/actions'
-import { addTasks, bindWorker, claimTask, declareFinal, isFailure, setActivity, startRun as startBoard, steer, stopRun, stopWorker, takeIntegration } from '../core/board'
+import { addTasks, bindWorker, claimTask, CONTEXT_CAP, declareFinal, isFailure, setActivity, startRun as startBoard, steer, stopRun, stopWorker, takeIntegration } from '../core/board'
+import { contextNudge } from '../core/contract'
 import { JJ_LANE_TEMPLATE, JJ_RESOLVE_TEMPLATE } from '../core/vcs'
 import type { AgentSpec, Change, Run, VcsKind, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
@@ -965,4 +966,14 @@ test('the claim of a stopped worker through the board tool fails, and the task s
   const replied = await serveTool(io, call({ tool: 'mcp__meld__claim', task: 1, version: 1, agentId: 'agent-2' }))
   expect(JSON.parse(String(replied.result))).toMatchObject({ error: 'WORKER_STOPPED' })
   expect(io.current?.tasks[0]).toMatchObject({ state: 'open', version: 1 })
+})
+
+test('a worker whose context passes the cap is told one time to split its leaf or finish it, before the call limit', async () => {
+  const claimed = claimedBy('w2')
+  const full = { used: CONTEXT_CAP, size: 1_000_000 }
+  const io = ioWith({ ...claimed, workers: claimed.workers.map(worker => (worker.id === 'w2' ? { ...worker, context: full } : worker)) })
+  await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
+  await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
+  expect(io.sent).toEqual([`agent-2: ${contextNudge(1, CONTEXT_CAP)}`])
+  expect(io.current?.tasks[0]).toMatchObject({ calls: 2, nudged: true })
 })

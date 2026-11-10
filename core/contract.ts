@@ -321,6 +321,11 @@ export function splitNudge(task: number): string {
   return `Split #${task} into smaller tasks, or finish it.`
 }
 
+/** What meld tells the owner of a leaf when the context of its agent passed the cap: a fresh agent does the rest, with the handover. */
+export function contextNudge(task: number, used: number): string {
+  return `Your context holds ${Math.round(used / 1000)}k tokens. Split #${task} into smaller tasks, or finish it, so that a fresh agent does the rest.`
+}
+
 /** The longest reason of a failed merge that the detail of a task "integrate #N" quotes. */
 const MERGE_ERROR_CHARS = 200
 
