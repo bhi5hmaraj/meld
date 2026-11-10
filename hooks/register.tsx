@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentStatus, HookFailure, Register } from 'claude-code'
 
-import { compactWorker, controlRun, countStep, gitVerdict, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll } from '../core/actions'
+import { compactWorker, controlRun, countStep, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll, vcsVerdict } from '../core/actions'
 import { CONTEXT_CAP } from '../core/board'
 import { cleanFolders } from '../core/clean'
 import type { Action, BoardRead, Boards, BoardSummary, Committed } from '../core/remote-store'
@@ -152,8 +152,8 @@ export const register: Register = on => {
     decision: 'deny',
   }))
 
-  // A worker runs git with -C and its own folder, and the engine asks a person for that form: see gitVerdict.
-  on('tool.check', { tool: 'Bash' }, async ($, e, next) => gitVerdict(await next(e), e.agentId, String((e.input as { command?: unknown }).command ?? ''), await read($, runRef))).catch(
+  // A worker runs git -C or jj -R with its own folder, and the engine asks a person for that form: see vcsVerdict.
+  on('tool.check', { tool: 'Bash' }, async ($, e, next) => vcsVerdict(await next(e), e.agentId, String((e.input as { command?: unknown }).command ?? ''), await read($, runRef))).catch(
     ($, e, next) => next(e),
   )
 

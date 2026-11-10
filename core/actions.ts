@@ -688,28 +688,40 @@ export function spawnVerdict<V extends { decision: string }>(verdict: V, plugin:
   return { decision: 'allow', reason: SPAWN_APPROVAL }
 }
 
-export const GIT_APPROVAL = 'meld lets a worker run git in its own folder.'
+export const VCS_APPROVAL = 'meld lets a worker run its version control in its own folder.'
 
-/** The git commands of the git guide (contract.ts). None of them reaches a remote or changes the config. */
-const WORKER_GIT: ReadonlySet<string> = new Set(['status', 'diff', 'log', 'show', 'add', 'commit', 'rev-parse', 'ls-files', 'merge', 'cherry-pick'])
+/**
+ * The commands of the guides of contract.ts, by program: the option that names the folder, and the subcommands. None of
+ * them reaches a remote or changes the config.
+ */
+const WORKER_VCS: Readonly<Record<string, { folder: string; commands: ReadonlySet<string> }>> = {
+  git: { folder: '-C', commands: new Set(['status', 'diff', 'log', 'show', 'add', 'commit', 'rev-parse', 'ls-files', 'merge', 'cherry-pick']) },
+  jj: { folder: '-R', commands: new Set(['status', 'st', 'log', 'diff', 'show', 'commit', 'new', 'workspace update-stale']) },
+}
 
-/** Options that write a file anywhere, or read files outside the repository. */
-const OUTSIDE_OPTIONS = ['--output', '--no-index']
+/**
+ * Options that write a file anywhere, read outside the repository, run a program (jj takes --config and --tool after
+ * the subcommand too), or name a second folder.
+ */
+const OUTSIDE_OPTIONS = ['--output', '--no-index', '--config', '--tool', '-R', '--repository']
 
 /**
  * The verdict on a Bash call. The shell of a worker starts in the folder of the session, not in its own folder, so a
- * worker runs git as `git -C <its folder>`, and the engine asks a person for that form. With no person to ask, a worker
- * could not commit. meld allows the call when the folder is the worker's own (a worktree of the person's repository that
- * meld made), the subcommand is in WORKER_GIT, and the command holds no shell syntax. Every other verdict stands.
+ * worker runs `git -C <its folder>` or `jj -R <its folder>`, and the engine asks a person for that form. With no person
+ * to ask, a worker could not commit. meld allows the call when the folder is the worker's own (a workspace of the
+ * person's repository that meld made), the subcommand is in WORKER_VCS, and the command holds no shell syntax. Every
+ * other verdict stands.
  */
-export function gitVerdict<V extends { decision: string }>(verdict: V, agentId: string | undefined, command: string, run: Run | null): V | { decision: 'allow'; reason: string } {
+export function vcsVerdict<V extends { decision: string }>(verdict: V, agentId: string | undefined, command: string, run: Run | null): V | { decision: 'allow'; reason: string } {
   const worker = verdict.decision === 'ask' && agentId && run && LIVE_STATES.has(run.state) ? board.workerOf(run, agentId) : undefined
-  return worker && isOwnGit(shellWords(command), worker.path) ? { decision: 'allow', reason: GIT_APPROVAL } : verdict
+  return worker && isOwnVcs(shellWords(command), worker.path) ? { decision: 'allow', reason: VCS_APPROVAL } : verdict
 }
 
-function isOwnGit(words: string[] | undefined, folder: string): boolean {
-  if (!words || words[0] !== 'git' || words[1] !== '-C' || words[2]?.replace(/\/+$/, '') !== folder.replace(/\/+$/, '')) return false
-  return WORKER_GIT.has(words[3] ?? '') && !words.some(word => OUTSIDE_OPTIONS.some(option => word.startsWith(option)))
+function isOwnVcs(words: string[] | undefined, folder: string): boolean {
+  const vcs = words ? WORKER_VCS[words[0] ?? ''] : undefined
+  if (!words || !vcs || words[1] !== vcs.folder || words[2]?.replace(/\/+$/, '') !== folder.replace(/\/+$/, '')) return false
+  const command = words[3] === 'workspace' ? `workspace ${words[4] ?? ''}` : (words[3] ?? '')
+  return vcs.commands.has(command) && !words.slice(3).some(word => OUTSIDE_OPTIONS.some(option => word.startsWith(option)))
 }
 
 /** Characters that the shell reads as syntax outside quotes: operators, redirects, substitutions, escapes, globs and comments. */

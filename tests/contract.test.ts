@@ -134,6 +134,12 @@ test('the git guide tells a worker to run git with -C and its folder, as its she
   expect(rules).not.toContain('then git commit -m')
 })
 
+test('the jj guide tells a worker to run jj with -R and its folder, one command in each call', () => {
+  const rules = workerRules(runOn('jj'), 'w1')
+  expect(rules).toContain('jj -R /tmp/meld/r1/w1 commit -m')
+  expect(rules).toContain('one command in each call')
+})
+
 test('the nudge tells the owner of a leaf to split it or finish it', () => {
   expect(splitNudge(4)).toBe('Split #4 into smaller tasks, or finish it.')
 })

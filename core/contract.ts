@@ -301,7 +301,7 @@ ${run.vcs === 'jj' ? jjGuide(you, peers, line) : gitGuide(you, peers, line)}`
 function gitGuide(you: Worker, peers: Worker[], line: string): string {
   const branches = peers.map(peer => peer.ref).join(', ') || 'none'
   return `Version control: git. Your folder is a git worktree on branch ${you.ref}.
-- Your shell starts in the folder of the session, not in yours. Run each git command as git -C ${you.path} <command>, with no cd. meld allows status, diff, log, show, add, commit, rev-parse, ls-files, merge and cherry-pick in this form. Use plain words in quotes, with no $, backtick or backslash.
+- Your shell starts in the folder of the session, not in yours. Run each git command as git -C ${you.path} <command>, with no cd, one command in each call. meld allows status, diff, log, show, add, commit, rev-parse, ls-files, merge and cherry-pick in this form. Use plain words in quotes, with no $, backtick or backslash.
 - Commit: git -C ${you.path} add the files, then git -C ${you.path} commit -m "<message>". Give HEAD or the commit hash to the board tools.
 - Take the work of another worker: git merge <its branch>, or git cherry-pick <hash>. Their branches: ${branches}.
 - The integration line is the branch ${line}. To integrate #N: git merge ${line}, then git merge <the commit of #N>, fix the conflicts, commit, and finish the task with HEAD.
@@ -311,7 +311,8 @@ function gitGuide(you: Worker, peers: Worker[], line: string): string {
 function jjGuide(you: Worker, peers: Worker[], line: string): string {
   const lasts = peers.map(peer => `${peer.id}@-`)
   return `Version control: jj. Your folder is a jj workspace with no branch: jj names your working copy ${you.ref}, and the last commit of each other worker is ${lasts.join(', ') || 'none'}.
-- Each jj command records your edits in ${you.ref}. Commit: jj commit -m "<message>". The commit is then @-, and ${you.ref} is a new empty change on top. Give @- or its id (jj log -r @- --no-graph -T commit_id) to the board tools.
+- Your shell starts in the folder of the session, not in yours. Run each jj command as jj -R ${you.path} <command>, with no cd, one command in each call. meld allows status, st, log, diff, show, commit, new and workspace update-stale in this form. Use plain words in quotes, with no $, backtick or backslash.
+- Each jj command records your edits in ${you.ref}. Commit: jj -R ${you.path} commit -m "<message>". The commit is then @-, and ${you.ref} is a new empty change on top. Give @- or its id (jj log -r @- --no-graph -T commit_id) to the board tools.
 - Always give -m. Never run a command that opens an editor or a screen: jj split, jj squash -i, jj diffedit, jj resolve.
 - See the work of the run: jj log. Take the work of another worker: commit first, then jj new @- <its commit> makes your next change on top of both.
 - A conflict does not stop jj: jj st lists the files with conflicts. Edit the files to remove the conflict markers; the next jj command records the fix. A commit with a conflict cannot be the final commit.

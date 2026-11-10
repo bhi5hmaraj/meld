@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
-import { compactWorker, deliver, discard, freshTokens, GIT_APPROVAL, gitVerdict, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, SPAWN_APPROVAL, spawnVerdict, startFromView, startRun, steerRun, stopOne } from '../core/actions'
+import { compactWorker, deliver, discard, freshTokens, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, SPAWN_APPROVAL, spawnVerdict, startFromView, VCS_APPROVAL, vcsVerdict, startRun, steerRun, stopOne } from '../core/actions'
 import { addTasks, bindWorker, claimTask, CONTEXT_CAP, declareFinal, isFailure, setActivity, startRun as startBoard, steer, stopRun, stopWorker, takeIntegration } from '../core/board'
 import { COMPACT_KEEP } from '../core/contract'
 import { JJ_LANE_TEMPLATE, JJ_RESOLVE_TEMPLATE } from '../core/vcs'
@@ -50,6 +50,11 @@ const OWN_GIT = [
   `git -C ${OWN_FOLDER} add core/a.ts tests/a.test.ts`,
   `git -C ${OWN_FOLDER} commit -m "Add the status view (#10); it reads 'seen'"`,
   `git -C '${OWN_FOLDER}/' merge meld/r1/line`,
+  `jj -R ${OWN_FOLDER} commit -m "Add the status view (#10)"`,
+  `jj -R ${OWN_FOLDER} log -r @- --no-graph -T commit_id`,
+  `jj -R ${OWN_FOLDER} st`,
+  `jj -R ${OWN_FOLDER} new meld/r1/line -m "integrate #3"`,
+  `jj -R ${OWN_FOLDER} workspace update-stale`,
 ]
 const SHELL_TRICKS = [
   `git -C ${OWN_FOLDER} push`,
@@ -65,31 +70,41 @@ const SHELL_TRICKS = [
   `git -C ${OWN_FOLDER} status > /tmp/x`,
   `git -C ${OWN_FOLDER} add core/*.ts`,
   `git -C ${OWN_FOLDER} commit -m "open`,
+  `jj -R ${OWN_FOLDER} git push`,
+  `jj -R ${OWN_FOLDER} config set --user ui.pager sh`,
+  `jj -R ${OWN_FOLDER} log --config ui.pager=sh`,
+  `jj -R ${OWN_FOLDER} log --config-toml ui.pager='sh'`,
+  `jj -R ${OWN_FOLDER} diff --tool rm`,
+  `jj -R ${OWN_FOLDER} workspace forget w1`,
+  `jj -R ${OWN_FOLDER} log -R /repo`,
+  `jj -R ${OWN_FOLDER} abandon @-`,
 ]
 
-test('meld allows a worker git in its own folder, which the engine asks a person for', () => {
-  for (const command of OWN_GIT) expect(gitVerdict(ASK, 'agent-2', command, working())).toEqual({ decision: 'allow', reason: GIT_APPROVAL })
+test('meld allows a worker git and jj in its own folder, which the engine asks a person for', () => {
+  for (const command of OWN_GIT) expect(vcsVerdict(ASK, 'agent-2', command, working())).toEqual({ decision: 'allow', reason: VCS_APPROVAL })
 })
 
 test('the ask on git in another folder stands: the checkout, another worker, and plain git in the session folder', () => {
-  expect(gitVerdict(ASK, 'agent-2', 'git -C /repo commit -m x', working())).toBe(ASK)
-  expect(gitVerdict(ASK, 'agent-2', 'git -C /tmp/meld/r1/w1 commit -m x', working())).toBe(ASK)
-  expect(gitVerdict(ASK, 'agent-2', 'git commit -m x', working())).toBe(ASK)
+  expect(vcsVerdict(ASK, 'agent-2', 'git -C /repo commit -m x', working())).toBe(ASK)
+  expect(vcsVerdict(ASK, 'agent-2', 'git -C /tmp/meld/r1/w1 commit -m x', working())).toBe(ASK)
+  expect(vcsVerdict(ASK, 'agent-2', 'git commit -m x', working())).toBe(ASK)
+  expect(vcsVerdict(ASK, 'agent-2', 'jj -R /tmp/meld/r1/w1 commit -m x', working())).toBe(ASK)
+  expect(vcsVerdict(ASK, 'agent-2', 'jj commit -m x', working())).toBe(ASK)
 })
 
 test('the ask on git of an agent that is no worker stands, and so does the main session', () => {
-  expect(gitVerdict(ASK, 'agent-9', `git -C ${OWN_FOLDER} commit -m x`, working())).toBe(ASK)
-  expect(gitVerdict(ASK, undefined, `git -C ${OWN_FOLDER} commit -m x`, working())).toBe(ASK)
+  expect(vcsVerdict(ASK, 'agent-9', `git -C ${OWN_FOLDER} commit -m x`, working())).toBe(ASK)
+  expect(vcsVerdict(ASK, undefined, `git -C ${OWN_FOLDER} commit -m x`, working())).toBe(ASK)
 })
 
 test('the ask stands for other git commands, for options that write or read outside the folder, and for shell syntax', () => {
-  for (const command of SHELL_TRICKS) expect(gitVerdict(ASK, 'agent-2', command, working())).toBe(ASK)
+  for (const command of SHELL_TRICKS) expect(vcsVerdict(ASK, 'agent-2', command, working())).toBe(ASK)
 })
 
 test('a deny stands, and a stopped run allows no git', () => {
   const deny = { decision: 'deny' }
-  expect(gitVerdict(deny, 'agent-2', `git -C ${OWN_FOLDER} status`, working())).toBe(deny)
-  expect(gitVerdict(ASK, 'agent-2', `git -C ${OWN_FOLDER} status`, stopRun(working(), NOW))).toBe(ASK)
+  expect(vcsVerdict(deny, 'agent-2', `git -C ${OWN_FOLDER} status`, working())).toBe(deny)
+  expect(vcsVerdict(ASK, 'agent-2', `git -C ${OWN_FOLDER} status`, stopRun(working(), NOW))).toBe(ASK)
 })
 
 test('the ask on a spawn with no run stands', () => {
