@@ -16,6 +16,20 @@ Give one request to several coding agents. Watch their commits in a pane. Get on
 
 meld is a Claude Code plugin in TypeScript, with no native binary. Claude, Codex, Gemini and Cursor agents can work in one run.
 
+## Why several agents
+
+One coding agent works through a request one step at a time. You wait for each step, and you check and answer each one. Several agents on one shared board change three things:
+
+- **Shorter iterations.** Agents work on independent tasks at the same time, so a request gets to a tested commit sooner. Each finished task merges into the line at once, so a conflict shows while it is small.
+- **Less feedback fatigue.** You review one result with its checks, not each step of each agent. When the direction is wrong, one instruction steers all the agents.
+- **More tokens, used well.** Each agent spends its tokens on its own task, in a small context. meld caps each context and sends each agent only the entries that are new for it. So more tokens buy more work, not repeated reads.
+
+The speedup has a limit. The part of a request that must happen in order, such as the last task and the final check, sets the upper bound (Amdahl's law).
+
+meld takes its idea from [DeLM](https://github.com/Decentralized-LM/delm-agent-plugin) (Decentralized Language Models, by Yuzhen Mao and Azalia Mirhoseini, MIT license): a task queue and a shared context, with no planner in charge. In the DeLM paper, the main agent of Claude Code waited for its subagents 73% of the time on one long task. DeLM removes that wait. meld is a new tool, not a port, and [docs/how-it-works.md](docs/how-it-works.md#what-meld-changes-from-delm) lists the changes.
+
+[The design notes](docs/meld-design.html) give the background in one page: DeLM, the task queue and the shared context, the workspaces, how you see a run, and a local run in detail.
+
 ## Install
 
 In Claude Code:
@@ -143,10 +157,9 @@ A thick border marks the parts of meld, and a dashed arrow a call of the board t
 
 - [CHANGELOG.md](CHANGELOG.md) gives the changes of each release.
 - [docs/development.md](docs/development.md) maps the code, the tests and the checks.
-- [docs/design](docs/design/README.md) holds the draft design notes and the build plan.
+- [docs/meld-design.html](docs/meld-design.html) gives the design notes in one page.
+- [docs/design](docs/design/README.md) holds the draft design notes by topic, and the build plan.
 - [The handover of 5 November 2026](docs/handover-2026-11-05.md) gives the state, the open work and the traps, for a new maintainer.
-
-meld takes its idea from [DeLM](https://github.com/Decentralized-LM/delm-agent-plugin) (Decentralized Language Models, by Yuzhen Mao and Azalia Mirhoseini, MIT license). It is a new tool, not a port, and [docs/how-it-works.md](docs/how-it-works.md#what-meld-changes-from-delm) lists the changes.
 
 ## License
 

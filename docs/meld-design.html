@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>meld design notes</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=STIX+Two+Text:ital,wght@0,400;0,700;1,400&display=swap">
+<style>
+/* Layout: a fluid page up to 1560px; text runs in two columns, figures span the width. One light theme by choice; A3 print styles for PDF export. */
+:root {
+  --page: #FFFFFF; --ink: #141414; --muted: #555555; --hair: #BDBDBD; --rule: #141414;
+  --cloud: #2F56A6; --meld: #13786A; --local: #A0620F; --bad: #B42318; --link: #1F4E8C;
+  --serif: "STIX Two Text", "Times New Roman", Times, serif;
+  --sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+body { background: var(--page); color: var(--ink); font-family: var(--serif); font-size: 18px; line-height: 1.5; }
+.doc {
+  max-width: 1560px; margin: 0 auto; padding-block: 48px 96px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+section > p, section > ol, section > ul:not(.cols) { max-width: 920px; }
+h1, h2, h3 { font-family: var(--serif); text-wrap: balance; }
+h1 { text-align: center; font-size: 2rem; line-height: 1.25; font-weight: 700; margin: 0 auto 0.9rem; max-width: 980px; }
+.authors { text-align: center; font-size: 1.02rem; margin-bottom: 0.15rem; }
+.date { text-align: center; font-size: 0.9rem; color: var(--muted); }
+.summary { max-width: 860px; margin: 2rem auto 1.4rem; font-size: 0.98rem; }
+.summary h2 { text-align: center; font-size: 1rem; margin: 0 0 0.35rem; }
+h2 { font-size: 1.25rem; font-weight: 700; margin-top: 2.4rem; margin-bottom: 0.6rem; }
+h3 { font-size: 1.04rem; font-weight: 700; margin-top: 1.4rem; margin-bottom: 0.35rem; }
+.n { display: inline-block; min-width: 1.9em; }
+p { margin-top: 0; margin-bottom: 0; text-align: justify; hyphens: auto; }
+p + p { text-indent: 1.5em; }
+ul, ol { margin-top: 0.5rem; margin-bottom: 0.5rem; padding-left: 1.4em; }
+li + li { margin-top: 0.3rem; }
+code { font-family: var(--mono); font-size: 0.8em; }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+a:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+
+.flow2 { columns: 2 420px; column-gap: 3.2rem; margin-top: 0.6rem; margin-bottom: 0.6rem; }
+.flow2 > h3:first-child { margin-top: 0; }
+.flow2 h3 { break-after: avoid; }
+.flow2 li, .cols li { break-inside: avoid; }
+.two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1.4rem 3.2rem; align-items: start; margin-top: 1.2rem; margin-bottom: 1.2rem; }
+.two.text-wide { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }
+.two > * { min-width: 0; }
+.stack > * + * { margin-top: 1.4rem; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 0.6rem 2.4rem; list-style: none; padding: 0; margin-top: 0.8rem; }
+.cols li { margin: 0; }
+.cols.four { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+@media screen and (max-width: 900px) { .two, .two.text-wide { grid-template-columns: minmax(0, 1fr); } }
+
+figure { margin-top: 1.4rem; margin-bottom: 1.4rem; margin-left: 0; margin-right: 0; }
+.two figure, .stack figure { margin: 0; }
+figcaption { font-size: 0.86rem; line-height: 1.4; margin-top: 0.55rem; text-align: justify; max-width: 900px; }
+.wide figcaption { margin-left: auto; margin-right: auto; }
+img, video { display: block; width: 100%; height: auto; max-width: 100%; }
+figure.pane img { max-width: 560px; margin: 0 auto; border: 1px solid var(--hair); }
+video { background: #000000; }
+.print-only { display: none; }
+.scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+ol.steps { list-style: none; padding: 0; font-size: 0.92rem; margin-top: 0; }
+ol.steps li { display: flex; gap: 0.6em; margin: 0 0 0.45rem; }
+.badge { flex: none; width: 1.5em; height: 1.5em; border-radius: 50%; background: var(--ink); color: #FFFFFF; font-family: var(--sans); font-size: 0.72em; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; margin-top: 0.2em; }
+.badge.l { background: var(--local); }
+
+.tbl { overflow-x: auto; margin-top: 1.2rem; margin-bottom: 1.2rem; }
+.two .tbl { margin: 0; }
+table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 0.86rem; line-height: 1.4; border-top: 1.5px solid var(--rule); border-bottom: 1.5px solid var(--rule); }
+.two table { min-width: 0; }
+caption { caption-side: top; text-align: left; font-size: 0.88rem; padding-bottom: 0.45rem; }
+thead th { border-bottom: 0.8px solid var(--rule); font-weight: 700; }
+th, td { text-align: left; vertical-align: top; padding: 0.32rem 0.7rem 0.32rem 0; }
+tbody th { font-weight: 400; font-style: italic; white-space: nowrap; }
+.tnote { font-size: 0.82rem; color: var(--muted); margin-top: 0.4rem; }
+.refs { columns: 2 440px; column-gap: 3rem; list-style: none; padding: 0; font-size: 0.86rem; }
+.refs li { display: grid; grid-template-columns: 2.2em minmax(0, 1fr); break-inside: avoid; }
+
+@page { size: A3; margin: 14mm; }
+@media print {
+  body { font-size: 15px; }
+  .doc { max-width: none; padding: 0; }
+  .scroll { overflow: visible; }
+  .dia { min-width: 0 !important; }
+  figure, .tbl, li { break-inside: avoid; }
+  h2, h3 { break-after: avoid; }
+  video { display: none; }
+  .print-only { display: block; }
+  span.print-only { display: inline; }
+  a { color: var(--ink); }
+  pre { white-space: pre-wrap; overflow: visible; }
+}
+
+/* diagrams */
+.dia { display: block; width: 100%; height: auto; font-family: var(--sans); }
+.dia-o { min-width: 860px; } .dia-s { min-width: 780px; } .dia-m { min-width: 680px; } .dia-j { min-width: 780px; } .dia-f { min-width: 420px; }
+.wide .dia { max-width: 1300px; margin: 0 auto; }
+.dia text { fill: var(--ink); font-size: 12.5px; }
+.dia .nm { font-weight: 700; font-size: 13px; }
+.dia .sub { fill: var(--muted); font-size: 11.5px; }
+.dia .mono { font-family: var(--mono); font-size: 11px; }
+.dia .zl { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; }
+.dia .t-cloud { fill: var(--cloud); } .dia .t-meld { fill: var(--meld); } .dia .t-local { fill: var(--local); } .dia .t-bad { fill: var(--bad); }
+.dia .c-cloud { color: var(--cloud); } .dia .c-meld { color: var(--meld); } .dia .c-local { color: var(--local); } .dia .c-ink { color: var(--ink); }
+.dia .grp-cloud { fill: #F3F6FC; stroke: var(--cloud); stroke-width: 1.3; }
+.dia .grp-meld { fill: #F1F8F6; stroke: var(--meld); stroke-width: 1.3; stroke-dasharray: 7 5; }
+.dia .grp-plain { fill: none; stroke: var(--ink); stroke-width: 1.2; }
+.dia .grp-org { fill: none; stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 3 4; }
+.dia .box { fill: #FFFFFF; stroke: var(--hair); stroke-width: 1.2; }
+.dia .refused { stroke: var(--bad); stroke-dasharray: 5 4; }
+.dia .ar { stroke: var(--ink); stroke-width: 1.4; fill: none; }
+.dia .ctrl { stroke-dasharray: 6 4; }
+.dia .ar-bad { stroke: var(--bad); stroke-width: 1.4; stroke-dasharray: 4 3; fill: none; }
+.dia .ah { fill: var(--ink); } .dia .ah-bad { fill: var(--bad); }
+.dia .lbl, .dia .lbl-s { paint-order: stroke; stroke: #FFFFFF; stroke-width: 4px; stroke-linejoin: round; }
+.dia .lbl { font-size: 12px; } .dia .lbl-s { font-size: 11px; }
+.dia .mid { text-anchor: middle; } .dia .end { text-anchor: end; }
+.dia .step circle { fill: var(--ink); }
+.dia .step.l circle { fill: var(--local); }
+.dia .step text { fill: #FFFFFF; font-size: 11px; font-weight: 700; text-anchor: middle; }
+.dia .edge { stroke: var(--ink); stroke-width: 1.6; fill: none; }
+.dia .edge-cloud { stroke: var(--cloud); }
+.dia .cm { fill: #FFFFFF; stroke: var(--ink); stroke-width: 1.8; }
+.dia .cm-cloud { stroke: var(--cloud); }
+.dia .cm-merge { fill: var(--ink); }
+.dia .cm-final { fill: var(--meld); stroke: var(--meld); }
+.dia .chip { fill: #F7F7F5; stroke: var(--hair); stroke-width: 1.1; }
+.dia .q-box { fill: #F4EFF8; stroke: #8E6BB0; stroke-width: 1.3; }
+.dia .q-chip { fill: #E9DFF2; stroke: #8E6BB0; stroke-width: 1; }
+.dia .c-box { fill: #F1F8F6; stroke: var(--meld); stroke-width: 1.3; }
+.dia .c-chip { fill: #DDEFE9; stroke: var(--meld); stroke-width: 1; }
+.dia .w-box { fill: none; stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 6 5; }
+.dia .ar-q { stroke: #8E6BB0; } .dia .ar-c { stroke: var(--meld); }
+.dia-c { min-width: 600px; }
+.dia .grid { stroke: #E4E3DF; stroke-width: 1; }
+.dia .tick { fill: var(--muted); font-size: 11px; }
+.dia .seg { font-size: 11px; font-weight: 700; text-anchor: middle; }
+</style>
+</head>
+<body>
+
+<article class="doc" lang="en">
+  <h1>meld: One Task Queue and Shared Context for Coding Agents</h1>
+  <p class="authors">meld project</p>
+  <p class="date">Design notes, 9 November 2026 &middot; builds on meld 0.10.0</p>
+
+  <div class="summary">
+    <h2>Summary</h2>
+    <p>meld is a Claude Code plugin that runs DeLM's design in one developer's session: several agents share one task queue and one shared context [1]. Since 0.10.0, meld keeps every board in a SQLite file, runs Codex, Gemini CLI and Cursor agents beside Claude agents over ACP, and merges each finished task into an integration line. This page is a public part of the design notes of November 2026: the background, the task queue and the shared context, the workspaces, how a person sees a run, and a local run in detail. A hosted meld service, with Postgres and cloud agents, is a later step, and the page names it only where the design depends on it.</p>
+  </div>
+<section id="background">
+    <h2><span class="n">1</span>Motivation and background</h2>
+    <h3>1.1 Bubbles</h3>
+    <div>
+      <div>
+        <p>A multi-agent system splits a task across agents to finish it sooner. DeLM's authors call any agent time that does not advance the solution a <i>bubble</i>: time spent waiting on other agents, or redoing a peer's work [1]. Each common design creates its own kind of bubble:</p>
+        <ul>
+          <li><b>Independent agents</b> redo work. They share nothing, so each agent finds the same faults and dead ends.</li>
+          <li><b>Peer-communicating agents</b> wait at barriers. Each round lasts as long as its slowest agent.</li>
+          <li><b>Centralized orchestration</b> waits on relays. The main agent idles while subagents work, and subagents see each other's progress only through the main agent.</li>
+        </ul>
+        <p>Claude Code's native subagents follow the third design. On one long task, their main agent waited 73% of its time [1].</p>
+      </div>
+    </div>
+
+    <h3>1.2 DeLM</h3>
+    <div>
+      <div>
+        <p>DeLM [1] removes the main agent and coordinates agents through two shared structures [1]:</p>
+        <ul>
+          <li><b>Task queue.</b> The queue divides the work, with no planner in charge. Any agent adds tasks or claims an open one, and the first claim wins. Each task is open, claimed or done, and shows who holds it.</li>
+          <li><b>Shared context.</b> The context records what agents learn: an append-only log of compact entries. A FACT records a finding, a FAIL records an approach that did not work, and a DONE summarizes a finished task. Entries name files by reference.</li>
+          <li><b>Agents.</b> Each agent works in its own session and workspace, publishes findings as soon as they are usable, and produces a full solution.</li>
+        </ul>
+        <p>On 10 long Terminal-Bench 4.0 tasks, DeLM finished up to 2.49&times; sooner and scored 11.7 points higher than Claude Code [1].</p>
+      </div>
+    </div>
+    <div class="two">
+    </div>
+
+    <h3>1.3 meld</h3>
+    <div class="two text-wide">
+      <div>
+        <p>meld [2] runs DeLM's design inside Claude Code as a plugin. A developer types <code>/meld --agents opus,opus,codex &lt;request&gt;</code>, and meld starts 1 to 8 workers, each in its own workspace cut from the developer's last commit. Claude workers run as subagents of the session. Codex, Gemini CLI and Cursor agents run as separate processes over ACP (Section 1.4). The workers plan the request as tasks, claim and finish them, and share what they learn. meld merges each finished task into an integration line. One worker runs the checks and declares the final commit, and the developer delivers it into their branch with a merge. A pane shows the agents, the task progress, the shared context and the checks (Figure 1).</p>
+        <ul>
+          <li><b>Board tools.</b> Workers call 11 tools over MCP: <code>board</code>, <code>add_tasks</code>, <code>claim</code>, <code>split</code>, <code>release</code>, <code>finish_task</code>, <code>note</code>, <code>share</code>, <code>check</code>, <code>integrate</code> and <code>finish</code>. The board is meld's name for the task queue and the shared context together.</li>
+          <li><b>Versions.</b> Each task and the task list carry a version. Claims and new tasks are compare-and-set (CAS) operations, so two workers never claim one task and two plans never both land.</li>
+          <li><b>Task tree.</b> Each task names an optional parent, a size (S, M or L) and the tasks it needs. A task waits until its needs are done. meld tells a worker to split its task after 30, 60 or 120 tool calls, by size.</li>
+          <li><b>Shared context.</b> Each entry is a fact, a fail or an interface, at most 500 characters long. Each board reply carries the entries that its reader has not seen.</li>
+          <li><b>Integration line.</b> Each <code>finish_task</code> merges its commit into the line with git plumbing (<code>merge-tree</code>, <code>commit-tree</code>, <code>update-ref</code>), for jj and git runs alike. A conflict adds a task "integrate #N".</li>
+          <li><b>Fresh agents.</b> A finished task hands back with its commit, interfaces and unfinished work. The next task gets a new agent, whose claim reply carries the handovers of the tasks it needs. An idle worker goes on in its own session while its context fills less than half of its window.</li>
+          <li><b>Board file.</b> <code>meld mcp</code>, a Bun process per session, keeps every board in <code>~/.meld/meld.db</code>: runs, events, the shared context, parties and members. Another session can resume a board with <code>/meld-resume</code>.</li>
+          <li><b>Code.</b> <code>core/</code> holds the rules and the steps of a run, behind ports. <code>hooks/</code> is the Claude Code host, and <code>mcp/</code> is the board server and the ACP runner. The meld service is one more host of <code>core/</code>.</li>
+        </ul>
+        <p>meld still has four limits, and the meld service removes them: all workers run on one machine, Claude workers restart only at the end of the developer's turn, the shared context of one machine does not reach another, and the history of a run goes 30 days after it ends. Appendix A describes a local run in detail.</p>
+      </div>
+      <figure class="pane">
+        <picture><source media="(prefers-color-scheme: dark)" srcset="images/working-dark.png"><img src="images/working-light.png" alt="The meld pane during a run: three agent lanes with their commits, the progress of each task, the shared context, the checks and the steer controls."></picture>
+        <figcaption><b>Figure 1:</b> The meld pane during a run. Lanes show each worker's commits, progress rows show each task, and the shared context, checks and steer controls sit below. From the meld README [2].</figcaption>
+      </figure>
+    </div>
+
+    <h3>1.4 ACP</h3>
+    <div class="flow2">
+      <p>The Agent Client Protocol (ACP) [3] connects a client to a coding agent that runs as a subprocess. The client and the agent exchange JSON-RPC messages over stdio. meld 0.10.0 already uses it: <code>meld mcp</code> runs Codex (through <code>codex-acp</code>), the Gemini CLI and Cursor's agent as workers with one ACP client.</p>
+      <ul>
+        <li><b><code>session/new</code></b> starts the agent in its workspace with the board server attached, so the agent needs no setup.</li>
+        <li><b><code>session/prompt</code></b> sends the brief, a restart or a steer.</li>
+        <li><b><code>session/update</code></b> reports the agent's text, plan, tool calls and context use. These feed the pane and the restart rules.</li>
+        <li><b><code>session/request_permission</code></b> lets meld answer each action. meld refuses an edit outside the worker's workspace.</li>
+        <li><b><code>session/cancel</code></b> stops a worker.</li>
+      </ul>
+      <p>ACP reaches local processes only. Inside a sandbox, an ACP runner can drive any CLI agent with the same client. Cursor's and Devin's cloud agents are not ACP agents, so the meld service drives them through their APIs. Claude workers stay Claude Code subagents: they run on the developer's plan, under the developer's permission rules, with no extra processes. None of the ACP agents has run live with meld yet, only a stand-in agent. A2A [4] connects agents to other agents, but none of the coding agents we use exposes it, so A2A can wait.</p>
+    </div>
+  </section>
+
+  <section id="context">
+    <h2><span class="n">2</span>Task queue and shared context</h2>
+    <p>The meld service keeps DeLM's two shared structures [1] and changes one thing: the shared context outlives the run. DeLM's board ends with its run. The meld service keeps the log, so the successes and failures of every earlier run stay searchable. Figure 2 shows both structures.</p>
+    <figure class="wide">
+      <div class="scroll">
+        <svg class="dia dia-m" style="max-width:960px" viewBox="0 0 900 350" role="img" aria-label="The task queue on the left holds one run's tasks: open, claimed and done. Workers in the middle claim tasks and add tasks. The shared context on the right is an append-only log of FACT, FAIL and DONE entries; workers publish entries to it and read new entries from it. The shared context outlives the run, and later runs and local meld runs search it with grep_context.">
+          <defs>
+            <marker id="q-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path fill="#8E6BB0" d="M0 0L10 5L0 10z"/></marker>
+            <marker id="c-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path fill="#13786A" d="M0 0L10 5L0 10z"/></marker>
+            <symbol id="q-bot" viewBox="0 0 48 48"><rect x="11" y="16" width="26" height="21" rx="5" fill="#FFFFFF" stroke="currentColor" stroke-width="2.6"/><path d="M24 16V11" stroke="currentColor" stroke-width="2.6"/><circle cx="24" cy="9" r="2.6" fill="currentColor"/><circle cx="19" cy="25" r="2.6" fill="currentColor"/><circle cx="29" cy="25" r="2.6" fill="currentColor"/><path d="M19 31.5H29" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></symbol>
+          </defs>
+          <rect class="q-box" x="20" y="30" width="210" height="240" rx="14"/>
+          <text class="nm mid" x="125" y="58">Task queue</text>
+          <text class="mono mid" x="125" y="76">runs</text>
+          <rect class="q-chip" x="45" y="96" width="160" height="30" rx="5"/>
+          <text class="mono" x="58" y="116">#1 open</text>
+          <rect class="q-chip" x="45" y="136" width="160" height="30" rx="5"/>
+          <text class="mono" x="58" y="156">#2 claimed by w1</text>
+          <rect class="q-chip" x="45" y="176" width="160" height="30" rx="5"/>
+          <text class="mono" x="58" y="196">#3 done by w3</text>
+          <text class="sub mid" x="125" y="250">one run's tasks</text>
+
+          <rect class="w-box" x="320" y="30" width="250" height="240" rx="14"/>
+          <text class="nm mid" x="445" y="58">Workers</text>
+          <use href="#q-bot" x="338" y="84" width="36" height="36" class="c-cloud"/>
+          <text x="384" y="107">w1, sandbox session</text>
+          <use href="#q-bot" x="338" y="134" width="36" height="36" class="c-cloud"/>
+          <text x="384" y="157">w2, sandbox session</text>
+          <use href="#q-bot" x="338" y="184" width="36" height="36" class="c-cloud"/>
+          <text x="384" y="207">w3, Cursor cloud agent</text>
+          <text class="sub mid" x="445" y="250">each in its own workspace</text>
+
+          <rect class="c-box" x="660" y="30" width="220" height="240" rx="14"/>
+          <text class="nm mid" x="770" y="58">Shared context</text>
+          <text class="mono mid" x="770" y="76">context</text>
+          <rect class="c-chip" x="680" y="96" width="180" height="30" rx="5"/>
+          <text class="mono" x="692" y="116">FACT  w2  money.ts</text>
+          <rect class="c-chip" x="680" y="136" width="180" height="30" rx="5"/>
+          <text class="mono" x="692" y="156">FAIL  w1  tax.ts</text>
+          <rect class="c-chip" x="680" y="176" width="180" height="30" rx="5"/>
+          <text class="mono" x="692" y="196">DONE  w3  #3</text>
+          <text class="sub mid" x="770" y="250">append-only, kept after the run</text>
+
+          <line class="ar ar-q" x1="232" y1="118" x2="318" y2="118" marker-end="url(#q-ah)"/>
+          <text class="lbl mid" x="275" y="110">claim</text>
+          <text class="sub lbl-s mid" x="275" y="134">first claim wins</text>
+          <line class="ar ar-q" x1="318" y1="196" x2="232" y2="196" marker-end="url(#q-ah)"/>
+          <text class="lbl mid" x="275" y="188">add tasks</text>
+          <text class="sub lbl-s mid" x="275" y="212">or split one</text>
+          <line class="ar ar-c" x1="572" y1="118" x2="658" y2="118" marker-end="url(#c-ah)"/>
+          <text class="lbl mid" x="615" y="110">publish</text>
+          <text class="sub lbl-s mid" x="615" y="134">entries</text>
+          <line class="ar ar-c" x1="658" y1="196" x2="572" y2="196" marker-end="url(#c-ah)"/>
+          <text class="lbl mid" x="615" y="188">read</text>
+          <text class="sub lbl-s mid" x="615" y="212">new entries</text>
+
+          <line class="ar ar-c" x1="770" y1="272" x2="770" y2="298" marker-end="url(#c-ah)"/>
+          <text class="lbl-s" x="780" y="290">grep_context</text>
+          <rect class="box" x="640" y="300" width="260" height="40" rx="8"/>
+          <text class="nm mid" x="770" y="325">Later runs and local meld runs</text>
+        </svg>
+      </div>
+      <figcaption><b>Figure 2:</b> The task queue and the shared context, laid out like DeLM's loop [1]. Workers claim and add tasks on the queue, and publish and read entries in the context. The queue belongs to one run. The context outlives it, so later runs and local meld runs search it.</figcaption>
+    </figure>
+    <div class="two">
+      <ul style="margin-top:0">
+        <li><b>Task queue.</b> The tasks of a run live in its row of <code>runs</code>: open, claimed or done, with the owner. Any worker adds tasks or claims an open one, and the first claim wins, because a claim is a compare-and-set on the run's version. A task can name a parent, a size and the tasks it needs, as in meld today.</li>
+        <li><b>Shared context.</b> <code>context</code> is a table of entries that are only added, in a partition for each party. A fact records a finding with its evidence, a fail records an approach that did not work and why, and an interface records a contract between tasks. A done entry, with the summary and commit of a finished task, is proposed. Entries stay under 500 characters and name files by reference.</li>
+        <li><b>Provenance.</b> The server stamps each entry: party, repository (its remote URL), run, worker, the commit the agent saw, the run's base commit, the files, and a trust value (delivered with green CI, discarded, or live). Before a later run gets an entry, meld compares its files at the base with the files now, and marks a changed entry "check first".</li>
+      </ul>
+      <ul style="margin-top:0">
+        <li><b>Reading.</b> Each board reply carries the entries the worker has not seen. <code>grep_context</code> searches the whole table with a regex, in the worker's party first and in related parties after. A read-only file view puts the party's entries in the workspace, so agents can also use grep, rg and jq.</li>
+        <li><b>Three layers.</b> Postgres is the record, the file view is for reading, and a search index such as turbopuffer comes later, fed from Postgres. Section 5 says when.</li>
+        <li><b>Corrections.</b> A correction is a new entry that names the entry it replaces. Nothing is edited in place, except trust, retraction, and a hard delete for a leaked secret.</li>
+        <li><b>Safety.</b> Workers treat entries as evidence, never as instructions. The meld service refuses entries that look like secrets. Runs send their entries on deliver, discard and stop, so the fails of a discarded run stay.</li>
+      </ul>
+    </div>
+    <pre style="margin-top:0.4rem; font-size:0.74rem; overflow-x:auto; background:#F6F6F4; border:1px solid var(--hair); padding:0.8rem 1rem;"><code>&gt; grep_context("retry")                                  <span style="color:var(--muted)">// this party</span>
+billing  r42 w2 fail       services/billing/tax.ts    Mocking the clock breaks the retry tests; use fake timers per test. @a1b2c3d
+
+&gt; grep_context("rounding|money", scope: "related")       <span style="color:var(--muted)">// related parties, ranked lower</span>
+billing  r42 w1 interface  services/billing/money.ts  Tax rounding reuses roundHalfEven; no new helper. @9f8e7d6
+search   r37 w1 fact       lib/money/round.ts         roundHalfEven is the shared rounding helper. @77ab210  check first</code></pre>
+  </section>
+
+  <section id="jj">
+    <h2><span class="n">3</span>Workspaces and the integration line</h2>
+    <p>Each worker commits in its own workspace, and meld merges each finished task into one integration line. The final commit of the run is the head of that line after the checks pass. The merge uses git plumbing only: <code>git merge-tree --write-tree</code> makes the merged tree, <code>commit-tree</code> makes the merge commit, and <code>update-ref</code> moves the line from the head it read. The same function runs on a laptop and on the meld service, for jj and git runs alike, and needs git 2.38 or newer.</p>
+    <div class="two">
+      <div>
+        <h3 style="margin-top:0">Local runs</h3>
+        <p>A local run gives each worker a jj workspace under <code>/tmp/meld/&lt;run&gt;/</code>, or a git worktree and branch when jj 0.40 or newer is missing. jj (Jujutsu) [5] stores its commits in git, its workspaces are cheap, and its working copy is a commit, so the pane sees edits that a worker has not committed. The run's store reads the developer's objects through git alternates, so nothing is copied, and no worker can rewrite the base commit. A worker takes a peer's commits only when its own task needs that code. Deliver merges the final commit into the developer's branch.</p>
+      </div>
+      <div>
+  </section>
+<section id="observe">
+    <h2><span class="n">4</span>Seeing a run: the pane, the metrics and the logs</h2>
+    <p>The runs of meld 0.10.0 showed problems that the pane of today hides: a machine asleep in the middle of a run, a cost that leaves out cache reads, and errors that the hooks turn into a fixed text. The meld design note on the pane, the metrics and the logs [6] gives the fix. Its parts are below. The meld plugin builds them first, and the meld service shows the same metrics for a party.</p>
+    <div class="two">
+      <div>
+        <h3 style="margin-top:0">4.1 The pane</h3>
+        <ul>
+          <li><b>Agent cards.</b> Each agent shows the title of its task, what it does now in its own last sentence, what it finished with the summary and commit, its newest shared entry, and its context and cost. Raw commands and call counts go to the log.</li>
+          <li><b>Warnings.</b> The header says when the machine slept during the run. A card warns when a task is ready and the agent is idle, when the agent waits on its own background work, when its context passes the cap, and when a task should split.</li>
+          <li><b>Task tree.</b> Counts replace the percent, which read 0% for most of every run. A parent opens itself around live work, and each leaf shows a word: working, ready, waits for #N, or a tick and its commit.</li>
+          <li><b>Flow and report.</b> One lane per worker shows working, merging, waiting on meld and idle. When the run ends, a report gives a five-sentence story from the metrics, with no model call, and goes to the run's archive.</li>
+        </ul>
+        <h3>4.2 Logs and archives</h3>
+        <ul>
+          <li><b>Run log.</b> One JSON line for each board call, git command, worker start, ACP message and permission ask, with fixed event names. Each error that a hook catches goes to the log with its message, and to the reply of the agent.</li>
+          <li><b>Host log.</b> The life of each <code>meld mcp</code>: start, connection, backup and prune.</li>
+          <li><b>Archive.</b> Before Deliver, Discard or <code>/meld-clean</code> remove a run's folder, meld writes the run, its events, its context entries, its metrics and its report to <code>~/.meld/archive/&lt;run&gt;/</code>. The board file prunes ended runs after 30 days, and the archive keeps them.</li>
+          <li><b>Never logged.</b> Prompts, model text, file contents, keys and the environment. Commands pass a redaction of secret shapes first.</li>
+        </ul>
+      </div>
+      <div>
+        <h3 style="margin-top:0">4.3 System metrics</h3>
+        <div class="tbl" style="margin-top:0.4rem">
+          <table>
+            <caption><b>Table 1:</b> The questions the metrics answer. Each metric has one definition in the pane, the report and the meld service.</caption>
+            <thead><tr><th>Question</th><th>Metrics</th></tr></thead>
+            <tbody>
+              <tr><th>Efficiency</th><td>Busy share, effective parallelism, waiting on meld, one agent alone, idle restarts, rework, cost per finished task, cache read share, context per call, time by activity</td></tr>
+              <tr><th>Progress</th><td>Done weight, counts, ready with no agent, scope growth, rate, critical path left, blocked tasks. No time of arrival.</td></tr>
+              <tr><th>Collaboration</th><td>Tasks that needed another worker's task, handovers used, commits taken from another lane, splits for others, conflicts, overlap, steers that do meld's job</td></tr>
+              <tr><th>Learning</th><td>Entries per task, delivered, time to delivery, cited, fails heeded, repeated fails, entries of earlier runs used</td></tr>
+              <tr><th>Workload</th><td>Share of work, balance, spread, largest task share, idle while others work, results by agent kind</td></tr>
+              <tr><th>Across runs</th><td>A table of the last runs from their archives, so a change of meld, of the agents or of the request style shows its effect</td></tr>
+            </tbody>
+          </table>
+          <p class="tnote">"Delivered" is today's <code>seenBy</code>: it counts each agent that got an entry, because each reply carries each new entry to every agent. It shows that delivery works, not that agents use entries. "Cited" is the claim of the agent, so the report sets it beside "fails heeded", which does not depend on a claim.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="future">
+    <h2><span class="n">5</span>Future improvements</h2>
+    <ul class="cols">
+      <li><b>Search with turbopuffer.</b> Index the shared context in a turbopuffer namespace [7] with full-text and vector search and the party as a filter, so workers find entries by meaning as well as by exact words. Add it when the logged searches show many with no hit while a relevant entry exists. Postgres stays the record, and the index rebuilds from it.</li>
+      <li><b>Rank results by outcome.</b> Show entries on the same files first, and entries from runs delivered with green CI ahead of the rest, using the trust value on each entry.</li>
+      <li><b>Span repositories.</b> Let one run cover several repositories; a run covers one today.</li>
+      <li><b>Reach a laptop host.</b> Let members on other machines join a party that a laptop hosts, through a relay.</li>
+      <li><b>Accept A2A tasks.</b> Add an A2A front door, so other systems can hand the meld service a task.</li>
+    </ul>
+  </section>
+
+  <section id="refs">
+    <h2>References</h2>
+    <ol class="refs">
+      <li><span>[1]</span><span>Y. Mao, J. Gu, A. Chauhan, Q. Zhang, H. Kang, A. Mirhoseini. Decentralized Multi-Agent Systems with Shared Context. arXiv:2606.10662, 2026. <a href="https://yuzhenmao.github.io/DeLM/">Project page</a>, <a href="https://arxiv.org/abs/2606.10662">arXiv</a>.</span></li>
+      <li><span>[2]</span><span>meld 0.10.0, a Claude Code plugin. <a href="https://github.com/bhi5hmaraj/meld">github.com/bhi5hmaraj/meld</a>.</span></li>
+      <li><span>[3]</span><span>Agent Client Protocol. <a href="https://agentclientprotocol.com">agentclientprotocol.com</a>.</span></li>
+      <li><span>[4]</span><span>Agent2Agent (A2A) Protocol v1.0. <a href="https://a2a-protocol.org">a2a-protocol.org</a>.</span></li>
+      <li><span>[5]</span><span>jj (Jujutsu), a git-compatible version control system. <a href="https://github.com/jj-vcs/jj">github.com/jj-vcs/jj</a>.</span></li>
+      <li><span>[6]</span><span>meld design notes, <code>docs/design/</code> in the meld repository: architecture, storage, parties, shared context and the build plan. The note on the pane, the metrics and the logs is a draft on branch <code>pane-and-logs</code>.</span></li>
+      <li><span>[7]</span><span>turbopuffer, search over object storage. <a href="https://turbopuffer.com">turbopuffer.com</a>.</span></li>
+    </ol>
+  </section>
+
+  <section id="appendix">
+    <h2><span class="n">A</span>Appendix: a local meld run</h2>
+    <p>A local meld run is the meld plugin 0.10.0 as it ships. Every part runs on the developer's machine, inside one Claude Code session and the processes it starts. The meld service is optional: a local run will use it to search the shared context and to upload its own entries. Figure 3 shows the parts, and Table 2 lists them.</p>
+    <figure class="wide">
+      <div class="scroll">
+        <svg class="dia dia-s" style="max-width:1100px" viewBox="0 0 1000 430" role="img" aria-label="A local meld run in 0.10.0. The Claude Code session holds the main session with the meld plugin and the Claude workers. The plugin reads and commits the board through meld mcp, a Bun process that holds the board store and runs Codex, Gemini CLI and Cursor agents over ACP. Each ACP agent has its own meld mcp worker process for its board tools. All boards live in one SQLite file. Workers commit in workspaces under /tmp/meld. Later, the board file uploads its entries to the meld service.">
+          <defs>
+            <marker id="a-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+          </defs>
+          <rect class="grp-plain" x="20" y="40" width="330" height="250" rx="10"/>
+          <text class="zl" x="36" y="62">CLAUDE CODE SESSION</text>
+          <rect class="box" x="40" y="80" width="290" height="70" rx="6"/>
+          <text class="nm" x="54" y="104">Main session and meld plugin</text>
+          <text class="sub" x="54" y="122">commands, pane, edit guard,</text>
+          <text class="sub" x="54" y="138">restarts of Claude workers</text>
+          <rect class="box" x="40" y="200" width="290" height="70" rx="6"/>
+          <text class="nm" x="54" y="224">Claude workers</text>
+          <text class="sub" x="54" y="242">subagents of the session; their board</text>
+          <text class="sub" x="54" y="258">calls run in the plugin's hooks</text>
+          <line class="ar" x1="185" y1="152" x2="185" y2="198" marker-end="url(#a-ah)"/>
+          <text class="lbl-s" x="193" y="180">start, message</text>
+
+          <rect class="grp-meld" x="400" y="80" width="230" height="110" rx="10"/>
+          <text class="nm t-meld" x="416" y="104">meld mcp</text>
+          <text class="sub" x="416" y="122">one Bun process per session:</text>
+          <text class="sub" x="416" y="138">board store, ACP runner,</text>
+          <text class="sub" x="416" y="154">socket for the pane</text>
+          <line class="ar" x1="332" y1="115" x2="398" y2="115" marker-end="url(#a-ah)"/>
+          <text class="lbl-s mid" x="365" y="106">MCP</text>
+
+          <rect class="grp-org" x="680" y="40" width="300" height="250" rx="10"/>
+          <text class="zl t-local" x="696" y="62">ACP WORKERS</text>
+          <rect class="box" x="696" y="76" width="268" height="58" rx="6"/>
+          <text class="nm" x="710" y="98">Codex</text>
+          <text class="sub" x="710" y="116">codex-acp, with its own meld mcp --worker</text>
+          <rect class="box" x="696" y="144" width="268" height="58" rx="6"/>
+          <text class="nm" x="710" y="166">Gemini CLI</text>
+          <text class="sub" x="710" y="184">gemini --acp, with its own meld mcp --worker</text>
+          <rect class="box" x="696" y="212" width="268" height="58" rx="6"/>
+          <text class="nm" x="710" y="234">Cursor agent</text>
+          <text class="sub" x="710" y="252">agent acp, with its own meld mcp --worker</text>
+          <line class="ar" x1="632" y1="115" x2="678" y2="115" style="stroke:var(--local)" marker-end="url(#a-ah)"/>
+          <text class="lbl-s mid t-local" x="655" y="106">ACP</text>
+
+          <rect class="box" x="380" y="330" width="270" height="76" rx="6"/>
+          <text class="nm" x="394" y="354">Board file: ~/.meld/meld.db</text>
+          <text class="sub" x="394" y="372">SQLite: boards, runs, events, context,</text>
+          <text class="sub" x="394" y="388">parties, members; daily backups</text>
+          <line class="ar" x1="515" y1="192" x2="515" y2="328" marker-end="url(#a-ah)"/>
+          <path class="ar" d="M700 292V350H652" marker-end="url(#a-ah)"/>
+          <text class="lbl-s" x="708" y="320">board tools of ACP workers</text>
+
+          <rect class="box" x="20" y="330" width="330" height="76" rx="6"/>
+          <text class="nm" x="34" y="354">Workspaces: /tmp/meld/&lt;run&gt;/</text>
+          <text class="sub" x="34" y="372">one jj workspace or git worktree per worker;</text>
+          <text class="sub" x="34" y="388">the integration line</text>
+          <line class="ar" x1="185" y1="272" x2="185" y2="328" marker-end="url(#a-ah)"/>
+
+          <rect class="box" x="760" y="340" width="220" height="56" rx="6" style="stroke-dasharray:5 4"/>
+          <text class="nm" x="774" y="362">meld service, later</text>
+          <text class="sub" x="774" y="380">search and upload the context</text>
+          <line class="ar ctrl" x1="652" y1="385" x2="758" y2="385" marker-end="url(#a-ah)"/>
+          <text class="lbl-s mid" x="705" y="402">outbox</text>
+        </svg>
+      </div>
+      <figcaption><b>Figure 3:</b> A local meld run in 0.10.0. Claude workers are subagents of the session, and their board calls run in the plugin's hooks. Codex, Gemini CLI and Cursor agents run as separate processes that <code>meld mcp</code> drives over ACP, each with a board server of its own. Every process reads and writes one SQLite file, and every worker commits in its own workspace. The dashed box is not built.</figcaption>
+    </figure>
+    <div class="tbl">
+      <table>
+        <caption><b>Table 2:</b> The parts of a local meld run.</caption>
+        <thead><tr><th>Part</th><th>What it is</th><th>Where it lives</th></tr></thead>
+        <tbody>
+          <tr><th>meld plugin</th><td>A TypeScript hooks module, installed from the <code>bhi5hmaraj/meld</code> marketplace, plus <code>meld mcp</code>, which needs Bun</td><td>The developer's Claude Code</td></tr>
+          <tr><th>Commands</th><td><code>/meld</code>, <code>/meld-steer</code>, <code>/meld-status</code>, <code>/meld-stop</code>, <code>/meld-add</code>, <code>/meld-resume</code>, <code>/meld-deliver</code>, <code>/meld-discard</code> and <code>/meld-clean</code>, plus tools for the main session</td><td>The main session</td></tr>
+          <tr><th>Board file</th><td>SQLite in WAL mode, open to its user only: boards, runs, events, context, parties, members and actions. A commit compares versions and holds a lease of 60 s. Ended runs go after 30 days; context entries stay. One backup a day, five kept.</td><td><code>~/.meld/meld.db</code></td></tr>
+          <tr><th>Board tools</th><td>11 tools. A Claude worker's calls run in the plugin's hooks; an ACP worker's calls run in its own <code>meld mcp --worker</code></td><td>The plugin and <code>meld mcp</code></td></tr>
+          <tr><th>Workers</th><td>Claude workers as subagents of type <code>meld:worker</code>; ACP workers as Codex, Gemini CLI or Cursor agent processes</td><td>The developer's session and machine</td></tr>
+          <tr><th>Workspaces</th><td>One jj workspace per worker over a private bare store, or one git worktree per worker without jj 0.40 or newer</td><td><code>/tmp/meld/&lt;run&gt;/</code></td></tr>
+          <tr><th>Integration line</th><td>A branch that each <code>finish_task</code> moves with a merge of git plumbing; Deliver merges its final commit into the developer's branch</td><td>The run's store</td></tr>
+          <tr><th>Restarts</th><td>The plugin restarts Claude workers at the end of each main-session turn; <code>meld mcp</code> restarts ACP workers every 500 ms. A worker goes on in its own session while its context fills less than half of its window.</td><td>The plugin and <code>meld mcp</code></td></tr>
+          <tr><th>Permissions</th><td>An edit guard refuses a Claude worker's edits outside its folder. meld answers each ACP permission ask, and refuses edits outside the workspace.</td><td>The plugin and <code>meld mcp</code></td></tr>
+          <tr><th>Pane</th><td>Reads the board over a Unix socket every 3 seconds and draws agents, progress, shared context, checks and steer controls</td><td>Claude Code's side pane</td></tr>
+        </tbody>
+      </table>
+      <p class="tnote">Limits: 1 to 8 workers and one run per session; workspaces start without installed dependencies; the edit guard does not cover shell commands, so it is a guard rail, not a sandbox. When <code>meld mcp</code> does not start, the run lives in the session state and has no record.</p>
+    </div>
+  </section>
+
+  
+</article>
+</body>
+</html>
