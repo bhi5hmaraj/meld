@@ -14,6 +14,7 @@ const FACT = 'The colors live in theme.ts'
 const FILE = `${ARCHIVE}/r1.json`
 const MAKE_FOLDER = `mkdir -p -m 700 ${ARCHIVE}`
 const OWNER_ONLY = `chmod 600 ${FILE}`
+const FOLDER_OWNER_ONLY = `chmod 700 ${ARCHIVE}`
 const REMOVE_HOME = 'rm -rf -- /tmp/meld/r1'
 const KEPT = 'The run and its workspaces stay.'
 const WORKER: AgentSpec = { type: 'meld:worker' }
@@ -92,4 +93,11 @@ test('Deliver merges nothing when meld cannot write the archive', async () => {
   expect(await deliver(io)).toBe(`meld could not write the archive ${FILE}: mkdir: failed. ${KEPT}`)
   expect(io.current?.state).toBe('ready')
   expect(io.ran('git merge')).toBe(false)
+})
+
+test('an archive folder that exists with a looser mode is open to its user only before meld writes the record', async () => {
+  const io = ioWith(ready())
+  await deliver(io)
+  expect(io.commands.indexOf(FOLDER_OWNER_ONLY)).toBeGreaterThan(io.commands.indexOf(MAKE_FOLDER))
+  expect(io.commands.indexOf(FOLDER_OWNER_ONLY)).toBeLessThan(io.commands.indexOf(OWNER_ONLY))
 })

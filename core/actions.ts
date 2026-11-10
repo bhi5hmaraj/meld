@@ -1184,8 +1184,10 @@ async function archiveRun(io: CodeHost & Archive, run: Run): Promise<string | un
     const folder = await io.archiveFolder()
     const path = `${folder}/${run.id}.json`
     const made = await command(io, run.repo, ['mkdir', '-p', '-m', '700', folder])
-    if (made.ok) await io.writeFile(path, JSON.stringify(record, null, 2))
-    const closed = made.ok ? await command(io, run.repo, ['chmod', '600', path]) : made
+    // mkdir -p keeps the mode of a folder that was there, so the chmod closes it before the write.
+    const shut = made.ok ? await command(io, run.repo, ['chmod', '700', folder]) : made
+    if (shut.ok) await io.writeFile(path, JSON.stringify(record, null, 2))
+    const closed = shut.ok ? await command(io, run.repo, ['chmod', '600', path]) : shut
     return closed.ok ? undefined : `meld could not write the archive ${path}: ${closed.err}. ${ARCHIVE_KEPT}`
   } catch (error) {
     return `meld could not write the archive: ${String(error)}. ${ARCHIVE_KEPT}`
