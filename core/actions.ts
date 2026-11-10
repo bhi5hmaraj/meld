@@ -2,8 +2,8 @@ import type { AgentContext, BoardView, Change, Facts, Failure, Final, NewTask, P
 import * as board from './board'
 import { COMPACT_KEEP, CONTROL_TOOLS, HAND_BACK, integrateDetail, integrateStep, missingWorkText, splitNudge, TOOL, wakeText, workerPrompt, workerRules } from './contract'
 import type { Control } from './contract'
-import { GIT_MIN, gitVersion, headCommit, isDirty, isOldGit, repoRoot } from './git'
-import type { Clock, CodeHost, CommandReply, FactsStore, Io, Runner, Spawned, Store, Surface, TokenUsage, ToolCall, ToolReply } from './ports'
+import { command, GIT_MIN, gitVersion, headCommit, isDirty, isOldGit, repoRoot } from './git'
+import type { Archive, Clock, CodeHost, CommandReply, FactsStore, Io, Runner, Spawned, Store, Surface, TokenUsage, ToolCall, ToolReply } from './ports'
 import { agentSpecOf, agentsOf, isAcpSpec, MAX_AGENTS, parseStart, WORKER_TYPE } from './options'
 import type { StartOptions } from './options'
 import { claimable } from './tasks'
@@ -25,6 +25,7 @@ const NUDGE_LIMIT = 3
 const STUCK_TOAST = 'meld: three restarts in a row finished no task. Steer the workers or stop the run.'
 const LIVENESS_GRACE_MS = 15_000
 const JJ_MISSING = 'jj 0.40 or newer is not installed. Use --vcs git or --vcs auto.'
+const ARCHIVE_KEPT = 'The run and its workspaces stay.'
 export const LEADING_CD = /^(?:\s*cd\s+\S+\s*(?:&&|;)\s*)+/
 
 type Args = Record<string, unknown>
@@ -93,7 +94,8 @@ async function startAlone(io: Io, cwd: string, options: StartOptions): Promise<C
   if (current?.state === 'stopped') {
     const kept = await keptWork(io, current)
     if (kept) return { text: kept }
-    await dropRun(io, current)
+    const unarchived = await dropRun(io, current)
+    if (unarchived) return { text: unarchived }
   }
   const named = await namedRepo(io, options.request)
   const repo = named?.repo ?? (await repoRoot(io, cwd))
@@ -1012,16 +1014,18 @@ function nextWorkerId(run: Run): WorkerId {
  * Merges the final commit into the branch of the person. The run is delivered before meld removes its folder, as a
  * board file keeps no delivered run: a worker that ends its turn during the removal does not make the folder again.
  */
-export async function deliver(io: Store & CodeHost & Clock): Promise<string> {
+export async function deliver(io: Store & CodeHost & Clock & Archive): Promise<string> {
   const run = await readRun(io)
   if (!run || run.state !== 'ready' || !run.final) return 'There is no final commit to deliver.'
   const missing = lackingWork(run, await heldInFinal(io, run, run.final.commit))
   if (missing.length) return lackingDelivery(run.final.commit, missing)
   if (await isDirty(io, run.repo)) return 'Commit or stash the changes in your checkout first, then deliver.'
+  const now = await io.now()
+  const unarchived = await archiveRun(io, board.markDelivered(run, now))
+  if (unarchived) return unarchived
   const vcs = vcsFor(run.vcs)
   const merged = await vcs.deliver(io, run, run.final.commit, deliveryMessage(run))
   if (!merged.ok) return `The merge stopped, and nothing changed: ${merged.err || merged.out}`
-  const now = await io.now()
   await writeRunOf(io, run.id, current => board.markDelivered(current, now))
   await vcs.remove(io, run)
   return `Merged ${run.final.commit.slice(0, 7)} into your branch.`
@@ -1035,24 +1039,48 @@ function lackingDelivery(final: string, missing: readonly Task[]): string {
   return `Nothing changed: the final commit ${final.slice(0, 7)} lacks the work of ${tasks}, which ${one ? 'is' : 'are'} done on the board. Steer the run so that an agent merges ${one ? 'it' : 'them'}, for example /meld-steer Merge ${ids} into the final commit. Then deliver the new final commit.`
 }
 
-export async function discard(io: Store & CodeHost & FactsStore & Clock & Runner): Promise<string> {
+export async function discard(io: Store & CodeHost & FactsStore & Clock & Runner & Archive): Promise<string> {
   const run = await readRun(io)
   if (!run) return 'There is no run.'
   if (LIVE_STATES.has(run.state)) await stopAll(io)
-  await dropRun(io, run)
-  return 'The run and its workspaces are gone.'
+  return (await dropRun(io, run)) ?? 'The run and its workspaces are gone.'
 }
 
 /**
- * Drops the run and its facts, then removes the workspaces of a run that meld did not deliver. The run goes first: a
- * worker that ends its turn during the removal then writes no run, so no board file makes its folder again.
- * Its agents retire, so the guard refuses the calls of an agent that still runs during the removal.
+ * Archives the run, drops it and its facts, then removes the workspaces of a run that meld did not deliver. The run goes
+ * first: a worker that ends its turn during the removal then writes no run, so no board file makes its folder again.
+ * Its agents retire, so the guard refuses the calls of an agent that still runs during the removal. When meld cannot
+ * write the archive, the run and its workspaces stay, and the reason comes back.
  */
-async function dropRun(io: Store & FactsStore & CodeHost, run: Run): Promise<void> {
+async function dropRun(io: Store & FactsStore & CodeHost & Archive, run: Run): Promise<string | undefined> {
+  const latest = await readRun(io)
+  const unarchived = await archiveRun(io, latest?.id === run.id ? latest : run)
+  if (unarchived) return unarchived
   for (const worker of run.workers) if (worker.agentId) retired.add(worker.agentId)
   await io.write(() => null)
   await io.writeFacts(null)
   if (run.state !== 'delivered') await vcsFor(run.vcs).remove(io, run)
+  return undefined
+}
+
+/**
+ * Writes the record of the run to <archive folder>/<run id>.json, open to its user only: the run, the board (request,
+ * steers, tasks), the events and the context entries. The folder is 0700 before the file is there, so no other user
+ * reads the file before its chmod. Gives the reason when it could not write the record.
+ */
+async function archiveRun(io: CodeHost & Archive, run: Run): Promise<string | undefined> {
+  const { request, tasks, log, context, ...rest } = run
+  const record = { run: rest, board: { request, steers: board.steersOf(run), tasks }, events: log, context: context ?? [] }
+  try {
+    const folder = await io.archiveFolder()
+    const path = `${folder}/${run.id}.json`
+    const made = await command(io, run.repo, ['mkdir', '-p', '-m', '700', folder])
+    if (made.ok) await io.writeFile(path, JSON.stringify(record, null, 2))
+    const closed = made.ok ? await command(io, run.repo, ['chmod', '600', path]) : made
+    return closed.ok ? undefined : `meld could not write the archive ${path}: ${closed.err}. ${ARCHIVE_KEPT}`
+  } catch (error) {
+    return `meld could not write the archive: ${String(error)}. ${ARCHIVE_KEPT}`
+  }
 }
 
 /** Reads what the version control shows of the run, for the pane: the commits of each worker, and the change of the final commit. */
