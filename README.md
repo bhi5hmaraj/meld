@@ -139,6 +139,8 @@ Then ask the chat, for example "start a meld run with 2 codex agents to add a da
 
 The agents use eleven board tools: `board`, `add_tasks`, `claim`, `split`, `release`, `finish_task`, `note`, `share`, `check`, `integrate` and `finish`. The main session has three more: `start`, `steer` and `stop`. These three refuse a call from an agent or another subagent.
 
+With `view: "status"`, `board` gives the main session a short board, and with no view the full board. The short board has the run state, the task counts and the log entries since the last status read. A task row has the id, title, state, owner, and the needs that are not done. An agent row has the id, state, claims, and the seconds since the last call.
+
 <details>
 <summary><b>The board</b>: versions, the task tree, the percent, the shared context</summary>
 

@@ -1,6 +1,6 @@
 import type { AgentContext, BoardView, Change, Facts, Failure, Final, NewTask, PaneView, Run, Task, TaskSize, VcsKind, Worker, WorkerId, WorkerState } from '../types'
 import * as board from './board'
-import { COMPACT_KEEP, CONTROL_TOOLS, HAND_BACK, integrateDetail, integrateStep, missingWorkText, splitNudge, TOOL, wakeText, workerPrompt, workerRules } from './contract'
+import { COMPACT_KEEP, CONTROL_TOOLS, HAND_BACK, integrateDetail, integrateStep, missingWorkText, splitNudge, STATUS_VIEW, TOOL, wakeText, workerPrompt, workerRules } from './contract'
 import type { Control } from './contract'
 import { GIT_MIN, gitVersion, headCommit, isDirty, isOldGit, repoRoot } from './git'
 import type { Clock, CodeHost, CommandReply, FactsStore, Io, Runner, Spawned, Store, Surface, TokenUsage, ToolCall, ToolReply } from './ports'
@@ -71,6 +71,8 @@ export async function writeRun(io: Store, change: (run: Run) => Run): Promise<Ru
 function writeRunOf(io: Store, id: string, change: (run: Run) => Run): Promise<Run | null> {
   return writeRun(io, current => (current.id === id ? change(current) : current))
 }
+
+const NO_RUN = { state: 'none', message: 'There is no meld run. The person starts one with /meld <task>.' }
 
 const RUN_ACTIVE = 'A run is active. Deliver, discard or stop it first: /meld-deliver, /meld-discard or /meld-stop, or the meld pane.'
 
@@ -261,7 +263,8 @@ export async function serveTool(io: Io, e: ToolCall, cwd = ''): Promise<ToolRepl
     if (!control) return reply(await startFromTool(io, args, cwd))
     return reply({ text: await controlRun(io, control, text(control === 'steer' ? args.text : args.agent)) })
   }
-  if (!worker) return reply(tool === TOOL.board ? await overview(io) : { error: 'NOT_WORKER', message: 'The meld tools are for the meld workers.' })
+  if (!worker && tool === TOOL.board) return reply((e as unknown as Args).view === STATUS_VIEW ? await statusView(io) : await overview(io))
+  if (!worker) return reply({ error: 'NOT_WORKER', message: 'The meld tools are for the meld workers.' })
   const now = await io.now()
   if (tool === TOOL.board) return reply(await readBoard(io, worker.id, now))
   const checked = await withResolvedCommit(io, tool, e as unknown as Args, worker)
@@ -490,10 +493,39 @@ async function readBoard(io: Store & Runner, id: WorkerId, now: number): Promise
   return view ?? { error: 'RUN_ENDED', message: 'There is no meld run.' }
 }
 
+/**
+ * The compact board of the main session: the task counts, one row for each task and each worker, and the log entries
+ * since its last status read.
+ */
+async function statusView(io: Store & Clock): Promise<unknown> {
+  const now = await io.now()
+  let status: unknown = NO_RUN
+  await io.write(run => {
+    if (!run) return run
+    const doneIds = new Set(run.tasks.filter(task => task.state === 'done').map(task => task.id))
+    const seen = run.sessionSeen ?? 0
+    status = {
+      id: run.id,
+      state: run.state,
+      counts: Object.fromEntries((['open', 'claimed', 'done'] as const).map(state => [state, run.tasks.filter(task => task.state === state).length])),
+      tasks: run.tasks.map(task => ({ id: task.id, title: task.title, state: task.state, owner: task.owner, needs: (task.needs ?? []).filter(need => !doneIds.has(need)) })),
+      workers: run.workers.map(worker => ({
+        id: worker.id,
+        state: worker.state,
+        claims: claimsOf(run, worker).map(task => task.id),
+        secondsSinceCall: Math.round((now - worker.activityAt) / 1000),
+      })),
+      log: run.log.filter(entry => entry.id > seen).map(({ id, at, by, kind, text, commit, passed }) => ({ id, at, by, kind, text, commit, passed })),
+    }
+    return { ...run, sessionSeen: run.log.at(-1)?.id ?? seen }
+  })
+  return status
+}
+
 /** What the main session reads of the board: the run as a whole. */
 async function overview(io: Store): Promise<unknown> {
   const run = await readRun(io)
-  if (!run) return { state: 'none', message: 'There is no meld run. The person starts one with /meld <task>.' }
+  if (!run) return NO_RUN
   return {
     id: run.id,
     state: run.state,

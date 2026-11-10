@@ -7,6 +7,9 @@ import type { LineMerge } from './vcs'
 /** The start of the name of each tool of meld, as Claude Code names the tools of the plugin meld. */
 export const TOOL_PREFIX = 'mcp__meld__'
 
+/** The board view that gives the main session its compact status; a board read with no view gives the full board. */
+export const STATUS_VIEW = 'status'
+
 export const TOOL = {
   board: 'mcp__meld__board',
   addTasks: 'mcp__meld__add_tasks',
@@ -147,7 +150,17 @@ export const TOOL_SPECS: ToolSpec[] = [
     name: 'board',
     description:
       'Read the meld board: who you are, your folder, the other workers, the request and the steers of the person, the tasks, the news from the other workers since your last read, and the shared-context entries that are new for you. The first read also gives your rules.',
-    inputSchema: { type: 'object', properties: {} },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        view: {
+          type: 'string',
+          enum: [STATUS_VIEW],
+          description:
+            'For the main session only. status gives a compact board: the run state, the task counts, one row for each task and each worker, and the log entries since the last status read. With no view, the main session gets the full board.',
+        },
+      },
+    },
   },
   {
     name: 'add_tasks',
