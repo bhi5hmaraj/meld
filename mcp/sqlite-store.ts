@@ -300,7 +300,7 @@ export class SqliteBoards {
       .immediate()
   }
 
-  /** Writes a copy of the file to `path`, an empty file or none, as one consistent read: writers go on meanwhile. */
+  /** Writes a copy of the file to `path`, where no file is, as one consistent read: writers go on meanwhile. */
   copyTo(path: string): void {
     this.db.query('VACUUM INTO ?').run(path)
   }
