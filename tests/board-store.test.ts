@@ -1,7 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { AgentState, Runner, SpawnArgs, Spawned } from '../core/ports'
-import { boardVerdict, problemOf, sessionRunner, storeNote, withNote, workerOffer } from '../hooks/board-store'
+import type { Run } from '../types'
+import { boardVerdict, noBoardWarning, problemOf, sessionRunner, storeNote, withNote, workerOffer } from '../hooks/board-store'
 
 const SERVER = 'plugin:meld:board'
 const READ = 'mcp__plugin_meld_board__read_board'
@@ -55,8 +56,8 @@ test('the meld:worker type stays hidden from the model, except while meld resume
   expect(workerOffer(true)).toBeUndefined()
 })
 
-test('an unlisted meld mcp names the reload that starts it, and another refusal keeps its message', () => {
-  expect(problemOf({ reason: 'unlisted', message: UNLISTED })).toBe(`${UNLISTED} This session loaded meld before its manifest listed meld mcp: /reload-plugins or a new session starts it.`)
+test('an unlisted meld mcp says that the session started before meld, and names the steps that start it', () => {
+  expect(problemOf({ reason: 'unlisted', message: UNLISTED })).toBe(`${UNLISTED} This session started before meld was installed or updated, so the MCP server of meld did not start. A new session starts it. In a local session, /reload-plugins starts it too.`)
   expect(problemOf({ reason: 'failed', message: 'bun: not found' })).toBe('bun: not found')
 })
 
@@ -100,4 +101,22 @@ test('without meld mcp, an ACP worker does not start and says why, and the liven
   expect(await runner.resume?.('acp-1', 'Go on')).toBe(false)
   expect(calls).toEqual([])
   expect([...((await runner.agents()) ?? [])]).toEqual([['agent-1', 'live']])
+})
+
+test('a new run with no board file gets a warning that it ends with the session, and says why meld mcp is not there', () => {
+  const none = { server: '', id: 's1', owner: 's1', problem: 'bun: not found', channel: '' }
+  const warning = noBoardWarning(none, null, { id: 'r2', workers: [{ id: 'w1', agentId: 'agent-1' }] } as Run)
+  expect(warning).toContain('This run has no board file')
+  expect(warning).toContain('ends with the session')
+  expect(warning).toContain('bun: not found')
+})
+
+test('a run on the board of meld mcp, a start with no started worker and an old run get no warning', () => {
+  const none = { server: '', id: 's1', owner: 's1', problem: 'bun: not found', channel: '' }
+  const served = { ...none, server: SERVER, problem: '' }
+  const started = { id: 'r2', workers: [{ id: 'w1', agentId: 'agent-1' }] } as Run
+  expect(noBoardWarning(served, null, started)).toBe('')
+  expect(noBoardWarning(none, null, null)).toBe('')
+  expect(noBoardWarning(none, null, { id: 'r2', workers: [{ id: 'w1' }] } as Run)).toBe('')
+  expect(noBoardWarning(none, started, started)).toBe('')
 })

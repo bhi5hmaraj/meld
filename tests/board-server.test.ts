@@ -388,3 +388,22 @@ test('at the end of a turn, the plugin carries out what workers of meld mcp left
   expect(sent).toEqual(['agent-2: There is open work on the board.'])
   expect(toasts).toEqual(['meld: the result is ready.'])
 })
+
+test('without meld mcp, a start that starts no worker gives no warning about the board file', async ($, on) => {
+  let stored: unknown
+  answerTheEngine(on, undefined)
+  on('state.get', ($, e) => ({ value: e.key === 'run' ? { value: stored, version: 1 } : { value: undefined, version: 0 } }))
+  on('state.set', ($, e) => {
+    if (e.key === 'run') stored = e.value
+    return { value: { isSet: true, version: 2 } }
+  })
+  on('process.run', ($, e) => gitAnswer(e.argv))
+  on('session.usage', () => ({ value: { startedAt: NOW, cost: { usd: 0 } } as never }))
+  on('agent.list', () => ({ value: [] }))
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'agent-9' }))
+  on('ui.open', () => ({ value: { isPlaced: false, reason: 'a test draws no pane' } }))
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  const replied = await $.command.run({ command: 'meld', args: '--agents 2 --vcs git Add a greeting', ...TYPED })
+  expect(replied.text).toContain('No worker started')
+  expect(replied.text).not.toContain('This run has no board file')
+})

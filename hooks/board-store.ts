@@ -13,7 +13,7 @@ import type { Run } from '../types'
 export type SessionBoard = { server: string; id: string; owner: string; problem: string; channel: string }
 
 /** Where the run of the session lives, for the board tool of the main session. */
-export type StoreNote = { store: string; board?: string; why?: string }
+export type StoreNote = { store: string; board?: string; why?: string; warning?: string }
 
 /** The tools of meld mcp as the session names them: the engine connects it as `plugin:meld:board`. */
 export const BOARD_STORE_TOOLS = /^mcp__plugin_meld_board__/
@@ -21,7 +21,7 @@ export const BOARD_STORE_TOOLS = /^mcp__plugin_meld_board__/
 /** The name of this plugin, as the origin of each call that one of its hooks makes. */
 const MELD = 'meld'
 const ONLY_MELD = 'Only meld calls the board store of meld mcp.'
-const RELOAD = 'This session loaded meld before its manifest listed meld mcp: /reload-plugins or a new session starts it.'
+const RELOAD = 'This session started before meld was installed or updated, so the MCP server of meld did not start. A new session starts it. In a local session, /reload-plugins starts it too.'
 const ACP_NEEDS_MCP = 'meld runs ACP agents such as Codex through meld mcp, which did not connect'
 
 type Verdict = { decision: 'allow' | 'deny'; reason: string }
@@ -116,6 +116,16 @@ export function workerOffer(isResuming: boolean): { isOffered: false } | undefin
 /** Why meld mcp did not connect: the refusal of the engine, with the step that starts meld mcp when the session holds an old manifest. */
 export function problemOf(refusal: { reason: string; message: string }): string {
   return refusal.reason === 'unlisted' ? `${refusal.message} ${RELOAD}` : refusal.message
+}
+
+/**
+ * What a start tells the person when its new run has no board file: the run lives in the session state, so it ends
+ * with the session. A start with no started worker, a run that was there before, and a run on the board of meld mcp
+ * get no warning.
+ */
+export function noBoardWarning(session: SessionBoard, before: Run | null, after: Run | null): string {
+  if (session.server || !after || after.id === before?.id || !after.workers.some(worker => worker.agentId)) return ''
+  return `This run has no board file: it lives in the session state, it ends with the session, and /meld-resume cannot take it. meld mcp did not connect: ${session.problem}`
 }
 
 export function storeNote(session: SessionBoard): StoreNote {

@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { AgentStatus, Register } from 'claude-code'
+import type { AgentStatus, HookFailure, Register } from 'claude-code'
 
 import { controlRun, countStep, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll } from '../core/actions'
 import { cleanFolders } from '../core/clean'
@@ -8,7 +8,7 @@ import { resumeRun } from '../core/resume'
 import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL, TOOL_PREFIX, TOOL_SPECS, WORKER_SYSTEM } from '../core/contract'
 import type { AgentState, FactsStore, Files, Io, RunRecord, RunRecords, Spawned, Store } from '../core/ports'
 import { parseStart, WORKER_TYPE } from '../core/options'
-import { adoptedOf, BOARD_STORE_TOOLS, boardVerdict, copyFromChannel, problemOf, sessionRunner, sessionStore, storeNote, valueOf, withNote, workerOffer } from './board-store'
+import { adoptedOf, BOARD_STORE_TOOLS, boardVerdict, copyFromChannel, noBoardWarning, problemOf, sessionRunner, sessionStore, storeNote, valueOf, withNote, workerOffer } from './board-store'
 import type { SessionBoard } from './board-store'
 import { DEFAULT_VIEW, paneTree } from './pane'
 
@@ -22,6 +22,8 @@ const FACTS_MS = 3000
 const ENDED_AGENT = new Set<AgentStatus>(['completed', 'failed', 'killed'])
 const START_KEY = 'start'
 const PRESS_KEYS = [START_KEY, ...STEER_PRESETS.map(preset => `preset-${preset.key}`)]
+/** The longest reason that a refusal quotes from a failed hook. */
+const REASON_CHARS = 300
 
 let sessionCwd = ''
 /** The board of this session in meld mcp. With no board server, each hook keeps the run in the session state, as meld 0.8 does. */
@@ -38,6 +40,12 @@ async function offering<T>(send: () => Promise<T>): Promise<T> {
   } finally {
     resuming -= 1
   }
+}
+
+/** The refusal of a meld call whose hook failed: it names the reason, so the agent and the person can tell a broken board from a lost race. */
+function failedText(what: string, error: HookFailure): string {
+  const reason = error.message ? `${error.kind}: ${error.message.slice(0, REASON_CHARS)}` : error.kind
+  return `meld: ${what} failed (${reason}). Try the call again.`
 }
 
 function stateOf(status: AgentStatus): AgentState {
@@ -195,7 +203,11 @@ export const register: Register = on => {
     const args = e.args.trim()
     if (e.command === 'meld') {
       const options = parseStart(args)
-      return 'error' in options ? { text: options.error } : startRun(io, sessionCwd, options)
+      if ('error' in options) return { text: options.error }
+      const before = await io.read()
+      const started = await startRun(io, sessionCwd, options)
+      const warning = noBoardWarning(board, before, await io.read())
+      return warning ? { text: `${started.text ?? ''}\n\n${warning}` } : started
     }
     const control = COMMAND_CONTROLS[e.command as keyof typeof COMMAND_CONTROLS]
     if (control) return { text: await controlRun(io, control, args) }
@@ -261,8 +273,17 @@ export const register: Register = on => {
       toast: text => $.ui.toast(text),
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
     }
-    return serveTool(io, e, sessionCwd)
-  }).catch(($, e, next) => (next.called ? next(e) : { deny: 'meld: the control of the run failed. Try the call again.' }))
+    const starts = String(e.tool) === TOOL.start
+    const before = starts ? await io.read() : null
+    const replied = await serveTool(io, e, sessionCwd)
+    const warning = starts ? noBoardWarning(board, before, await io.read()) : ''
+    return warning && 'result' in replied ? withNote(replied, { ...storeNote(board), warning }) : replied
+  }).catch(($, e, next) => {
+    if (next.called) return next(e)
+    const deny = failedText('the control of the run', next.error)
+    $.ui.log(deny, { to: 'debug' })
+    return { deny }
+  })
 
   on(
     'tool.call',
@@ -314,7 +335,12 @@ export const register: Register = on => {
       const replied = await serveTool(io, e)
       return e.agentId === undefined && String(e.tool) === TOOL.board ? withNote(replied, storeNote(board)) : replied
     },
-  ).catch(($, e, next) => (next.called ? next(e) : { deny: 'meld: the board failed. Try the call again.' }))
+  ).catch(($, e, next) => {
+    if (next.called) return next(e)
+    const deny = failedText('the board', next.error)
+    $.ui.log(deny, { to: 'debug' })
+    return { deny }
+  })
 
   on('tool.call', async ($, e, next) => {
     if (String(e.tool).startsWith(TOOL_PREFIX)) return next(e)
@@ -361,7 +387,11 @@ export const register: Register = on => {
     }
     const deny = await guardCall(io, e)
     return deny ? { deny } : next(e)
-  }).catch(($, e, next) => next(e))
+  }).catch(($, e, next) => {
+    // The guard lets the call through when it fails, so a broken board does not stop every tool of the session. The debug log keeps the reason.
+    $.ui.log(failedText('the guard of tool calls', next.error), { to: 'debug' })
+    return next(e)
+  })
 
 
   /** Each model call of a worker adds its tokens at once: a worker does a task in one long turn. */
