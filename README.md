@@ -170,6 +170,13 @@ The first board reply to a new agent carries the 20 newest current entries. Each
 
 **Edit guard.** meld refuses an edit that an agent makes outside its own workspace. It refuses each tool call of an agent that you stopped, of an agent of a stopped or discarded run, and of a new agent that took no place on the board, and tells that agent to end its turn.
 
+**Permission checks.** meld has two `tool.check` hooks. Claude Code runs the `tool.check` hooks of all plugins in a chain. A hook can give a verdict and not call the next hook. When a hook of another plugin does this, the check of meld does not run:
+
+- The board check allows the calls of meld to `meld mcp`, and refuses the calls of agents, of the main session and of other plugins. Without it, the other plugin or the mode of your session decides each call. A call of meld can wait for your answer or fail, and a call of an agent is not refused.
+- The Agent check approves each start and restart of an agent in auto mode, while a run that you started is live. Without it, auto mode refuses these starts, and meld shows the reason in the lane of the agent.
+
+The edit guard is a `tool.call` hook, and a skip in `tool.check` does not stop it.
+
 </details>
 
 <details>
@@ -304,7 +311,7 @@ meld takes its idea from [DeLM](https://github.com/Decentralized-LM/delm-agent-p
 - An agent of another type has the tools of that type. Give a type that has the meld tools and can edit files and run commands, for example `general-purpose`.
 - If the `meld:worker` type does not register, meld shows a notice. Give another agent type with `--agents`.
 - More agents cost more. The header shows the dollars since the run started, and each lane shows the tool calls of its agent. The board that your session reads gives the tokens of each agent.
-- The edit guard covers Edit, Write, MultiEdit and NotebookEdit. A Bash command can write in other folders, so the guard is a guard rail, not a sandbox.
+- The edit guard covers Edit, Write, MultiEdit and NotebookEdit. A Bash command can write in other folders, so the guard is a guard rail, not a sandbox. The rules tell each agent to write only in its own folder.
 - The plugin API of Claude Code is an early access API, and it can change between releases.
 
 ## Development
