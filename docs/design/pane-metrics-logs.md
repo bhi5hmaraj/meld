@@ -1,6 +1,6 @@
 # The pane, the system metrics and the logs
 
-Status: draft. The note is checked against meld 0.10.0 (`main` at `8077ba6`). It is also checked against six local runs from 5 to 9 November 2026 and against issues #4 to #12. Section 1 adds one run of 10 November 2026 on 0.10.1.
+Status: draft. The note is checked against meld 0.10.0 (`main` at `8077ba6`). It is also checked against local runs from 5 to 9 November 2026 and against issues #4 to #12. Section 1 adds one run of 10 November 2026 on 0.10.1.
 
 0.10.1 builds four parts of this note:
 
@@ -17,16 +17,12 @@ This note gives a new design for the pane, a set of system metrics, and a strate
 
 ### 1.1 The runs
 
-Six runs of 0.10.0 ran on one machine from 5 to 9 November 2026. Five of them are in the board file. The sixth lived in the session state only, so it left no record (section 1.3).
+The runs ran on one machine from 5 to 10 November 2026. This note gives the data of three of them: two on a personal project, and one on meld itself. Runs on other projects give lessons only, with no data.
 
 | Run | Agents | Version control | Tasks done | State at the end |
 |---|---|---|---|---|
-| `mw38t4o2kp7p` | 3 Claude | jj | 7 of 13 | working, not ended |
 | `mw39gfifqits` | 1 Claude, 2 Codex | jj | 4 of 4 | stopped |
 | `mw3antkq04bh` | 1 Claude, 2 Codex | jj | 9 of 9 | ready |
-| `mw3migqswl0c` | 2 Claude, 1 Codex | jj | 9 of 13 | working, stalled by #7 |
-| `mw7mpeaekjnm` | 3 Claude | git | 6 of 6 | ready; the Mac slept from minute 21 to minute 180 |
-| `mw90j8nd5uxa` | 3 Claude | git | not recorded | session state only |
 | `mwajbtef7xze` | 2 Claude | git | 6 of 6 | delivered; 0.10.1, a session with no person |
 
 ### 1.2 Metrics measured from the board file
@@ -35,26 +31,23 @@ The numbers below come from the task times and the events of each run. A worker 
 
 | Run | Window | 3 busy | 2 busy | 1 busy | 0 busy | Balance | Largest share of work | Entries read by another agent | Checks failed | Steers |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `mw38t4o2kp7p` | 60 min | 55 | 5 | 0 | 0 | 0.99 | w2, 46% | 19 of 19 | 5 of 19 | 2 |
 | `mw39gfifqits` | 7 min | 5 | 2 | 0 | 0 | 0.88 | w3 (Codex), 50% | 14 of 14 | 1 of 10 | 0 |
 | `mw3antkq04bh` | 41 min | 4 | 11 | 23 | 3 | 0.88 | w1 (Claude), 56% | 23 of 28 | 5 of 25 | 0 |
-| `mw3migqswl0c` | 58 min | 0 | 32 | 24 | 2 | 0.85 | w1 (Claude), 52% | 18 of 18 | 2 of 13 | 4 |
-| `mw7mpeaekjnm` (asleep) | 222 min | 0 | 6 | 187 | 29 | 0.43 | w2, 54% (w3, 0%) | 19 of 19 | 3 of 25 | 6 |
 
-Balance is the mean busy time of the workers divided by the largest busy time. The Mac slept through most of `mw7mpeaekjnm`, so its row measures the sleep, not meld. Share of work is the done weight of each worker (S 1, M 3, L 8).
+Balance is the mean busy time of the workers divided by the largest busy time. Share of work is the done weight of each worker (S 1, M 3, L 8).
 
 ### 1.3 What the runs and the issues show
 
-1. **The machine slept through most of a run, and meld recorded nothing.** In `mw7mpeaekjnm`, the Mac went to idle sleep on battery at minute 21 and woke at minute 180. Only brief maintenance wakes ran in between. The board shows two ready tasks and idle workers for that time, and a task of 137 minutes, but the sleep log of the Mac explains both. The person steered at minute 182, two minutes after the wake. Nothing in the pane or the board said that the machine had slept.
-2. **"Read" tells nothing.** 93 of 98 entries reached at least one other agent. A board reply carries each new entry to every agent, so "read" means "delivered". It does not show use.
+1. **The machine slept through most of a run, and meld recorded nothing.** In one run, the Mac went to idle sleep on battery for most of the run. The board showed ready tasks and idle workers for that time, and one very long task, but the sleep log of the Mac explains both. Nothing in the pane or the board said that the machine had slept.
+2. **"Read" tells nothing.** In the runs of section 1.2, 37 of 42 entries reached at least one other agent. A board reply carries each new entry to every agent, so "read" means "delivered". It does not show use.
 3. **The cost in the pane is too low.** Issue #6 measured 9 runs and 3,980 model calls. Cache reads are 80% of the cost of a run, and the pane left them out (`freshTokens`). 0.10.1 counts each token at its price against input. ACP workers still show 0 tokens.
 4. **Contexts grow with no limit.** A Claude worker grows from about 80k to 400k-570k tokens in a task, and never compacts. A worker keeps its session from task to task while its context uses less than half of its window (`AFFINITY_SHARE`). On a window of 1M tokens, that is up to 500k (issue #6 and its comments). In 0.10.1, a `meld:worker` compacts at the cap of 150k and goes on. In `mwajbtef7xze`, the workers compacted at 117k and 120k, and each summary kept the claimed task.
-5. **A worker waits for its own background work, and meld does not see it.** In `mw3migqswl0c`, a worker watched a finished job with `tail -f` for 10 minutes. The board showed it as idle, and meld did not start it again (issue #4, comment).
-6. **meld starts idle workers again when no task is left.** In `mw90j8nd5uxa`, meld kept starting w1 after all tasks were done. Each start cost tokens.
-7. **A failed hook hides its error.** In `mw3migqswl0c`, every board call failed after one write with a fixed text: "meld: the board failed. Try the call again." The hook catches the error and logs nothing (issue #7). In 0.10.1, the refusal gives the kind and the reason of the failure.
-8. **A run with no board server leaves no record.** In `mw90j8nd5uxa`, `meld mcp` did not start, because the session was parked when the run began. The run lived in the session state. Only one field of a board reply said so: `"store": "the session state"`. The run has no record, no events and no archive. In 0.10.1, a start with no board file says so.
+5. **A worker waits for its own background work, and meld does not see it.** In one run, a worker watched a finished job with `tail -f`. The board showed it as idle, and meld did not start it again (issue #4, comment).
+6. **meld starts idle workers again when no task is left.** In one run, meld kept starting a worker after all tasks were done. Each start cost tokens.
+7. **A failed hook hides its error.** In one run, every board call failed after one write with a fixed text: "meld: the board failed. Try the call again." The hook catches the error and logs nothing (issue #7). In 0.10.1, the refusal gives the kind and the reason of the failure.
+8. **A run with no board server leaves no record.** In one run, `meld mcp` did not start, because the session was parked when the run began. The run lived in the session state. Only one field of a board reply said so: `"store": "the session state"`. The run has no record, no events and no archive. In 0.10.1, a start with no board file says so.
 9. **The history of a run goes after 30 days.** The prune removes the board, the record and the events of an ended run. Only the context entries stay (issue #5). The person archived two runs by hand. 0.10.1 writes an archive file before Deliver, Discard or a new start removes a run.
-10. **The person drives the run with steers.** `mw7mpeaekjnm` had 6 steers, all after the Mac woke. Most of them told idle workers to claim ready tasks, or chose the integrator. The board does not show if meld would have started the workers without them.
+10. **The person drives the run with steers.** In the run on the sleeping machine, the person steered after the wake. Most of the steers told idle workers to claim ready tasks, or chose the integrator. The board does not show if meld would have started the workers without them.
 11. **The share of each agent kind varies.** With one Claude worker and two Codex workers, the Claude worker did 56% of the work in `mw3antkq04bh` and 25% in `mw39gfifqits`. Three runs are too few to compare agent kinds.
 12. **Workers could not commit in a session with no person.** In `mwajbtef7xze`, the shell of each worker started in the folder of the session, not in its own folder. So a worker ran `git -C <its folder>`, and Claude Code asked a person for that form. With no person, the ask became a refusal, and no task could finish. 0.10.1 allows `git -C` and `jj -R` in the own folder of a worker, for the commands of its guide.
 13. **Restarts wait for a turn of the main session (issue #12).** In `mwajbtef7xze`, two workers finished their tasks and then stayed idle for 10 minutes, with three tasks open. In a session with no person, a hand-back started no turn of the main session. A turn that a script sent every 2 minutes started the workers again.
@@ -62,7 +55,7 @@ Balance is the mean busy time of the workers divided by the largest busy time. T
 ### 1.4 Limits of the measurement
 
 - A stalled worker that holds a claim counts as busy. Item 5 of section 1.3 shows that this happens.
-- The board file cannot tell a sleeping machine from idle workers. The sleep log of the operating system shows the sleep of `mw7mpeaekjnm`. No other recorded run overlaps a sleep.
+- The board file cannot tell a sleeping machine from idle workers. The sleep log of the operating system shows a sleep.
 - The board file has no time for the start of a worker or for planning. The window starts at the first task event.
 - The busy time of a worker is from its claims. It does not split the time into model, tools and waits.
 
@@ -188,15 +181,15 @@ These items go from the card: the call count, the seconds since the last tool, a
 - A graphic surface draws the lanes as SVG. The terminal draws one row of cells for each worker, with one shape for each kind.
 - Under the lanes, the pane shows four metrics from section 4: busy share, ready with no agent, task time, and cost per finished task.
 
-In `mw7mpeaekjnm`, the lanes would show the machine asleep from minute 21 to minute 180, across all workers.
+On a machine that sleeps, the lanes show the sleep across all workers.
 
 ### 3.5 Report
 
 When the run is ready, delivered or stopped, the report replaces Flow. meld also writes the report to the archive of the run (section 6.6), so the person can share it. The workspaces folder is not a place for it: Deliver and Discard remove that folder.
 
-The report starts with a story of the run in five sentences. meld fills a fixed template with the metrics of section 4. No model writes it. An example from `mw7mpeaekjnm`:
+The report starts with a story of the run in five sentences. meld fills a fixed template with the metrics of section 4. No model writes it. An example from `mw3antkq04bh`:
 
-> Three agents finished 6 tasks in 3.7 hours, but the machine slept for 159 of those minutes. Without the sleep, the run took about 63 minutes. w3 did no task, and w2 did 54% of the work. 19 entries reached every agent. 3 of 25 checks failed, and the person steered 6 times.
+> Three agents finished 9 tasks in 41 minutes. For 23 of those minutes, only one agent worked. w1 (Claude) did 56% of the work. 23 of 28 entries reached another agent. 5 of 25 checks failed, and the person did not steer.
 
 Under the story, the report gives the lanes of the whole run, and the metrics of section 4 for the run and for each worker.
 
@@ -215,17 +208,19 @@ Words in this section:
 
 | Metric | Definition | Good | Bad | Measured |
 |---|---|---|---|---|
-| Busy share | Busy time of all workers / worker time of all workers | Over 80% | Under 60% | 47% to 97% |
-| Effective parallelism | Busy time of all workers / time of the run | Near the number of workers | Near 1 | 1.4 to 2.9 |
+| Busy share | Busy time of all workers / worker time of all workers | Over 80% | Under 60% | 46% and 90% |
+| Effective parallelism | Busy time of all workers / time of the run | Near the number of workers | Near 1 | 1.4 and 2.7 |
 | Waiting on meld | Time in which a worker waits for a restart, an approval or a merge | Under 5% of worker time | Over 10% | Not recorded |
-| One agent alone | Time in which only one worker is busy / time of the run | Under 10% | Over 25% | 0% to 56% |
-| Machine asleep | Time in which the host machine slept during the run | 0 | Over 0 | 159 of 222 minutes in `mw7mpeaekjnm` |
-| Idle restarts | Starts of a worker with no task ready for it | 0 | Over 0 | Seen in `mw90j8nd5uxa` |
-| Rework | Releases, `integrate #N` tasks and failed checks, for each finished task | 0 | Over 0.3 | 0.22 to 0.71 |
+| One agent alone | Time in which only one worker is busy / time of the run | Under 10% | Over 25% | 0% and 56% |
+| Machine asleep | Time in which the host machine slept during the run | 0 | Over 0 | Seen in one run |
+| Idle restarts | Starts of a worker with no task ready for it | 0 | Over 0 | Seen in one run |
+| Rework | Releases, `integrate #N` tasks and failed checks, for each finished task | 0 | Over 0.3 | 0.25 and 0.56 |
 | Cost per finished task | Cost of the run / finished tasks | Falls from run to run | Rises | Not recorded |
 | Cache read share | Cost units of cache reads / all cost units | Under 50% | Over 70% | 80% (issue #6) |
 | Context per call | The mean and largest context of each worker, against the cap | Under the cap | Over the cap | Mean 141k to 297k, largest 569k (issue #6) |
 | Time by activity | Shares of worker time: model, tests, builds, app, other tools, board, merge, waiting, idle | Model and tests lead | Idle or waiting leads | Not recorded |
+
+The measured values come from the two runs of section 1.2, and from issue #6.
 
 ### 4.2 Progress: how far is the run?
 
@@ -268,7 +263,7 @@ The rules live in one table in `core/`, with tests. They come from the analysis 
 | Metric | Definition |
 |---|---|
 | Entries | Entries for each finished task, by kind: fact, fail, interface |
-| Delivered | Entries that a board reply carried to at least one other agent / all entries. This is `seenBy` today. In the five recorded runs it was 95%, because each reply carries each new entry to every agent. It is a check that delivery works, not a measure of use. |
+| Delivered | Entries that a board reply carried to at least one other agent / all entries. This is `seenBy` today. It is high, because each reply carries each new entry to every agent. It is a check that delivery works, not a measure of use. |
 | Time to delivery | Time from an entry to its first delivery |
 | Cited | Entries that a finish names in `used` / entries that its worker received. This needs a new optional field `used` in `finish_task`: the ids of the entries that helped. |
 | Fails heeded | Fail entries whose receivers did not share a fail with the same files after they received it / fail entries with receivers |
@@ -288,9 +283,9 @@ The rules live in one table in `core/`, with tests. They come from the analysis 
 | Idle while others work | For each worker: its idle time while another worker is busy | Near 0 |
 | Agent mix | The share of work for each agent kind (Claude, Codex, Gemini, Cursor) and its rework | Same rework for each kind |
 
-Balance of busy time and share of work can disagree. In `mw38t4o2kp7p` the busy times were equal (balance 0.99), but w2 did 46% of the weight. The report shows both.
+Balance of busy time and share of work can disagree. In one run, the busy times were equal, but one worker did almost half of the weight. The report shows both.
 
-A run can be fair and slow, or unfair and fast. So the pane shows balance together with "one agent alone". In `mw7mpeaekjnm`, the sleep of the machine caused most of the imbalance. In the 0.7.0 runs, one large task at the end caused it. The first needs a machine that stays awake. The second needs a smaller task.
+A run can be fair and slow, or unfair and fast. So the pane shows balance together with "one agent alone". In the run on the sleeping machine, the sleep caused most of the imbalance. In the 0.7.0 runs, one large task at the end caused it. The first needs a machine that stays awake. The second needs a smaller task.
 
 ### 4.6 Across runs
 
@@ -321,7 +316,7 @@ Rules for these records:
 - Keep sums, not one row for each tool call.
 - Write the new fields in the store commit that each step already makes. Add no extra writes.
 - The run shape becomes `run-5`.
-- Each metric is a pure function of the run and its events, in `core/metrics.ts`, with tests. The tests include the five runs of section 1.2, from their archives.
+- Each metric is a pure function of the run and its events, in `core/metrics.ts`, with tests. The tests include the runs of section 1.2, from their archives.
 
 ### 5.2 What the metrics leave out
 
@@ -347,7 +342,7 @@ The board events and the archive are part of the product. The logs are for debug
 Each line is one JSON object:
 
 ```json
-{"at":"2026-11-05T15:15:18.120Z","level":"error","src":"hooks","run":"mw3migqswl0c","worker":"w2","agent":"claude","task":12,"event":"board.call","ms":38,"ok":false,"detail":"<the message of the error>"}
+{"at":"2026-11-05T15:15:18.120Z","level":"error","src":"hooks","run":"r1","worker":"w2","agent":"claude","task":12,"event":"board.call","ms":38,"ok":false,"detail":"<the message of the error>"}
 ```
 
 - `level`: error, warn, info or debug.
@@ -395,7 +390,7 @@ Commands go through a redaction of known secret shapes before they go to the log
 
 The hooks do not write files. Each store commit of the hooks to `meld mcp` carries the log lines of that step, and `meld mcp` appends them. A worker of `meld mcp --worker` appends its own lines with the same function.
 
-When `meld mcp` does not connect, as in `mw90j8nd5uxa`, the hooks keep the lines in the session state, at most 500. They also send each warning and error to the debug log of Claude Code with `$.ui.log(text, { to: 'debug' })`. When the run moves to the board file, `meld mcp` writes the kept lines first.
+When `meld mcp` does not connect, the hooks keep the lines in the session state, at most 500. They also send each warning and error to the debug log of Claude Code with `$.ui.log(text, { to: 'debug' })`. When the run moves to the board file, `meld mcp` writes the kept lines first.
 
 A run log stops at 20 MB. Its last line then says that the log is full.
 
@@ -439,17 +434,17 @@ The backups folder was empty on 9 November 2026, though `meld mcp` keeps 5 daily
 | a1 | The archive of section 6.6 at Deliver, Discard and `/meld-clean` | A spec archives a run in each case. `/meld-report <run>` reads a run that the prune removed. |
 | p1 | Counts and done weight in place of percents. Words on leaves. The tree that opens around live work. The ready-and-idle warning. | Pane tests pass for a plan with no parents and for a tree. The shots show a run with 13 tasks. |
 | p2 | The agent cards: title, Now, Did, Learned, context and cost, warnings, Open transcript | Tests pass for a Claude worker and for an ACP worker, with and without words from the agent. |
-| m1 | The records of section 5 and `core/metrics.ts` | A model test: for each worker, the parts of its lane add up to its worker time. The metrics of the five archived runs match section 1.2. |
+| m1 | The records of section 5 and `core/metrics.ts` | A model test: for each worker, the parts of its lane add up to its worker time. The metrics of the archived runs match section 1.2. |
 | f1 | The Flow section | The shots show the lanes on the terminal and on a graphic surface. |
 | r1 | The report in the pane, `/meld-report` and `/meld-report --runs` | A live run with Claude and Codex workers gives a report and a story. |
 
 The proposed order is l1, a1, p1, p2, m1, f1, r1. Issue #7 and the lost history of issue #5 cost the most in the runs, so the logs and the archive come first.
 
-Three fixes that the evidence asks for are not part of this note: the context cap (issue #6), a machine that stays awake during a live run (`mw7mpeaekjnm`), and idle restarts with no task left (`mw90j8nd5uxa`). To keep a Mac awake, `meld mcp` can hold `caffeinate -i -w <pid>` while it leads a live run. The pane and the metrics make each of them visible, and the metrics show if a fix works. 0.10.1 builds the context cap.
+Three fixes that the evidence asks for are not part of this note: the context cap (issue #6), a machine that stays awake during a live run, and idle restarts with no task left. To keep a Mac awake, `meld mcp` can hold `caffeinate -i -w <pid>` while it leads a live run. The pane and the metrics make each of them visible, and the metrics show if a fix works. 0.10.1 builds the context cap.
 
 ## 8. Open questions
 
-- Would meld have started the idle workers of `mw7mpeaekjnm` after the wake at minute 180, without the steer at minute 182? The run log of step l1 records each restart decision and its rule, so the next run answers it.
+- Would meld have started the idle workers after the wake of a sleeping machine, without a steer? The run log of step l1 records each restart decision and its rule, so the next run answers it.
 - What is the `Guardian Review` step of Codex? Does it repeat the verdicts of meld? The run log answers this. If Codex reviews each command itself, set its approval mode so that meld gives the verdicts (step 10e of [plan.md](plan.md)).
 - Does codex-acp report its token usage? Issue #6 found that Codex workers compact near 180k, but the pane shows 0 tokens for them.
 - When an agent writes no text, should the Now line use its thinking? The proposal is no: the thinking stays in the transcript.
