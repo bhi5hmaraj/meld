@@ -49,6 +49,12 @@ function failedText(what: string, error: HookFailure): string {
   return `meld: ${what} failed (${reason}). Try the call again.`
 }
 
+/** The archive folder of meld, ~/.meld/archive. With no HOME it throws, so meld removes no run that it did not archive. */
+function archiveOf(home: string | undefined): string {
+  if (!home) throw new Error('HOME is not set')
+  return `${home}/.meld/archive`
+}
+
 function stateOf(status: AgentStatus): AgentState {
   return ENDED_AGENT.has(status) ? 'ended' : 'live'
 }
@@ -96,6 +102,7 @@ export const register: Register = on => {
         sessionState,
       ),
       writeFile: (path, text) => $.fs.write(path, text),
+      archiveFolder: async () => archiveOf(await $.env.get('HOME')),
       ...sessionRunner(
         board,
         {
@@ -183,6 +190,7 @@ export const register: Register = on => {
         },
       ),
       writeFile: (path, text) => $.fs.write(path, text),
+      archiveFolder: async () => archiveOf(await $.env.get('HOME')),
       ...sessionRunner(
         board,
         {
@@ -258,6 +266,7 @@ export const register: Register = on => {
         },
       ),
       writeFile: (path, text) => $.fs.write(path, text),
+      archiveFolder: async () => archiveOf(await $.env.get('HOME')),
       ...sessionRunner(
         board,
         {
@@ -317,6 +326,7 @@ export const register: Register = on => {
           },
         ),
         writeFile: (path, text) => $.fs.write(path, text),
+        archiveFolder: async () => archiveOf(await $.env.get('HOME')),
         ...sessionRunner(
           board,
           {
@@ -370,6 +380,7 @@ export const register: Register = on => {
         },
       ),
       writeFile: (path, text) => $.fs.write(path, text),
+      archiveFolder: async () => archiveOf(await $.env.get('HOME')),
       ...sessionRunner(
         board,
         {
@@ -400,7 +411,7 @@ export const register: Register = on => {
   })
 
 
-  /** Each model call of a worker adds its tokens at once: a worker does a task in one long turn. */
+  /** Each model call of a worker adds its cost in input tokens at once: a worker does a task in one long turn. */
   on('turn.step', async function* ($, e, next) {
     const response = yield* next(e)
     if (e.agentId === undefined) return response
@@ -424,6 +435,7 @@ export const register: Register = on => {
         },
       ),
       writeFile: (path, text) => $.fs.write(path, text),
+      archiveFolder: async () => archiveOf(await $.env.get('HOME')),
       ...sessionRunner(
         board,
         {
@@ -495,6 +507,7 @@ export const register: Register = on => {
         },
       ),
       writeFile: (path, text) => $.fs.write(path, text),
+      archiveFolder: async () => archiveOf(await $.env.get('HOME')),
       ...sessionRunner(
         board,
         {
@@ -549,6 +562,7 @@ export const register: Register = on => {
         },
       ),
       writeFile: (path, text) => $.fs.write(path, text),
+      archiveFolder: async () => archiveOf(await $.env.get('HOME')),
       ...sessionRunner(
         board,
         {
@@ -604,6 +618,7 @@ export const register: Register = on => {
         },
       ),
       writeFile: (path, text) => $.fs.write(path, text),
+      archiveFolder: async () => archiveOf(await $.env.get('HOME')),
       ...sessionRunner(
         board,
         {
@@ -654,6 +669,7 @@ export const register: Register = on => {
         },
       ),
       writeFile: (path, text) => $.fs.write(path, text),
+      archiveFolder: async () => archiveOf(await $.env.get('HOME')),
       ...sessionRunner(
         board,
         {

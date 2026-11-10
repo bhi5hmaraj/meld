@@ -26,6 +26,10 @@ test('the rules of a jj run use jj commit and the last commits of the other work
   expect(rules).not.toContain('git merge')
 })
 
+test('the rules tell a worker to write only in its own folder', () => {
+  expect(workerRules(runOn('git'), 'w1')).toContain('1. Write only in your own folder.')
+})
+
 test('the rules name every other worker', () => {
   const rules = workerRules(runOn('git', 3), 'w2')
   expect(rules).toContain('w1 (meld/r1/w1)')

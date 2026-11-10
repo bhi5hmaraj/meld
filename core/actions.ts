@@ -1,9 +1,9 @@
 import type { AgentContext, BoardView, Change, Facts, Failure, Final, NewTask, PaneView, Run, Task, TaskSize, VcsKind, Worker, WorkerId, WorkerState } from '../types'
 import * as board from './board'
-import { COMPACT_KEEP, CONTROL_TOOLS, HAND_BACK, integrateDetail, integrateStep, missingWorkText, splitNudge, TOOL, wakeText, workerPrompt, workerRules } from './contract'
+import { COMPACT_KEEP, CONTROL_TOOLS, HAND_BACK, integrateDetail, integrateStep, missingWorkText, splitNudge, STATUS_VIEW, TOOL, wakeText, workerPrompt, workerRules } from './contract'
 import type { Control } from './contract'
-import { GIT_MIN, gitVersion, headCommit, isDirty, isOldGit, repoRoot } from './git'
-import type { Clock, CodeHost, CommandReply, FactsStore, Io, Runner, Spawned, Store, Surface, TokenUsage, ToolCall, ToolReply } from './ports'
+import { command, GIT_MIN, gitVersion, headCommit, isDirty, isOldGit, repoRoot } from './git'
+import type { Archive, Clock, CodeHost, CommandReply, FactsStore, Io, Runner, Spawned, Store, Surface, TokenUsage, ToolCall, ToolReply } from './ports'
 import { agentSpecOf, agentsOf, isAcpSpec, MAX_AGENTS, parseStart, WORKER_TYPE } from './options'
 import type { StartOptions } from './options'
 import { claimable } from './tasks'
@@ -25,6 +25,7 @@ const NUDGE_LIMIT = 3
 const STUCK_TOAST = 'meld: three restarts in a row finished no task. Steer the workers or stop the run.'
 const LIVENESS_GRACE_MS = 15_000
 const JJ_MISSING = 'jj 0.40 or newer is not installed. Use --vcs git or --vcs auto.'
+const ARCHIVE_KEPT = 'The run and its workspaces stay.'
 export const LEADING_CD = /^(?:\s*cd\s+\S+\s*(?:&&|;)\s*)+/
 
 type Args = Record<string, unknown>
@@ -72,6 +73,8 @@ function writeRunOf(io: Store, id: string, change: (run: Run) => Run): Promise<R
   return writeRun(io, current => (current.id === id ? change(current) : current))
 }
 
+const NO_RUN = { state: 'none', message: 'There is no meld run. The person starts one with /meld <task>.' }
+
 const RUN_ACTIVE = 'A run is active. Deliver, discard or stop it first: /meld-deliver, /meld-discard or /meld-stop, or the meld pane.'
 
 /** One start at a time: a second click on Start comes before the first start saves its run, so the run check cannot see it. */
@@ -93,7 +96,8 @@ async function startAlone(io: Io, cwd: string, options: StartOptions): Promise<C
   if (current?.state === 'stopped') {
     const kept = await keptWork(io, current)
     if (kept) return { text: kept }
-    await dropRun(io, current)
+    const unarchived = await dropRun(io, current)
+    if (unarchived) return { text: unarchived }
   }
   const named = await namedRepo(io, options.request)
   const repo = named?.repo ?? (await repoRoot(io, cwd))
@@ -261,7 +265,8 @@ export async function serveTool(io: Io, e: ToolCall, cwd = ''): Promise<ToolRepl
     if (!control) return reply(await startFromTool(io, args, cwd))
     return reply({ text: await controlRun(io, control, text(control === 'steer' ? args.text : args.agent)) })
   }
-  if (!worker) return reply(tool === TOOL.board ? await overview(io) : { error: 'NOT_WORKER', message: 'The meld tools are for the meld workers.' })
+  if (!worker && tool === TOOL.board) return reply((e as unknown as Args).view === STATUS_VIEW ? await statusView(io) : await overview(io))
+  if (!worker) return reply({ error: 'NOT_WORKER', message: 'The meld tools are for the meld workers.' })
   const now = await io.now()
   if (tool === TOOL.board) return reply(await readBoard(io, worker.id, now))
   const checked = await withResolvedCommit(io, tool, e as unknown as Args, worker)
@@ -490,10 +495,39 @@ async function readBoard(io: Store & Runner, id: WorkerId, now: number): Promise
   return view ?? { error: 'RUN_ENDED', message: 'There is no meld run.' }
 }
 
+/**
+ * The compact board of the main session: the task counts, one row for each task and each worker, and the log entries
+ * since its last status read.
+ */
+async function statusView(io: Store & Clock): Promise<unknown> {
+  const now = await io.now()
+  let status: unknown = NO_RUN
+  await io.write(run => {
+    if (!run) return run
+    const doneIds = new Set(run.tasks.filter(task => task.state === 'done').map(task => task.id))
+    const seen = run.sessionSeen ?? 0
+    status = {
+      id: run.id,
+      state: run.state,
+      counts: Object.fromEntries((['open', 'claimed', 'done'] as const).map(state => [state, run.tasks.filter(task => task.state === state).length])),
+      tasks: run.tasks.map(task => ({ id: task.id, title: task.title, state: task.state, owner: task.owner, needs: (task.needs ?? []).filter(need => !doneIds.has(need)) })),
+      workers: run.workers.map(worker => ({
+        id: worker.id,
+        state: worker.state,
+        claims: claimsOf(run, worker).map(task => task.id),
+        secondsSinceCall: Math.round((now - worker.activityAt) / 1000),
+      })),
+      log: run.log.filter(entry => entry.id > seen).map(({ id, at, by, kind, text, commit, passed }) => ({ id, at, by, kind, text, commit, passed })),
+    }
+    return { ...run, sessionSeen: run.log.at(-1)?.id ?? seen }
+  })
+  return status
+}
+
 /** What the main session reads of the board: the run as a whole. */
 async function overview(io: Store): Promise<unknown> {
   const run = await readRun(io)
-  if (!run) return { state: 'none', message: 'There is no meld run. The person starts one with /meld <task>.' }
+  if (!run) return NO_RUN
   return {
     id: run.id,
     state: run.state,
@@ -756,10 +790,19 @@ export function shellWords(command: string): string[] | undefined {
   return word === undefined ? words : [...words, word]
 }
 
-/** The tokens a turn added: its input, the context it wrote to the cache and its output, not the cached context it read again. */
-export function freshTokens(usage: TokenUsage | undefined): number {
+/** The price of a cache read, a cache write and an output token, against an input token. */
+const CACHE_READ_PRICE = 0.1
+const CACHE_WRITE_PRICE = 1.25
+const OUTPUT_PRICE = 5
+
+/**
+ * The cost of a model call in input tokens: each kind of token counts at its price against input. Each call reads the
+ * whole cached context again, so cache reads can be most of the cost of a long run.
+ */
+export function costTokens(usage: TokenUsage | undefined): number {
   if (!usage) return 0
-  return usage.input_tokens + usage.cache_creation_input_tokens + usage.output_tokens
+  const read = (usage.cache_read_input_tokens ?? 0) * CACHE_READ_PRICE
+  return Math.round(usage.input_tokens + read + usage.cache_creation_input_tokens * CACHE_WRITE_PRICE + usage.output_tokens * OUTPUT_PRICE)
 }
 
 /** The tokens in the context of a model call: its whole input, the cached part too. */
@@ -768,12 +811,12 @@ function contextTokens(usage: TokenUsage): number {
 }
 
 /**
- * One model call of an agent: its fresh tokens add up on its worker at once. A worker does a task in one long turn, so
+ * One model call of an agent: its cost in input tokens adds up on its worker at once. A worker does a task in one long turn, so
  * a count at the end of the turn showed 0 tokens while it worked. With the window of the model of the agent, the call
  * also gives the context of the agent. The main session and agents that are no worker count nothing.
  */
 export async function countStep(io: Store, agentId: string | undefined, usage: TokenUsage | null | undefined, window?: number): Promise<void> {
-  const tokens = freshTokens(usage ?? undefined)
+  const tokens = costTokens(usage ?? undefined)
   if (agentId === undefined || !usage || !tokens) return
   const run = await readRun(io)
   const worker = run ? board.workerOf(run, agentId) : undefined
@@ -1038,7 +1081,7 @@ function cutAtSpace(text: string, limit: number): string {
 const NO_RUN_AT_WORK = 'There is no meld run at work. A worker can join a run that starts or works.'
 
 /** What the main session does to a run with a tool or a command, as the meld pane does. */
-export function controlRun(io: Store & CodeHost & FactsStore & Clock & Runner & Surface, control: Control, input = ''): Promise<string> {
+export function controlRun(io: Store & CodeHost & FactsStore & Clock & Runner & Surface & Archive, control: Control, input = ''): Promise<string> {
   if (control === 'steer') return steerRun(io, input.trim())
   if (control === 'stop') return stopAll(io)
   if (control === 'deliver') return deliver(io)
@@ -1080,16 +1123,18 @@ function nextWorkerId(run: Run): WorkerId {
  * Merges the final commit into the branch of the person. The run is delivered before meld removes its folder, as a
  * board file keeps no delivered run: a worker that ends its turn during the removal does not make the folder again.
  */
-export async function deliver(io: Store & CodeHost & Clock): Promise<string> {
+export async function deliver(io: Store & CodeHost & Clock & Archive): Promise<string> {
   const run = await readRun(io)
   if (!run || run.state !== 'ready' || !run.final) return 'There is no final commit to deliver.'
   const missing = lackingWork(run, await heldInFinal(io, run, run.final.commit))
   if (missing.length) return lackingDelivery(run.final.commit, missing)
   if (await isDirty(io, run.repo)) return 'Commit or stash the changes in your checkout first, then deliver.'
+  const now = await io.now()
+  const unarchived = await archiveRun(io, board.markDelivered(run, now))
+  if (unarchived) return unarchived
   const vcs = vcsFor(run.vcs)
   const merged = await vcs.deliver(io, run, run.final.commit, deliveryMessage(run))
   if (!merged.ok) return `The merge stopped, and nothing changed: ${merged.err || merged.out}`
-  const now = await io.now()
   await writeRunOf(io, run.id, current => board.markDelivered(current, now))
   await vcs.remove(io, run)
   return `Merged ${run.final.commit.slice(0, 7)} into your branch.`
@@ -1103,24 +1148,48 @@ function lackingDelivery(final: string, missing: readonly Task[]): string {
   return `Nothing changed: the final commit ${final.slice(0, 7)} lacks the work of ${tasks}, which ${one ? 'is' : 'are'} done on the board. Steer the run so that an agent merges ${one ? 'it' : 'them'}, for example /meld-steer Merge ${ids} into the final commit. Then deliver the new final commit.`
 }
 
-export async function discard(io: Store & CodeHost & FactsStore & Clock & Runner): Promise<string> {
+export async function discard(io: Store & CodeHost & FactsStore & Clock & Runner & Archive): Promise<string> {
   const run = await readRun(io)
   if (!run) return 'There is no run.'
   if (LIVE_STATES.has(run.state)) await stopAll(io)
-  await dropRun(io, run)
-  return 'The run and its workspaces are gone.'
+  return (await dropRun(io, run)) ?? 'The run and its workspaces are gone.'
 }
 
 /**
- * Drops the run and its facts, then removes the workspaces of a run that meld did not deliver. The run goes first: a
- * worker that ends its turn during the removal then writes no run, so no board file makes its folder again.
- * Its agents retire, so the guard refuses the calls of an agent that still runs during the removal.
+ * Archives the run, drops it and its facts, then removes the workspaces of a run that meld did not deliver. The run goes
+ * first: a worker that ends its turn during the removal then writes no run, so no board file makes its folder again.
+ * Its agents retire, so the guard refuses the calls of an agent that still runs during the removal. When meld cannot
+ * write the archive, the run and its workspaces stay, and the reason comes back.
  */
-async function dropRun(io: Store & FactsStore & CodeHost, run: Run): Promise<void> {
+async function dropRun(io: Store & FactsStore & CodeHost & Archive, run: Run): Promise<string | undefined> {
+  const latest = await readRun(io)
+  const unarchived = await archiveRun(io, latest?.id === run.id ? latest : run)
+  if (unarchived) return unarchived
   for (const worker of run.workers) if (worker.agentId) retired.add(worker.agentId)
   await io.write(() => null)
   await io.writeFacts(null)
   if (run.state !== 'delivered') await vcsFor(run.vcs).remove(io, run)
+  return undefined
+}
+
+/**
+ * Writes the record of the run to <archive folder>/<run id>.json, open to its user only: the run, the board (request,
+ * steers, tasks), the events and the context entries. The folder is 0700 before the file is there, so no other user
+ * reads the file before its chmod. Gives the reason when it could not write the record.
+ */
+async function archiveRun(io: CodeHost & Archive, run: Run): Promise<string | undefined> {
+  const { request, tasks, log, context, ...rest } = run
+  const record = { run: rest, board: { request, steers: board.steersOf(run), tasks }, events: log, context: context ?? [] }
+  try {
+    const folder = await io.archiveFolder()
+    const path = `${folder}/${run.id}.json`
+    const made = await command(io, run.repo, ['mkdir', '-p', '-m', '700', folder])
+    if (made.ok) await io.writeFile(path, JSON.stringify(record, null, 2))
+    const closed = made.ok ? await command(io, run.repo, ['chmod', '600', path]) : made
+    return closed.ok ? undefined : `meld could not write the archive ${path}: ${closed.err}. ${ARCHIVE_KEPT}`
+  } catch (error) {
+    return `meld could not write the archive: ${String(error)}. ${ARCHIVE_KEPT}`
+  }
 }
 
 /** Reads what the version control shows of the run, for the pane: the commits of each worker, and the change of the final commit. */

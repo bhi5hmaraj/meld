@@ -111,6 +111,8 @@ The result card shows the final commit, the changed files, the lines added and r
 - **Ask for changes** gives the agents your instruction, and they change the result. meld first moves the integration line to the final commit, so that the next final commit keeps its work.
 - **Discard** removes the workspaces with no merge. **Clear** removes a delivered run from the pane.
 
+**Archive.** Before Deliver or Discard removes the folder of a run, meld writes the record of the run to `~/.meld/archive/<run>.json`, with mode 600: the run, the board (the request, the steers and the tasks), the events and the context entries. With `MELD_DB`, `meld mcp` writes it to the folder `archive` next to the board file. When meld cannot write the record, Deliver merges nothing and Discard removes nothing: the run and its workspaces stay, and the reply tells why.
+
 **Old runs.** A stopped run keeps its workspaces until you deliver or discard it. A new start removes them when they hold no work, as after a start that started no agent. When they hold commits or uncommitted edits, or meld cannot read them, the start refuses. The reply names the run, its folder and its count of commits. New files count as edits, also when `status.showUntrackedFiles=no` hides them from `git status`. jj does not record a new file over `snapshot.max-new-file-size` (1 MiB), so meld cannot read a jj workspace that holds one, and the reply names the file.
 
 `/meld-clean` lists the folders under `/tmp/meld/` that are not the run of your session. It reads the record of the run of each folder in `~/.meld/meld.db`: its state, version control, repository, base and workers, and the time of its last change. Without Bun, and for a run that an older meld started, a folder has no record. When a folder is not maybe live and meld can read its record, meld reads its workspaces as a new start does. The line of the folder then ends with `no work`, with `holds work: 2 commits` and the agents that have uncommitted edits, or with `workspaces not readable`. `/meld-clean <id>` removes a folder as Discard does, with the version control and the repository that its record names, and with any work in it. meld takes the workspaces from the id of the folder and the worker ids, and the base from the record. So a read or a removal touches only what meld made. With no record that meld can read, meld removes only the folder. `/meld-clean` never removes the run of your session: Discard or `/meld-discard` removes it.
@@ -138,6 +140,8 @@ Then ask the chat, for example "start a meld run with 2 codex agents to add a da
 5. **Integrate as you go.** At each `finish_task`, meld merges the commit of the task into the integration line of the run, with no agent. When a merge conflicts, meld adds a task `integrate #N` of size S, and an agent merges it in its workspace. When every task is done, one agent starts from the line, runs one final build and the checks, and declares the final commit.
 
 The agents use eleven board tools: `board`, `add_tasks`, `claim`, `split`, `release`, `finish_task`, `note`, `share`, `check`, `integrate` and `finish`. The main session has three more: `start`, `steer` and `stop`. These three refuse a call from an agent or another subagent.
+
+With `view: "status"`, `board` gives the main session a short board, and with no view the full board. The short board has the run state, the task counts and the log entries since the last status read. A task row has the id, title, state, owner, and the needs that are not done. An agent row has the id, state, claims, and the seconds since the last call.
 
 <details>
 <summary><b>The board</b>: versions, the task tree, the percent, the shared context</summary>
@@ -170,6 +174,14 @@ The first board reply to a new agent carries the 20 newest current entries. Each
 
 **Edit guard.** meld refuses an edit that an agent makes outside its own workspace. It refuses each tool call of an agent that you stopped, of an agent of a stopped or discarded run, and of a new agent that took no place on the board, and tells that agent to end its turn.
 
+**Permission checks.** meld has three `tool.check` hooks. Claude Code runs the `tool.check` hooks of all plugins in a chain. A hook can give a verdict and not call the next hook. When a hook of another plugin does this, the check of meld does not run:
+
+- The board check allows the calls of meld to `meld mcp`, and refuses the calls of agents, of the main session and of other plugins. Without it, the other plugin or the mode of your session decides each call. A call of meld can wait for your answer or fail, and a call of an agent is not refused.
+- The Agent check approves each start and restart of an agent in auto mode, while a run that you started is live. Without it, auto mode refuses these starts, and meld shows the reason in the lane of the agent.
+- The version control check allows `git -C` and `jj -R` in the own folder of a worker, for the commands of the rules. Without it, Claude Code asks you for each such call, and a run with no person cannot commit.
+
+The edit guard is a `tool.call` hook, and a skip in `tool.check` does not stop it.
+
 </details>
 
 <details>
@@ -183,7 +195,7 @@ The first board reply to a new agent carries the 20 newest current entries. Each
 
 **A short session, then a new agent.** After `finish_task`, the rules and the reply of `finish_task` tell the agent to hand back, and not to claim the next task. When there is work for an idle worker, meld gives the next step to the same agent, in its own session. It does so while the context of that agent fills less than half of the window of its model, and less than 150k tokens, so the agent keeps the code that it read. An agent of the type `meld:worker` compacts its conversation before 150k tokens and goes on. Claude Code keeps room below that window, so the compaction comes near 120k tokens. The summary keeps its tasks, its commits and what is left, and its next board read gives its rules again. Else meld starts a new agent: an agent that does task after task reads its whole history again on each turn, and that history grows with each task. meld reads the context of a Claude agent from its last model call. An ACP agent, such as Codex, reports its context with `usage_update`, and an ACP agent that reports none gets a new agent each time. A new agent starts from the board: the request, the steers, the tasks and the shared context. The reply of its claim gives the handovers of the tasks that its task needs: the commit, the interfaces and the unfinished work of each. A board read gives the same handovers for the tasks that the agent claims. The task list in a board reply does not carry the handovers.
 
-**One line for each turn.** The rules, the system prompt of `meld:worker` and the end of the spawn prompt tell an agent to end each turn with one line, for example `finished #4, commit 4a0bde04`. Claude Code gives the last message of each turn of an agent to your session, and a plugin cannot change it. With a new agent for each task, a run of 22 tasks gives 22 such messages. The board keeps the detail.
+**One line for each turn.** The rules, the system prompt of `meld:worker` and the end of the spawn prompt tell an agent to end each turn with one line, for example `finished #4, commit 4a0bde04`. Claude Code gives the last message of each turn of an agent to your session, and a plugin cannot change it. With a new agent for each task, a run of 22 tasks gives 22 such messages. After each hand-back, Claude Code sends a task notification to your session. meld cannot join these notifications or change them. The board keeps the detail.
 
 A restarted agent reads its rules at its first board read. meld reads the agent list of Claude Code, so it finds an agent that ended when meld did not see the end. meld does not restart a stopped agent. After three restarts in a row that finish no task, meld stops the restarts and tells you. A finished task or a steer starts the count from zero. A steer goes as a message to each running agent, and it restarts the agents that ended.
 
@@ -265,7 +277,7 @@ Seven changes come from [issue 3](https://github.com/bhi5hmaraj/meld/issues/3):
 - **A start over a stopped run.** A new start removes the workspaces of a stopped run when they hold no work, and refuses when they hold work. Before, the start saved over the stopped run, and its folder, jj config, worktrees and branches stayed. One such folder held 6.7 GB.
 - **`/meld-clean`.** It lists and removes the folders that other runs left under `/tmp/meld/`. Discard reads only the run of your session, so it cannot remove them. `--all` skips the maybe live folders, because the state in a `board.json` does not show that a session still uses the run. A removal now runs in `/tmp/meld/`. Before, it ran in the repository, so a run whose repository was gone kept its folder.
 - **The subject of Deliver.** The merge commit has the subject `meld: ` and the summary of the final commit, cut at a space to 72 characters, and the full request as its body. Before, the subject was the first 72 characters of the request, and a word could break at the cut. The commit had no body.
-- **Tokens at each model call.** meld adds the tokens of an agent at each model call, and the end of a turn adds none, so no call counts two times. An agent does a task in one long turn, and a count at the end of the turn showed 0 tokens for each agent of a run at work.
+- **Tokens at each model call.** meld adds the tokens of an agent at each model call, and the end of a turn adds none, so no call counts two times. An agent does a task in one long turn, and a count at the end of the turn showed 0 tokens for each agent of a run at work. Each token counts at its price against an input token: a cache read 0.1, a cache write 1.25 and an output token 5. Before, the count did not include cache reads, but each call reads the full cached context again.
 - **One line for each turn.** An agent ends each turn with one line, for example `finished #4, commit 4a0bde04`. Your session gets the last message of each turn of an agent, and a new agent for each task makes more such messages. Two reports of one run had 450 and 500 words. The system prompt of `meld:worker` and the end of the spawn prompt ask for the line too: with the ask in the rules alone, two agents of a later run ended with about 300 words.
 - **Control a run without the pane.** `/meld-deliver`, `/meld-discard` and `/meld-add`, and a tool for each, do what the pane does. So Claude can deliver, discard and add an agent where no pane shows. Before, only the pane delivered or discarded a run, and a run kept the agents of its start.
 - **A steer reply in the singular.** For one agent, the reply says `1 running worker gets it`, not `1 running workers get it`. With no agent left, it says so, and not `All 0 workers`.
@@ -303,8 +315,8 @@ meld takes its idea from [DeLM](https://github.com/Decentralized-LM/delm-agent-p
 - The workspaces have no installed dependencies. The agents install them when their checks need them.
 - An agent of another type has the tools of that type. Give a type that has the meld tools and can edit files and run commands, for example `general-purpose`.
 - If the `meld:worker` type does not register, meld shows a notice. Give another agent type with `--agents`.
-- More agents cost more. The header shows the dollars since the run started, and each lane shows the tool calls of its agent. The board that your session reads gives the tokens of each agent.
-- The edit guard covers Edit, Write, MultiEdit and NotebookEdit. A Bash command can write in other folders, so the guard is a guard rail, not a sandbox.
+- More agents cost more. The header shows the dollars since the run started, and each lane shows the tool calls of its agent. The board that your session reads gives the cost of each agent in input tokens: a cache read counts 0.1, a cache write 1.25 and an output token 5.
+- The edit guard covers Edit, Write, MultiEdit and NotebookEdit. A Bash command can write in other folders, so the guard is a guard rail, not a sandbox. The rules tell each agent to write only in its own folder.
 - The plugin API of Claude Code is an early access API, and it can change between releases.
 
 ## Development

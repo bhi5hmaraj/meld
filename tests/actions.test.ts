@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
-import { compactWorker, deliver, discard, freshTokens, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, SPAWN_APPROVAL, spawnVerdict, startFromView, VCS_APPROVAL, vcsVerdict, startRun, steerRun, stopOne } from '../core/actions'
+import { compactWorker, costTokens, deliver, discard, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, SPAWN_APPROVAL, spawnVerdict, startFromView, startRun, steerRun, stopOne, VCS_APPROVAL, vcsVerdict } from '../core/actions'
 import { addTasks, bindWorker, claimTask, CONTEXT_CAP, declareFinal, isFailure, setActivity, startRun as startBoard, steer, stopRun, stopWorker, takeIntegration } from '../core/board'
 import { COMPACT_KEEP } from '../core/contract'
 import { JJ_LANE_TEMPLATE, JJ_RESOLVE_TEMPLATE } from '../core/vcs'
@@ -152,9 +152,9 @@ test('a run notes what the session has cost at its start', async () => {
   expect(io.current?.costAtStart).toBe(1.25)
 })
 
-test('a turn counts the tokens it added, not the cached context it read again', () => {
-  const usage = { model: 'sonnet', input_tokens: 10, output_tokens: 200, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 1500 }
-  expect(freshTokens(usage)).toBe(1710)
+test('a model call costs its input, its cache reads at 0.1, its cache writes at 1.25 and its output at 5', () => {
+  const usage = { input_tokens: 10, output_tokens: 200, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 1500 }
+  expect(costTokens(usage)).toBe(10 + 9000 + 1875 + 1000)
 })
 
 test('a run uses jj when jj is installed', async () => {

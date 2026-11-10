@@ -83,7 +83,7 @@ test('meld mcp lets an idle ACP worker with a small context go on in its own ses
 test('a model call of a worker records its context: the whole input of the call, against the window of its model', async () => {
   const io = ioWith(idleWorker('meld:worker', 'agent-1'))
   await countStep(io, 'agent-1', usageOf(1000, 2000, 30_000, 500), WINDOW)
-  expect(io.current?.workers[0]).toMatchObject({ tokens: 3500, context: { used: 33_000, size: WINDOW } })
+  expect(io.current?.workers[0]).toMatchObject({ tokens: 9000, context: { used: 33_000, size: WINDOW } })
 })
 
 test('a new agent of a worker starts with no context', () => {

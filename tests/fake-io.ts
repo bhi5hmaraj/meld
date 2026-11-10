@@ -3,6 +3,7 @@ import type { AgentState, Files, FolderEntry, Io, ProcessResult, RunRecord, RunR
 import type { Run } from '../types'
 
 export const HEAD = 'abc1234def5678abc1234def5678abc1234def56'
+export const ARCHIVE = '/home/me/.meld/archive'
 
 /** The engine as the logic of meld sees it: the run in a memory store, commands that answer from tables, and every call recorded. */
 export class FakeIo extends MemoryStore implements Io, Files, RunRecords {
@@ -91,6 +92,10 @@ export class FakeIo extends MemoryStore implements Io, Files, RunRecords {
 
   async writeFile(path: string, text: string): Promise<void> {
     this.files[path] = text
+  }
+
+  async archiveFolder(): Promise<string> {
+    return ARCHIVE
   }
 
   async spawn(args: SpawnArgs): Promise<Spawned> {
