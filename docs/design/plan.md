@@ -1,6 +1,8 @@
 # Build plan
 
-Status: draft. The order is agreed: first make solo good and give it to people, then local parties with Claude Code and Codex, then the hosted version. Steps 0a, 0b and 0c of phase 2, steps 10a to 10d of phase 3, the chat mode of 0.10.x and the upkeep of the board file are built, and released in 0.10.0. Step 10e, a live run with real Codex, waits for a machine with an OpenAI login. Nothing of phase 4 has started.
+Status: draft. The order is agreed. First make solo good and give it to people. Then build local parties with Claude Code and Codex. Then build a host on a VM that any agent can join ([coordination-layer.md](coordination-layer.md)).
+
+Steps 0a, 0b and 0c of phase 2 are built. So are steps 10a to 10d of phase 3, the chat mode of 0.10.x and the upkeep of the board file. All of them shipped in 0.10.0. Step 10e, a live run with real Codex, waits for a machine with an OpenAI login. 0.10.1 fixes the issues of 10 November 2026. Nothing of phase 4 has started.
 
 ## Phase 1: solo 0.8.x for users
 
@@ -26,6 +28,7 @@ From 0.9, users need Bun. Compiled binaries come when users ask for them.
 | Release | Delivers | Done when |
 |---|---|---|
 | 0.10.0 | The ACP runner. Codex workers in a local party, with the Claude Code session as the leader. Affinity. A channel for the timer of the leader, which cannot call `meld mcp` ([architecture.md](architecture.md)). | Claude Code and Codex finish one request together on one machine. |
+| 0.10.1 | The fixes of 10 November 2026. Each refusal gives the reason of a failed hook (#7). A start with no board file says that the run ends with the session (#8). A worker compacts at 150k tokens, and the summary keeps its task (#6). Workers run `git -C` and `jj -R` in their own folders with no person to ask. Deliver and Discard write an archive first (#5). The main session reads a short board (#10). The daily backup works with SQLite 3.51. | A run of two workers in a session with no person goes from the start to the delivery. Done with `mwajbtef7xze`, with restarts from outside the session (#12). |
 | 0.10.x | Cursor solo and the Gemini CLI, through the same ACP runner. Built: `meld mcp --chat` gives the tools of the main session to an MCP client, and `gemini` (`npx -y @google/gemini-cli --acp`) and `cursor` (`agent acp`) are built-in ACP agents. A spec runs a chat with two stub ACP workers from the start to the delivery. Checked live with Claude Code as the chat, with no meld plugin: it started the run, read the board until the run was ready, and delivered. Not checked live: a Cursor chat, the Gemini CLI, and the agent of Cursor, which also asks questions with methods of its own, such as `cursor/ask_question`. | A Cursor chat leads a local party. |
 
 The steps of 0.10.0:
@@ -35,7 +38,7 @@ The steps of 0.10.0:
 | 10a | The ACP client in `mcp/acp.ts`. It starts an agent and opens a session in the folder of the worker, with its MCP servers. It sends one prompt at a time, answers each permission request with the verdict of meld, cancels a prompt, and ends with the exit of the agent. Built, with a stub ACP agent. | The specs pass against the stub agent. |
 | 10b | The worker mode of `meld mcp`: the board tools of one worker of one board, from SQLite. A message to another agent becomes a row for the leader. Built: `meld mcp --worker` with MELD_BOARD and MELD_AGENT, and the `actions` table (schema 3). | A spec drives the tools of a worker through MCP: a claim, a finished task in a real git repository, and a message to the leader. |
 | 10c | The leader. `meld mcp` runs the ACP workers and writes their activity to the board. The plugin starts a `codex` agent through `meld mcp`, and its pane reads the board over a Unix socket. Built: the ACP runner in `mcp/leader.ts`, the board channel in `mcp/channel.ts`, one host that starts each worker again (the plugin its Claude workers, `meld mcp` its ACP workers on its beat), and `mcp/run.spec.ts`. That spec found that the ACP client did not wait for an async verdict, so each permission request of an ACP agent got the answer cancelled. | A run with one Claude worker and one stub ACP worker goes from start to delivery. |
-| 10d | Affinity: an idle worker continues its session while its context stays under a share of the window of its model. Else a fresh agent starts with the handover. Built: the share is one half. A Claude worker gets its context from each model call, and an ACP worker from `usage_update`. A live check in this session showed that a message to a subagent that ended its turn continues it with its context. | Tests cover both cases, for Claude workers and for ACP workers. |
+| 10d | Affinity: an idle worker continues its session while its context stays under a share of the window of its model. Else a fresh agent starts with the handover. Built: the share is one half. 0.10.1 adds a cap of 150k tokens, and a `meld:worker` compacts at that cap. A Claude worker gets its context from each model call, and an ACP worker from `usage_update`. A live check in this session showed that a message to a subagent that ended its turn continues it with its context. | Tests cover both cases, for Claude workers and for ACP workers. |
 | 10e | A live run with Codex (`npx -y @agentclientprotocol/codex-acp`) on a machine with an OpenAI login. Check these open points: the name that Codex gives to the tools of meld (the prompts say `mcp__meld__board`), whether Codex reports its MCP calls as tool calls (then the leader counts each board call twice), the approval mode of Codex against the verdicts of meld, and whether codex-acp sends `usage_update` (without it, a Codex worker gets a new agent for each task). | Claude Code and Codex finish one request together. |
 
 The upkeep of the board file:
@@ -45,9 +48,22 @@ The upkeep of the board file:
 | u1 | A write that changes nothing stores nothing: the version of the board stays, and the plugin calls `commit_board` only for a change. Built. | The specs of both stores pass. |
 | u2 | A record of each run in the board file (the table `runs`, schema 4), which `/meld-clean` reads through `run_records`. meld writes and reads no `board.json`. Built. | `/meld-clean` lists and removes a folder from the record of its run, and no write makes a `board.json`. |
 | u3 | A retention rule: at its start, `meld mcp` removes the rows older than 30 days that no step needs: boards with no run or a delivered run, records of runs with no board and no folder, their events, old actions and members. The context stays. Built. | The specs of each rule pass, and a start of `meld mcp` removes an old empty board. |
-| u4 | A backup each day: before the prune, `meld mcp` copies the board file with `VACUUM INTO` to `backups/meld-<date>.db`, through a part file. The five newest copies stay, open to their user only. Built, with the steps to restore a copy in [storage.md](storage.md). | A start makes the copy of the day, a second start that day makes none, and a copy that fails leaves no file. |
+| u4 | A backup each day: before the prune, `meld mcp` copies the board file with `VACUUM INTO` to `backups/meld-<date>.db`, through a part file. The five newest copies stay, open to their user only. Built, with the steps to restore a copy in [storage.md](storage.md). Until 0.10.1, the copy failed with SQLite 3.51, which refuses `VACUUM INTO` a file that is there. | A start makes the copy of the day, a second start that day makes none, and a copy that fails leaves no file. |
 
-## Phase 4: hosted (later)
+## Phase 4: a host on a VM (later)
+
+meld coordinates and uses other tools for the rest: an inbox to watch sessions, history across runs, agents and sandboxes. [coordination-layer.md](coordination-layer.md) gives the reasons and the steps:
+
+| Step | Delivers | Done when |
+|---|---|---|
+| h1 | The run log and the archive | Each run on the host leaves an archive and a run log. |
+| h2 | `meld run`: a start with no chat client, with Claude workers through the ACP adapter | One request with three workers goes to a final commit on a VM. |
+| h3 | MCP over HTTP with worker tokens | An agent on another machine claims and finishes a task of a run on the VM. |
+| e1 | The shared-log variant of the Codecast communication simulation | One small world for each arm gives scores. Then the full comparison. |
+| e2 | A coding test on VMs, one fresh VM or container for each trial | Three to five tasks, three arms and three repeats give scores. |
+| u1 | A proposal to Codecast, with the data of e1 and e2 | The maintainers answer. |
+
+The earlier phase 4 was a hosted service with Postgres, logins and cloud drivers. It waits until a team needs runs that no single host can serve. Its steps stay below for reference.
 
 | Step | Delivers | Done when |
 |---|---|---|
@@ -62,6 +78,8 @@ The model-based tests of the proposal (no task has two owners, a parent is done 
 
 - The writes of ACP workers do not renew the lease of the session that owns the board. While the main session waits through a long Codex prompt, another session can take the board with `/meld-resume`.
 - A message of an ACP worker to a Claude worker waits for the next end of a turn of the main session.
+- A Claude worker that hands back waits for the next turn of the main session too (#12). In a session with no person, nothing starts that turn. In `mwajbtef7xze`, two workers stayed idle for 10 minutes with three tasks open.
+- The shell of a Claude worker starts in the folder of the session, not in the folder that the spawn names. 0.10.1 works around this: the guides say `git -C` and `jj -R`, and meld allows these forms. Each other command that a worker runs in its folder needs an absolute path.
 - When one task is ready and two workers are idle, the restart rule gives the task to the first idle worker. When that worker is a Claude worker, the task waits for the next end of a turn of the main session, while an idle Codex worker could start at once. A better rule can prefer the worker that did the tasks that the task needs, then a worker whose host acts now.
 - A SIGKILL of `meld mcp` leaves its ACP agents running, when they do not stop at the end of their input.
 - Two chats on one folder lead the same board, as no lease holds it. Then both start its idle ACP workers again.
@@ -69,7 +87,8 @@ The model-based tests of the proposal (no task has two owners, a parent is done 
 
 ## Open choices
 
-- In phase 4: share knowledge or join a party first. The proposal is share knowledge: it is small and safe, and every solo run starts to feed the team.
+- In phase 4: which VM provider, and how many trials run at the same time. The open questions of [coordination-layer.md](coordination-layer.md) list the rest.
+- In the hosted service, if it comes: share knowledge or join a party first. The proposal is share knowledge: it is small and safe, and every solo run starts to feed the team.
 - The Devin token: a narrow token in the prompt with the risk accepted, or wait for secrets for each session.
 - Path claims: warnings only, or refusals later.
 - The open questions of [parties.md](parties.md).

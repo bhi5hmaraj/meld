@@ -54,6 +54,33 @@ What meld takes:
 
 What meld does not take: agents for supervision and merging. meld does both with code, and uses an agent only for a merge conflict and the final build. Code costs no tokens and behaves the same each time.
 
+## Codecast
+
+Codecast is an open-source team workspace for agent sessions ([repository](https://github.com/codecast-sh/codecast)). Its notes, at commit `fc0f0d8`:
+
+- A daemon starts Claude Code, Codex, Cursor, OpenCode, pi and Grok in tmux panes. It types messages into the pane and reads the transcripts from disk.
+- It uploads each shared transcript. Before the upload, it removes secrets by shape and by the exact values that it finds on the machine.
+- Its plan loop starts one headless agent for each ready task, every 2 minutes, in one shared checkout. The prompt of a plan agent holds the titles of done tasks, not their summaries.
+- Its message policy sends facts up to a lead, which reads its whole area. A simulation with up to ten workers measured it against free messages between peers ([agent-comms.md](https://github.com/codecast-sh/codecast/blob/fc0f0d8c2340edbbdb9708d9a8eacf22aaa1d67b/docs/architecture/agent-comms.md)).
+
+What meld takes:
+
+- its session search as the history across runs (see [coordination-layer.md](coordination-layer.md))
+- its daemon on a shared host, as the place where people watch the workers of meld
+- its simulation of messages, as the first test of the shared log
+- markers in the result of a worker (blocked, needs context, done with concerns)
+
+## Amp
+
+Amp is a hosted coding agent ([manual](https://ampcode.com/manual)). Its notes:
+
+- A workspace is a team space. Threads are visible to the whole team by default, and members search them and pass them to an agent as context.
+- An orb is a cloud machine for each thread, with the repository, the tools and the setup scripts of the project. It sleeps when idle and costs nothing then.
+- An agent can start other agents and send them files. Information moves between agents only in messages and files.
+- An assistant (Puck) splits a request across agents and collects their reports. There is no task queue.
+
+What meld takes: the orb as the model of a sandbox for each worker or trial: setup scripts, secrets, sleep and wake, and a limit on how many start at once.
+
 ## Others
 
 - **Claude Code agent teams** (experimental) keep the shared task list as JSON files with a file lock: no database and no server. This comes from a third-party analysis ([write-up](https://dev.to/nwyin/reverse-engineering-claude-code-agent-teams-architecture-and-protocol-o49)), not from official documents.

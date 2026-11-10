@@ -12,6 +12,8 @@ The notes start from a design proposal of November 2026 for a hosted meld servic
 | [storage.md](storage.md) | SQLite for solo and Postgres for team, the store interface, several sessions on one machine, Bun, a Dolt audit, TypeScript or Go |
 | [solo-and-team.md](solo-and-team.md) | The two modes, the two ways a solo session joins a team, and the resources of each worker |
 | [shared-context.md](shared-context.md) | Postgres as the store, files as a view, a search index as an option |
+| [coordination-layer.md](coordination-layer.md) | meld as a coordination layer: what it owns, what it uses from other tools, a host on a VM, and the evaluation |
+| [pane-metrics-logs.md](pane-metrics-logs.md) | A new pane, the system metrics (efficiency, progress, collaboration, use of the shared context, workload), and the logs |
 | [prior-art.md](prior-art.md) | DeLM, beads, Gas Town and other tools: what they did, and what meld takes |
 | [plan.md](plan.md) | The order of work, from solo releases to the hosted version |
 | [decisions.md](decisions.md) | The decision log |
