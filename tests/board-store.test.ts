@@ -105,7 +105,7 @@ test('without meld mcp, an ACP worker does not start and says why, and the liven
 
 test('a new run with no board file gets a warning that it ends with the session, and says why meld mcp is not there', () => {
   const none = { server: '', id: 's1', owner: 's1', problem: 'bun: not found', channel: '' }
-  const warning = noBoardWarning(none, null, { id: 'r2', workers: [{ id: 'w1', agentId: 'agent-1' }] } as Run)
+  const warning = noBoardWarning(none, null, { id: 'r2', workers: [{ id: 'w1', agentId: 'agent-1' }] } as unknown as Run)
   expect(warning).toContain('This run has no board file')
   expect(warning).toContain('ends with the session')
   expect(warning).toContain('bun: not found')
@@ -114,9 +114,9 @@ test('a new run with no board file gets a warning that it ends with the session,
 test('a run on the board of meld mcp, a start with no started worker and an old run get no warning', () => {
   const none = { server: '', id: 's1', owner: 's1', problem: 'bun: not found', channel: '' }
   const served = { ...none, server: SERVER, problem: '' }
-  const started = { id: 'r2', workers: [{ id: 'w1', agentId: 'agent-1' }] } as Run
+  const started = { id: 'r2', workers: [{ id: 'w1', agentId: 'agent-1' }] } as unknown as Run
   expect(noBoardWarning(served, null, started)).toBe('')
   expect(noBoardWarning(none, null, null)).toBe('')
-  expect(noBoardWarning(none, null, { id: 'r2', workers: [{ id: 'w1' }] } as Run)).toBe('')
+  expect(noBoardWarning(none, null, { id: 'r2', workers: [{ id: 'w1' }] } as unknown as Run)).toBe('')
   expect(noBoardWarning(none, started, started)).toBe('')
 })
