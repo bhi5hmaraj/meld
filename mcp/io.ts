@@ -1,3 +1,5 @@
+import { dirname, join } from 'node:path'
+
 import { isAcpAgent } from '../core/options'
 import type { Io, Runner } from '../core/ports'
 import { bunCodeHost } from './code-host'
@@ -25,5 +27,6 @@ export function mcpIo(boards: SqliteBoards, board: string, acp?: Runner): Io {
     openPane: async () => undefined,
     command: async () => ({}),
     cost: async () => undefined,
+    archiveFolder: async () => join(dirname(boards.path), 'archive'),
   }
 }

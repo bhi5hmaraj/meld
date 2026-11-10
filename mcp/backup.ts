@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 import { isAlive } from './processes'
@@ -25,10 +25,10 @@ export function backUp(boards: SqliteBoards, now: number, pid = process.pid): st
   const path = join(folder, `meld-${new Date(now).toISOString().slice(0, 10)}.db`)
   if (existsSync(path)) return undefined
   const part = `${path}.part-${pid}`
-  writeFileSync(part, '', { mode: OWNER_ONLY })
-  chmodSync(part, OWNER_ONLY)
   try {
+    // The folder is open to its user only, so the copy is private before chmod. SQLite 3.51 refuses an existing file.
     boards.copyTo(part)
+    chmodSync(part, OWNER_ONLY)
     renameSync(part, path)
   } finally {
     rmSync(part, { force: true })

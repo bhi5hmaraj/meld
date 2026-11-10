@@ -164,6 +164,8 @@ export type Run = {
   line?: Line
   nudges: number
   taskList: number
+  /** The newest log entry when the main session last read the status view; absent before its first status read. */
+  sessionSeen?: number
 }
 
 export type Failure = { error: ErrorCode; message: string; taskList?: number; tasks?: Task[] }

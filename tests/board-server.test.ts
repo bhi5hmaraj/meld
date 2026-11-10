@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { MockClock } from 'claude-code/testing'
 import type { McpToolResult, On, TurnUsage } from 'claude-code'
 
-import { addTasks, bindWorker, isFailure, setWorkerState, startRun } from '../core/board'
+import { addTasks, bindWorker, CONTEXT_CAP, isFailure, setWorkerState, startRun } from '../core/board'
 import type { RunRecord } from '../core/ports'
 import type { Change, Run, WorkerId } from '../types'
 import { HEAD } from './fake-io'
@@ -99,13 +99,16 @@ class FakeMcp {
 }
 
 /** What the engine answers for a session start; with a FakeMcp, meld mcp connects, and without one it does not start. */
-function answerTheEngine(on: On, mcp: FakeMcp | undefined): MockClock {
+function answerTheEngine(on: On, mcp: FakeMcp | undefined, agents: { name: string; autoCompactWindow?: number }[] = []): MockClock {
   const clock = mock.clock(on, { now: NOW })
   on('session.id', () => ({ value: SESSION }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('tool.register', ($, e) => ({ value: { tool: e.name } }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
-  on('agent.register', ($, e) => ({ value: { agent: e.name } }))
+  on('agent.register', ($, e) => {
+    agents.push({ name: e.name, autoCompactWindow: e.autoCompactWindow })
+    return { value: { agent: e.name } }
+  })
   on('mcp.connect', () => ({ value: mcp ? { isConnected: true, server: SERVER } : { isConnected: false, reason: 'failed', message: 'bun: not found' } }))
   if (mcp) on('mcp.call', ($, e) => ({ value: mcp.answer(e.tool, e.args) }))
   return clock
@@ -387,4 +390,30 @@ test('at the end of a turn, the plugin carries out what workers of meld mcp left
   await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
   expect(sent).toEqual(['agent-2: There is open work on the board.'])
   expect(toasts).toEqual(['meld: the result is ready.'])
+})
+
+test('without meld mcp, a start that starts no worker gives no warning about the board file', async ($, on) => {
+  let stored: unknown
+  answerTheEngine(on, undefined)
+  on('state.get', ($, e) => ({ value: e.key === 'run' ? { value: stored, version: 1 } : { value: undefined, version: 0 } }))
+  on('state.set', ($, e) => {
+    if (e.key === 'run') stored = e.value
+    return { value: { isSet: true, version: 2 } }
+  })
+  on('process.run', ($, e) => gitAnswer(e.argv))
+  on('session.usage', () => ({ value: { startedAt: NOW, cost: { usd: 0 } } as never }))
+  on('agent.list', () => ({ value: [] }))
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'agent-9' }))
+  on('ui.open', () => ({ value: { isPlaced: false, reason: 'a test draws no pane' } }))
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  const replied = await $.command.run({ command: 'meld', args: '--agents 2 --vcs git Add a greeting', ...TYPED })
+  expect(replied.text).toContain('No worker started')
+  expect(replied.text).not.toContain('This run has no board file')
+})
+
+test('the worker type compacts its agent at the context cap', async ($, on) => {
+  const registered: { name: string; autoCompactWindow?: number }[] = []
+  answerTheEngine(on, new FakeMcp(), registered)
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  expect(registered).toEqual([{ name: 'worker', autoCompactWindow: CONTEXT_CAP }])
 })

@@ -8,7 +8,7 @@
  * or jj config of the person. Run: node scripts/adapters.mjs
  */
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -16,7 +16,8 @@ import { fileURLToPath } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
 
 const PLUGIN = dirname(dirname(fileURLToPath(import.meta.url)))
-const TEMP = mkdtempSync(join(tmpdir(), 'meld-adapters-'))
+// git lists worktrees by their real path, and on macOS the temp folder is under a link (/var to /private/var).
+const TEMP = realpathSync(mkdtempSync(join(tmpdir(), 'meld-adapters-')))
 const HOME = join(TEMP, 'home')
 const OUT = join(TEMP, 'out')
 const NAME = 'meld check'

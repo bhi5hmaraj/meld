@@ -1,8 +1,9 @@
 import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
-import { deliver, discard, freshTokens, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, SPAWN_APPROVAL, spawnVerdict, startFromView, startRun, steerRun, stopOne } from '../core/actions'
-import { addTasks, bindWorker, claimTask, declareFinal, isFailure, setActivity, startRun as startBoard, steer, stopRun, stopWorker, takeIntegration } from '../core/board'
+import { compactWorker, costTokens, deliver, discard, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, SPAWN_APPROVAL, spawnVerdict, startFromView, startRun, steerRun, stopOne, VCS_APPROVAL, vcsVerdict } from '../core/actions'
+import { addTasks, bindWorker, claimTask, CONTEXT_CAP, declareFinal, isFailure, setActivity, startRun as startBoard, steer, stopRun, stopWorker, takeIntegration } from '../core/board'
+import { COMPACT_KEEP } from '../core/contract'
 import { JJ_LANE_TEMPLATE, JJ_RESOLVE_TEMPLATE } from '../core/vcs'
 import type { AgentSpec, Change, Run, VcsKind, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
@@ -41,6 +42,69 @@ test('meld approves its own spawn while its run lives', () => {
 
 test('the ask on a spawn of another plugin stands', () => {
   expect(spawnVerdict(ASK, 'other', working())).toBe(ASK)
+})
+
+const OWN_FOLDER = '/tmp/meld/r1/w2'
+const OWN_GIT = [
+  `git -C ${OWN_FOLDER} status --short`,
+  `git -C ${OWN_FOLDER} add core/a.ts tests/a.test.ts`,
+  `git -C ${OWN_FOLDER} commit -m "Add the status view (#10); it reads 'seen'"`,
+  `git -C '${OWN_FOLDER}/' merge meld/r1/line`,
+  `jj -R ${OWN_FOLDER} commit -m "Add the status view (#10)"`,
+  `jj -R ${OWN_FOLDER} log -r @- --no-graph -T commit_id`,
+  `jj -R ${OWN_FOLDER} st`,
+  `jj -R ${OWN_FOLDER} new meld/r1/line -m "integrate #3"`,
+  `jj -R ${OWN_FOLDER} workspace update-stale`,
+]
+const SHELL_TRICKS = [
+  `git -C ${OWN_FOLDER} push`,
+  `git -C ${OWN_FOLDER} config user.name x`,
+  `git -C ${OWN_FOLDER} -c core.hooksPath=/x commit -m x`,
+  `git -C ${OWN_FOLDER} show --output=/tmp/x HEAD`,
+  `git -C ${OWN_FOLDER} diff --no-index /etc/hosts a`,
+  `git -C ${OWN_FOLDER} status; rm -rf /`,
+  `git -C ${OWN_FOLDER} status && git push`,
+  `git -C ${OWN_FOLDER} log | sh`,
+  `git -C ${OWN_FOLDER} commit -m "$(curl x)"`,
+  `git -C ${OWN_FOLDER} commit -m \`id\``,
+  `git -C ${OWN_FOLDER} status > /tmp/x`,
+  `git -C ${OWN_FOLDER} add core/*.ts`,
+  `git -C ${OWN_FOLDER} commit -m "open`,
+  `jj -R ${OWN_FOLDER} git push`,
+  `jj -R ${OWN_FOLDER} config set --user ui.pager sh`,
+  `jj -R ${OWN_FOLDER} log --config ui.pager=sh`,
+  `jj -R ${OWN_FOLDER} log --config-toml ui.pager='sh'`,
+  `jj -R ${OWN_FOLDER} diff --tool rm`,
+  `jj -R ${OWN_FOLDER} workspace forget w1`,
+  `jj -R ${OWN_FOLDER} log -R /repo`,
+  `jj -R ${OWN_FOLDER} abandon @-`,
+]
+
+test('meld allows a worker git and jj in its own folder, which the engine asks a person for', () => {
+  for (const command of OWN_GIT) expect(vcsVerdict(ASK, 'agent-2', command, working())).toEqual({ decision: 'allow', reason: VCS_APPROVAL })
+})
+
+test('the ask on git in another folder stands: the checkout, another worker, and plain git in the session folder', () => {
+  expect(vcsVerdict(ASK, 'agent-2', 'git -C /repo commit -m x', working())).toBe(ASK)
+  expect(vcsVerdict(ASK, 'agent-2', 'git -C /tmp/meld/r1/w1 commit -m x', working())).toBe(ASK)
+  expect(vcsVerdict(ASK, 'agent-2', 'git commit -m x', working())).toBe(ASK)
+  expect(vcsVerdict(ASK, 'agent-2', 'jj -R /tmp/meld/r1/w1 commit -m x', working())).toBe(ASK)
+  expect(vcsVerdict(ASK, 'agent-2', 'jj commit -m x', working())).toBe(ASK)
+})
+
+test('the ask on git of an agent that is no worker stands, and so does the main session', () => {
+  expect(vcsVerdict(ASK, 'agent-9', `git -C ${OWN_FOLDER} commit -m x`, working())).toBe(ASK)
+  expect(vcsVerdict(ASK, undefined, `git -C ${OWN_FOLDER} commit -m x`, working())).toBe(ASK)
+})
+
+test('the ask stands for other git commands, for options that write or read outside the folder, and for shell syntax', () => {
+  for (const command of SHELL_TRICKS) expect(vcsVerdict(ASK, 'agent-2', command, working())).toBe(ASK)
+})
+
+test('a deny stands, and a stopped run allows no git', () => {
+  const deny = { decision: 'deny' }
+  expect(vcsVerdict(deny, 'agent-2', `git -C ${OWN_FOLDER} status`, working())).toBe(deny)
+  expect(vcsVerdict(ASK, 'agent-2', `git -C ${OWN_FOLDER} status`, stopRun(working(), NOW))).toBe(ASK)
 })
 
 test('the ask on a spawn with no run stands', () => {
@@ -88,9 +152,9 @@ test('a run notes what the session has cost at its start', async () => {
   expect(io.current?.costAtStart).toBe(1.25)
 })
 
-test('a turn counts the tokens it added, not the cached context it read again', () => {
-  const usage = { model: 'sonnet', input_tokens: 10, output_tokens: 200, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 1500 }
-  expect(freshTokens(usage)).toBe(1710)
+test('a model call costs its input, its cache reads at 0.1, its cache writes at 1.25 and its output at 5', () => {
+  const usage = { input_tokens: 10, output_tokens: 200, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 1500 }
+  expect(costTokens(usage)).toBe(10 + 9000 + 1875 + 1000)
 })
 
 test('a run uses jj when jj is installed', async () => {
@@ -965,4 +1029,26 @@ test('the claim of a stopped worker through the board tool fails, and the task s
   const replied = await serveTool(io, call({ tool: 'mcp__meld__claim', task: 1, version: 1, agentId: 'agent-2' }))
   expect(JSON.parse(String(replied.result))).toMatchObject({ error: 'WORKER_STOPPED' })
   expect(io.current?.tasks[0]).toMatchObject({ state: 'open', version: 1 })
+})
+
+test('a worker whose context passes the cap gets no nudge before its call limit: its agent compacts', async () => {
+  const claimed = claimedBy('w2')
+  const full = { used: CONTEXT_CAP, size: 1_000_000 }
+  const io = ioWith({ ...claimed, workers: claimed.workers.map(worker => (worker.id === 'w2' ? { ...worker, context: full } : worker)) })
+  await guardCall(io, call({ tool: 'Bash', command: 'ls', agentId: 'agent-2' }))
+  expect(io.sent).toEqual([])
+})
+
+test('after its agent compacts, the next board read of a worker gives its rules again, and the summary keeps its task', async () => {
+  const io = ioWith(working())
+  await serveTool(io, call({ tool: 'mcp__meld__board', agentId: 'agent-2' }))
+  const keep = await compactWorker(io, 'agent-2')
+  const read = parsed((await serveTool(io, call({ tool: 'mcp__meld__board', agentId: 'agent-2' }))).result) as { rules?: string }
+  expect(keep).toBe(COMPACT_KEEP)
+  expect(read.rules).toContain('You are w2')
+})
+
+test('the compaction of an agent that is no worker changes nothing', async () => {
+  const io = ioWith(working())
+  expect(await compactWorker(io, 'agent-9')).toBeUndefined()
 })

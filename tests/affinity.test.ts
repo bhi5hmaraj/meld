@@ -83,7 +83,7 @@ test('meld mcp lets an idle ACP worker with a small context go on in its own ses
 test('a model call of a worker records its context: the whole input of the call, against the window of its model', async () => {
   const io = ioWith(idleWorker('meld:worker', 'agent-1'))
   await countStep(io, 'agent-1', usageOf(1000, 2000, 30_000, 500), WINDOW)
-  expect(io.current?.workers[0]).toMatchObject({ tokens: 3500, context: { used: 33_000, size: WINDOW } })
+  expect(io.current?.workers[0]).toMatchObject({ tokens: 9000, context: { used: 33_000, size: WINDOW } })
 })
 
 test('a new agent of a worker starts with no context', () => {
@@ -112,4 +112,20 @@ test('the hand-back of a worker marks it idle at once, as meld may not see the e
   const io = ioWith({ ...run, workers: run.workers.map(worker => ({ ...worker, state: 'working' })) })
   expect(await guardCall(io, { tool: 'SubagentHandback', agentId: 'agent-1' })).toBeUndefined()
   expect(io.current?.workers[0]?.state).toBe('idle')
+})
+
+const LARGE_WINDOW = 1_000_000
+
+test('an idle worker with 200k tokens in a window of 1M gets a fresh agent: the context cap comes before half of a large window', async () => {
+  const io = ioWith(idleWorker('meld:worker', 'agent-1', { used: 200_000, size: LARGE_WINDOW }))
+  await restartIdleWorkers(io)
+  expect(io.resumed).toEqual([])
+  expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w1'])
+})
+
+test('an idle worker with 100k tokens in a window of 1M goes on in its own session', async () => {
+  const io = ioWith(idleWorker('meld:worker', 'agent-1', { used: 100_000, size: LARGE_WINDOW }))
+  await restartIdleWorkers(io)
+  expect(io.resumed).toEqual([`agent-1: ${OPEN_STEP}`])
+  expect(io.spawned).toEqual([])
 })

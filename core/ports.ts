@@ -95,8 +95,11 @@ export type Ledger = {
   cost(): Promise<number | undefined>
 }
 
+/** Where meld keeps the record of each run before it removes the run folder: ~/.meld/archive, or the archive folder next to MELD_DB. */
+export type Archive = { archiveFolder(): Promise<string> }
+
 /** Every port. A hooks module spells `$` only at its call sites, so each hook builds an Io of closures over its own `$`. */
-export type Io = Store & FactsStore & CodeHost & Runner & Clock & Entropy & Surface & Ledger
+export type Io = Store & FactsStore & CodeHost & Runner & Clock & Entropy & Surface & Ledger & Archive
 
 /** A tool that the host offers to the model: its name, what it does, and the JSON schema of its input. */
 export type ToolSpec = { name: string; description: string; inputSchema?: Record<string, unknown> }

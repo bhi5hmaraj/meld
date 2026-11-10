@@ -117,8 +117,8 @@ function settled(run: Run): Run {
   return run.workers.some(worker => worker.agentId) ? { ...run, state: 'working' } : { ...run, state: 'stopped', endedAt: run.startedAt }
 }
 
-export function markBriefed(run: Run, id: WorkerId): Run {
-  return replaceWorker(run, { ...findWorker(run, id), briefed: true })
+export function markBriefed(run: Run, id: WorkerId, briefed = true): Run {
+  return replaceWorker(run, { ...findWorker(run, id), briefed })
 }
 
 /** A tool call of a worker counts for the worker and for each leaf that it claimed. */
@@ -169,9 +169,16 @@ export function resumeWorker(run: Run, id: WorkerId, now: number): Change<Worker
 /** Below this share of its window, the context of an agent leaves room for one more task. */
 export const AFFINITY_SHARE = 0.5
 
-/** The agent of an idle worker goes on in its own session while its context fills less than AFFINITY_SHARE of its window. */
+/**
+ * The most tokens in the context of an agent: a meld worker compacts its conversation there, and an idle worker past it
+ * gets a fresh agent. Each model call reads the whole context again, so on a window of 1M tokens a long session makes
+ * cache reads most of the cost of a run.
+ */
+export const CONTEXT_CAP = 150_000
+
+/** The agent of an idle worker goes on in its own session while its context fills less than AFFINITY_SHARE of its window, and less than CONTEXT_CAP. */
 export function keepsSession(worker: Worker): boolean {
-  return worker.agentId !== undefined && worker.context !== undefined && worker.context.used < AFFINITY_SHARE * worker.context.size
+  return worker.agentId !== undefined && worker.context !== undefined && worker.context.used < Math.min(AFFINITY_SHARE * worker.context.size, CONTEXT_CAP)
 }
 
 export function setContext(run: Run, by: WorkerId, context: AgentContext): Run {

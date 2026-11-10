@@ -7,6 +7,9 @@ import type { LineMerge } from './vcs'
 /** The start of the name of each tool of meld, as Claude Code names the tools of the plugin meld. */
 export const TOOL_PREFIX = 'mcp__meld__'
 
+/** The board view that gives the main session its compact status; a board read with no view gives the full board. */
+export const STATUS_VIEW = 'status'
+
 export const TOOL = {
   board: 'mcp__meld__board',
   addTasks: 'mcp__meld__add_tasks',
@@ -75,7 +78,11 @@ export const STEER_PRESETS = [
 /** The end of each turn of a worker goes to the session of the person: the system prompt and the spawn prompt ask for one line. */
 const LAST_MESSAGE = 'Your last message goes to the session of the person. Make it one line, for example: finished #4, commit 4a0bde04. The board keeps the detail.'
 
-export const WORKER_SYSTEM = `You are a meld worker: one of several agents that make one result together, each in its own folder, through a shared board. Call ${TOOL.board} first. Its first reply holds your rules, your folder, the other workers and the tasks. Follow those rules, and keep each message short. ${LAST_MESSAGE}`
+export const WORKER_SYSTEM = `You are a meld worker: one of several agents that make one result together, each in its own folder, through a shared board. Call ${TOOL.board} first. Its first reply holds your rules, your folder, the other workers and the tasks. Follow those rules, and keep each message short. When your conversation starts with a summary of earlier work, call ${TOOL.board} before anything else: its reply gives your rules again. ${LAST_MESSAGE}`
+
+/** What the summary of a compacted worker keeps: the facts that its work needs and that no board read gives again. */
+export const COMPACT_KEEP =
+  'This agent is a meld worker. Keep the id and version of each task that it claimed, its folder and ref, each commit that it made and what the commit does, what is left to do, the checks that fail and why, and every steer of the person. Leave out file contents and command output that it can read again.'
 
 const TASK_VERSION = {
   task: { type: 'number', description: 'The task number, #n on the board.' },
@@ -143,7 +150,17 @@ export const TOOL_SPECS: ToolSpec[] = [
     name: 'board',
     description:
       'Read the meld board: who you are, your folder, the other workers, the request and the steers of the person, the tasks, the news from the other workers since your last read, and the shared-context entries that are new for you. The first read also gives your rules.',
-    inputSchema: { type: 'object', properties: {} },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        view: {
+          type: 'string',
+          enum: [STATUS_VIEW],
+          description:
+            'For the main session only. status gives a compact board: the run state, the task counts, one row for each task and each worker, and the log entries since the last status read. With no view, the main session gets the full board.',
+        },
+      },
+    },
   },
   {
     name: 'add_tasks',
@@ -279,7 +296,7 @@ ${run.request}
 Your folder: ${you.path}. Your ref: ${you.ref}. The other workers: ${peers.map(peer => `${peer.id} (${peer.ref})`).join(', ') || 'none'}. All start from commit ${run.base.slice(0, 12)} of ${run.repo}.
 
 The rules for a meld worker:
-1. Work only in your folder. Never edit the main checkout or the folder of another worker. Read CLAUDE.md or AGENTS.md in your folder if they exist. Install dependencies in your folder if your checks need them, and keep dependency folders out of your commits.
+1. Write only in your own folder. Never edit the main checkout or the folder of another worker, with a tool or with a command. Read CLAUDE.md or AGENTS.md in your folder if they exist. Install dependencies in your folder if your checks need them, and keep dependency folders out of your commits.
 2. Read the board with ${TOOL.board}. Plan the request as a few small tasks that can go on at the same time, and add them all in one call with ${TOOL.addTasks}, with the taskList version of your read. If another worker added tasks since your read, the call fails and shows its tasks: claim the ones that cover your work, and add only what is still missing. Claim a task with ${TOOL.claim} before you start it. The reply of a claim gives the handovers of the tasks that your task needs: their commits, interfaces and unfinished work.
 3. Give each task a title in plain words, 8 words at most, with no file paths. Give needs when a task needs the result of another task. Until those tasks are done, a claim of that task fails with WAITING. Split a task that has more than one deliverable with ${TOOL.split}: you keep the first part, and the other parts are open. A task with parts has no commit of its own. It is done when all its parts are done.
 4. Commit after each step. When a task is done, call ${TOOL.finishTask} with the commit and a one-line summary. Give the contracts that other tasks use in interfaces, and the work that you did not do in unfinished. Tell the other workers about each decision with ${TOOL.note}.
@@ -297,7 +314,8 @@ ${run.vcs === 'jj' ? jjGuide(you, peers, line) : gitGuide(you, peers, line)}`
 function gitGuide(you: Worker, peers: Worker[], line: string): string {
   const branches = peers.map(peer => peer.ref).join(', ') || 'none'
   return `Version control: git. Your folder is a git worktree on branch ${you.ref}.
-- Commit: git add the files, then git commit -m "<message>". Give HEAD or the commit hash to the board tools.
+- Your shell starts in the folder of the session, not in yours. Run each git command as git -C ${you.path} <command>, with no cd, one command in each call. meld allows status, diff, log, show, add, commit, rev-parse, ls-files, merge and cherry-pick in this form. Use plain words in quotes, with no $, backtick or backslash.
+- Commit: git -C ${you.path} add the files, then git -C ${you.path} commit -m "<message>". Give HEAD or the commit hash to the board tools.
 - Take the work of another worker: git merge <its branch>, or git cherry-pick <hash>. Their branches: ${branches}.
 - The integration line is the branch ${line}. To integrate #N: git merge ${line}, then git merge <the commit of #N>, fix the conflicts, commit, and finish the task with HEAD.
 - Final integration: git merge ${line}, run one final build and the checks, commit what they need, and give HEAD to finish.`
@@ -306,7 +324,8 @@ function gitGuide(you: Worker, peers: Worker[], line: string): string {
 function jjGuide(you: Worker, peers: Worker[], line: string): string {
   const lasts = peers.map(peer => `${peer.id}@-`)
   return `Version control: jj. Your folder is a jj workspace with no branch: jj names your working copy ${you.ref}, and the last commit of each other worker is ${lasts.join(', ') || 'none'}.
-- Each jj command records your edits in ${you.ref}. Commit: jj commit -m "<message>". The commit is then @-, and ${you.ref} is a new empty change on top. Give @- or its id (jj log -r @- --no-graph -T commit_id) to the board tools.
+- Your shell starts in the folder of the session, not in yours. Run each jj command as jj -R ${you.path} <command>, with no cd, one command in each call. meld allows status, st, log, diff, show, commit, new and workspace update-stale in this form. Use plain words in quotes, with no $, backtick or backslash.
+- Each jj command records your edits in ${you.ref}. Commit: jj -R ${you.path} commit -m "<message>". The commit is then @-, and ${you.ref} is a new empty change on top. Give @- or its id (jj log -r @- --no-graph -T commit_id) to the board tools.
 - Always give -m. Never run a command that opens an editor or a screen: jj split, jj squash -i, jj diffedit, jj resolve.
 - See the work of the run: jj log. Take the work of another worker: commit first, then jj new @- <its commit> makes your next change on top of both.
 - A conflict does not stop jj: jj st lists the files with conflicts. Edit the files to remove the conflict markers; the next jj command records the fix. A commit with a conflict cannot be the final commit.

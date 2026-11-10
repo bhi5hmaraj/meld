@@ -26,6 +26,10 @@ test('the rules of a jj run use jj commit and the last commits of the other work
   expect(rules).not.toContain('git merge')
 })
 
+test('the rules tell a worker to write only in its own folder', () => {
+  expect(workerRules(runOn('git'), 'w1')).toContain('1. Write only in your own folder.')
+})
+
 test('the rules name every other worker', () => {
   const rules = workerRules(runOn('git', 3), 'w2')
   expect(rules).toContain('w1 (meld/r1/w1)')
@@ -126,6 +130,18 @@ test('the rules list WAITING with the board errors that fail one call', () => {
   const rules = workerRules(runOn('git'), 'w1')
   expect(rules).toContain('(STALE_VERSION, TAKEN, NOT_OWNER, WAITING, CONFLICT, INVALID)')
   expect(rules).toContain('WAITING names the task that the claim waits for.')
+})
+
+test('the git guide tells a worker to run git with -C and its folder, as its shell starts in the folder of the session', () => {
+  const rules = workerRules(runOn('git'), 'w1')
+  expect(rules).toContain('git -C /tmp/meld/r1/w1 commit -m')
+  expect(rules).not.toContain('then git commit -m')
+})
+
+test('the jj guide tells a worker to run jj with -R and its folder, one command in each call', () => {
+  const rules = workerRules(runOn('jj'), 'w1')
+  expect(rules).toContain('jj -R /tmp/meld/r1/w1 commit -m')
+  expect(rules).toContain('one command in each call')
 })
 
 test('the nudge tells the owner of a leaf to split it or finish it', () => {
