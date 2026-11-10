@@ -688,6 +688,62 @@ export function spawnVerdict<V extends { decision: string }>(verdict: V, plugin:
   return { decision: 'allow', reason: SPAWN_APPROVAL }
 }
 
+export const GIT_APPROVAL = 'meld lets a worker run git in its own folder.'
+
+/** The git commands of the git guide (contract.ts). None of them reaches a remote or changes the config. */
+const WORKER_GIT: ReadonlySet<string> = new Set(['status', 'diff', 'log', 'show', 'add', 'commit', 'rev-parse', 'ls-files', 'merge', 'cherry-pick'])
+
+/** Options that write a file anywhere, or read files outside the repository. */
+const OUTSIDE_OPTIONS = ['--output', '--no-index']
+
+/**
+ * The verdict on a Bash call. The shell of a worker starts in the folder of the session, not in its own folder, so a
+ * worker runs git as `git -C <its folder>`, and the engine asks a person for that form. With no person to ask, a worker
+ * could not commit. meld allows the call when the folder is the worker's own (a worktree of the person's repository that
+ * meld made), the subcommand is in WORKER_GIT, and the command holds no shell syntax. Every other verdict stands.
+ */
+export function gitVerdict<V extends { decision: string }>(verdict: V, agentId: string | undefined, command: string, run: Run | null): V | { decision: 'allow'; reason: string } {
+  const worker = verdict.decision === 'ask' && agentId && run && LIVE_STATES.has(run.state) ? board.workerOf(run, agentId) : undefined
+  return worker && isOwnGit(shellWords(command), worker.path) ? { decision: 'allow', reason: GIT_APPROVAL } : verdict
+}
+
+function isOwnGit(words: string[] | undefined, folder: string): boolean {
+  if (!words || words[0] !== 'git' || words[1] !== '-C' || words[2]?.replace(/\/+$/, '') !== folder.replace(/\/+$/, '')) return false
+  return WORKER_GIT.has(words[3] ?? '') && !words.some(word => OUTSIDE_OPTIONS.some(option => word.startsWith(option)))
+}
+
+/** Characters that the shell reads as syntax outside quotes: operators, redirects, substitutions, escapes, globs and comments. */
+const SHELL_SYNTAX = ';&|<>()$`\\\n\r*?[]{}~#!'
+
+/**
+ * The words of a command, or undefined when the shell would read more than words in it: syntax outside quotes, a
+ * substitution or an escape in double quotes, or an open quote. Single quotes keep each character as it is.
+ */
+export function shellWords(command: string): string[] | undefined {
+  const words: string[] = []
+  let word: string | undefined
+  let quote = ''
+  for (const char of command) {
+    if (quote) {
+      if (char === quote) quote = ''
+      else if (quote === '"' && '$`\\'.includes(char)) return undefined
+      else word += char
+    } else if (char === "'" || char === '"') {
+      quote = char
+      word ??= ''
+    } else if (char === ' ' || char === '\t') {
+      if (word !== undefined) words.push(word)
+      word = undefined
+    } else if (SHELL_SYNTAX.includes(char)) {
+      return undefined
+    } else {
+      word = (word ?? '') + char
+    }
+  }
+  if (quote) return undefined
+  return word === undefined ? words : [...words, word]
+}
+
 /** The tokens a turn added: its input, the context it wrote to the cache and its output, not the cached context it read again. */
 export function freshTokens(usage: TokenUsage | undefined): number {
   if (!usage) return 0

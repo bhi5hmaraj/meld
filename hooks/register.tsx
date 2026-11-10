@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentStatus, HookFailure, Register } from 'claude-code'
 
-import { compactWorker, controlRun, countStep, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll } from '../core/actions'
+import { compactWorker, controlRun, countStep, gitVerdict, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll } from '../core/actions'
 import { CONTEXT_CAP } from '../core/board'
 import { cleanFolders } from '../core/clean'
 import type { Action, BoardRead, Boards, BoardSummary, Committed } from '../core/remote-store'
@@ -151,6 +151,11 @@ export const register: Register = on => {
   on('tool.check', { tool: BOARD_STORE_TOOLS }, ($, e, next) => boardVerdict(String(e.tool), board.server, next.origin.plugin) ?? next(e)).catch(() => ({
     decision: 'deny',
   }))
+
+  // A worker runs git with -C and its own folder, and the engine asks a person for that form: see gitVerdict.
+  on('tool.check', { tool: 'Bash' }, async ($, e, next) => gitVerdict(await next(e), e.agentId, String((e.input as { command?: unknown }).command ?? ''), await read($, runRef))).catch(
+    ($, e, next) => next(e),
+  )
 
   // A worker spawn is an Agent call that meld raises, and auto mode cannot link it to the person: see spawnVerdict.
   on('tool.check', { tool: 'Agent' }, async ($, e, next) => spawnVerdict(await next(e), next.origin.plugin, await read($, runRef))).catch(

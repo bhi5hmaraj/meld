@@ -128,6 +128,12 @@ test('the rules list WAITING with the board errors that fail one call', () => {
   expect(rules).toContain('WAITING names the task that the claim waits for.')
 })
 
+test('the git guide tells a worker to run git with -C and its folder, as its shell starts in the folder of the session', () => {
+  const rules = workerRules(runOn('git'), 'w1')
+  expect(rules).toContain('git -C /tmp/meld/r1/w1 commit -m')
+  expect(rules).not.toContain('then git commit -m')
+})
+
 test('the nudge tells the owner of a leaf to split it or finish it', () => {
   expect(splitNudge(4)).toBe('Split #4 into smaller tasks, or finish it.')
 })
