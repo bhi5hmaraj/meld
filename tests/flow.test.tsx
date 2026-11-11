@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { addTasks, addUsage, bindWorker, claimTask, finishTask, isFailure, machineSlept, setWorkerState, startRun } from '../core/board'
-import { FLOW_SHAPE } from '../hooks/drawing'
+import { FLOW_SHAPE } from '../core/report'
 import type { Change, Run, WorkerId } from '../types'
 
 const NOW = 1_800_000_000_000

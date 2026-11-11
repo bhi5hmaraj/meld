@@ -7,11 +7,11 @@ import { activityOf, sharedContextOf } from '../core/metrics'
 import type { SharedContext } from '../core/metrics'
 import { STEER_PRESETS } from '../core/contract'
 import { agentColor, BAR_HEIGHT, BAR_WIDTH, barCells, LANE_HEIGHT, LANE_WIDTH, laneAlt, laneGlyphs, laneSvg, partsBarSvg, ROW_BAR_WIDTH, STATUS } from './drawing'
-import { FLOW_CELLS, FLOW_HEIGHT, FLOW_LEGEND, FLOW_WIDTH, flowCells, flowSvg, partsIn, partWords } from './drawing'
-import type { TimeSpan } from './drawing'
+import { FLOW_HEIGHT, FLOW_WIDTH, flowSvg } from './drawing'
 import { efficiencyOf, lanesOf, progressOf } from '../core/metrics'
 import type { LanePart } from '../core/metrics'
-import { reportOf, tokenCount } from '../core/report'
+import { FLOW_CELLS, FLOW_LEGEND, flowCells, partsIn, partWords, reportOf, sleepsOf, tokenCount } from '../core/report'
+import type { TimeSpan } from '../core/report'
 import type { Io } from '../core/ports'
 import { agentsOf, formatStart, isAcpSpec, MAX_AGENTS, MODELS, WORKER_TYPE } from '../core/options'
 import { ownersOf, partsOf, percentLabel, percentOf, requestParts, requestPercent, topTasks } from '../core/progress'
@@ -481,7 +481,7 @@ function laneRows(input: PaneInput, run: Run, window: TimeSpan) {
   const Svg = input.surface !== 'terminal' && 'Svg' in input.table ? input.table.Svg : undefined
   const lanes = lanesOf(run, input.now).filter(lane => lane.to > lane.from && lane.to > window.from)
   if (!lanes.length) return []
-  const sleeps: TimeSpan[] = run.log.filter(entry => entry.kind === 'host').map(entry => ({ from: entry.from ?? entry.at, to: entry.at }))
+  const sleeps = sleepsOf(run)
   const rows = lanes.map(lane => {
     const color = run.workers.findIndex(worker => worker.id === lane.worker)
     const parts = partsIn(lane.parts, window)

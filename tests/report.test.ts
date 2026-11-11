@@ -1,8 +1,10 @@
 import { expect, test } from 'claude-code/testing'
 
 import { addCheck, addTasks, bindWorker, boardFor, claimTask, declareFinal, finishTask, isFailure, setWorkerState, shareEntry, startRun, steer, takeIntegration } from '../core/board'
-import { reportOf } from '../core/report'
+import { discard } from '../core/actions'
+import { FLOW_SHAPE, reportCommand, reportOf } from '../core/report'
 import type { Change, Run, WorkerId } from '../types'
+import { ARCHIVE, FakeIo } from './fake-io'
 
 const NOW = 1_800_000_000_000
 const MINUTE = 60_000
@@ -14,6 +16,9 @@ const STORY = '2 agents finished 2 tasks in 40 minutes. For 20 of those minutes,
 const EMPTY_STORY = '2 agents finished 0 tasks in 40 minutes. For 0 of those minutes, only one agent worked. No agent finished a task. No agent shared an entry. No check ran, and the person steered 1 time.'
 const TIME_LINE = 'Time: 40m of run, 80m of agent time, busy 75%, parallelism 1.5, one agent alone 20m, waiting on meld 0m, asleep 0m, idle restarts 0.'
 const W1_LINE = 'w1: busy 20m of 40m, 50% of the work, 20m idle while others worked, 0 tokens.'
+const ARCHIVED = `${ARCHIVE}/r1.json`
+const RUNS_ROW = '| r1 | 2 | 2 | 40m | 75% | 20m | 0m | 0.75 |'
+const { working, idle } = FLOW_SHAPE
 const ALL_SURFACES = ['terminal', 'desktop', 'vscode', 'mobile'] as const
 const PANE = {
   plugin: 'meld',
@@ -58,6 +63,41 @@ test('the report gives the time metrics of the run in one line', () => {
 
 test('the report gives one line for each worker: busy time, share of the work, idle time while others worked, and cost', () => {
   expect(reportOf(reportRun(), NOW).workers[0]).toBe(W1_LINE)
+})
+
+test('/meld-report gives the report of the run of the session, with its lanes in cells', async () => {
+  const io = new FakeIo()
+  io.current = reportRun()
+  const text = await reportCommand(io, '')
+  expect(text).toContain(STORY)
+  expect(text).toContain(`w1 ${working.repeat(15)}${idle.repeat(15)}`)
+  expect(text).toContain(W1_LINE)
+})
+
+test('Discard writes the report into the archive of the run', async () => {
+  const io = new FakeIo()
+  io.current = reportRun()
+  await discard(io)
+  expect(JSON.parse(io.files[ARCHIVED] ?? '{}').report).toContain(STORY)
+})
+
+test('/meld-report with the id of an archived run gives its report', async () => {
+  const io = new FakeIo()
+  io.current = reportRun()
+  await discard(io)
+  expect(await reportCommand(io, 'r1')).toContain(STORY)
+})
+
+test('/meld-report with the id of a run that meld did not archive says so', async () => {
+  expect(await reportCommand(new FakeIo(), 'r9')).toBe('meld has no archived run r9.')
+})
+
+test('/meld-report --runs gives one row for each archived run', async () => {
+  const io = new FakeIo()
+  io.current = reportRun()
+  await discard(io)
+  io.listings[ARCHIVE] = [{ name: 'r1.json', kind: 'file', mtimeMs: 1 }]
+  expect(await reportCommand(io, '--runs')).toContain(RUNS_ROW)
 })
 
 test('a ready run shows the report in place of Flow, the same on every surface', async ($, on) => {
