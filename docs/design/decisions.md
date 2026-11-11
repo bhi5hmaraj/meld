@@ -54,3 +54,6 @@ Status values:
 | 44 | On a server, Claude workers run behind the ACP adapter of Claude Code. On a laptop, they stay subagents. | Proposed | [coordination layer](coordination-layer.md) |
 | 45 | A `meld:worker` compacts its conversation at the context cap, and a hook tells the summary what to keep. Its next board read gives its rules again. A fresh agent comes only between tasks, past the cap. | Agreed | [plan](plan.md) |
 | 46 | meld allows `git -C` and `jj -R` of a worker in its own folder, for the commands of its guide, with no shell syntax. A deny rule and every other verdict stand. | Agreed | [plan](plan.md) |
+| 47 | A board reply carries what changes and what is short. A long item goes by a ref, and one function makes the text of an item for the reply, for the read by ref and for the files. A ref is a name, not a path: each host says where its files are. | Agreed | [shared context](shared-context.md) |
+| 48 | The whole run does not go through an MCP result. The plugin reads its board over the channel of `meld mcp` now. Later it sends each board call to the board, as a hosted board needs. | Agreed | [architecture](architecture.md) |
+| 49 | An agent that is about to stop goes on in its turn when the board has a step for its worker. The restart of an idle agent of another worker still comes from a turn of the main session. | Agreed | [plan](plan.md) |

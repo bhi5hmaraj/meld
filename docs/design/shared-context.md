@@ -38,6 +38,15 @@ Agents use grep, rg and `cat` better than any custom tool. So give them a read-o
 
 That gives the ease of files without their problems with concurrent writes, provenance and deletion.
 
+## The board as files
+
+From 0.10.2, the same rule covers the whole board of a run: the request, the tasks, the log and the context entries.
+
+- **A ref names an item.** `tasks/9` and `context/31` are names, not paths. A board reply carries a long item as its first words and its ref. `board` with `ref` gives the item on every host.
+- **Files are a copy on the machine of the reader.** In solo mode, `meld mcp` writes them to the folder of the run. On a hosted board, the client of each worker writes its own copy: it asks for the entries after the last id that it has. A reply names the folder of the files when the host has one.
+- **A ref points at what does not change.** The log entries, the context entries and the handover of a done task stay as they are, so a copy is never wrong. What changes (the state, the owner and the version of a task) comes in each reply. A retracted entry is the one exception: a copy must also take the deletions.
+- **Entries belong to the party, and tasks to the run.** A hosted copy keeps them in two folders, as the entries outlive the run.
+
 ## When a search index is worth adding
 
 Its advantage is search by meaning, not scale. Log every search. Add the index when many searches return nothing while a relevant entry exists. This tends to grow with search across projects. Feed the index from Postgres, which stays the record.

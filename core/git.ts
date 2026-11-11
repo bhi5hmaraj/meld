@@ -54,6 +54,20 @@ export async function isDirty(io: CodeHost, cwd: string): Promise<boolean> {
   return status.ok && status.out.length > 0
 }
 
+/** The files of the checkout with an uncommitted change, new files too. A file that git shows as renamed counts under both names. */
+// ponytail: reads the plain lines of git status. A path that git puts in quotes matches no file of a result, and git merge still refuses to write over it.
+export async function dirtyFiles(io: CodeHost, cwd: string): Promise<string[]> {
+  const status = await git(io, cwd, ['status', '--porcelain'])
+  const lines = status.ok ? status.raw.split('\n').filter(Boolean) : []
+  return lines.flatMap(line => line.slice(3).split(' -> '))
+}
+
+/** The files that the commits from `base` to `commit` change, or undefined when git cannot read them. */
+export async function changedFiles(io: CodeHost, gitDir: string, base: string, commit: string): Promise<string[] | undefined> {
+  const names = await git(io, gitDir, ['diff', '--no-renames', '--name-only', base, commit])
+  return names.ok ? names.out.split('\n').filter(Boolean) : undefined
+}
+
 export async function mergeInto(io: CodeHost, repo: string, commit: string, message: string): Promise<CommandResult> {
   const merged = await git(io, repo, ['merge', '--no-ff', '-m', message, commit])
   if (!merged.ok) await git(io, repo, ['merge', '--abort'])

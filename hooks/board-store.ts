@@ -81,7 +81,25 @@ export function sessionRunner(session: SessionBoard, engine: Runner, acp: Runner
 export function valueOf<T>(result: McpToolResult): T {
   const text = result.content.find(block => block.type === 'text')?.text ?? ''
   if (result.isError) throw new Error(`meld mcp: ${text}`)
-  return JSON.parse(text) as T
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    // The engine gives a short text in place of a result over its size limit.
+    throw new Error(`meld mcp gave no JSON: ${text.slice(0, NO_JSON_CHARS)}`)
+  }
+}
+
+/** The most characters of a reply that is no JSON in its error. */
+const NO_JSON_CHARS = 120
+
+/**
+ * The row of the board of the session. It comes over the channel of meld mcp when there is one: the engine limits the
+ * size of an MCP result, and a run with many tasks passes that limit. Without a channel, or when the channel fails, the
+ * row comes from the read_board tool.
+ */
+export async function readRow(session: SessionBoard, fetch: (url: string) => Promise<HttpResponse>, call: () => Promise<McpToolResult>): Promise<BoardRead> {
+  const answer = session.channel ? await fetch(`http://meld/boards/${encodeURIComponent(session.id)}`).catch(() => undefined) : undefined
+  return answer?.ok ? (JSON.parse(answer.text) as BoardRead) : valueOf<BoardRead>(await call())
 }
 
 /** What adopt_board answers, as the resume reads it. */
@@ -117,6 +135,27 @@ export function workerOffer(isResuming: boolean): { isOffered: false } | undefin
 /** Why meld mcp did not connect: the refusal of the engine, with the step that starts meld mcp when the session holds an old manifest. */
 export function problemOf(refusal: { reason: string; message: string }): string {
   return refusal.reason === 'unlisted' ? `${refusal.message} ${RELOAD}` : refusal.message
+}
+
+/** What a hook gives connectBoard: the connection to meld mcp, and a call of one of its tools. */
+export type BoardLink = {
+  connect: () => Promise<{ isConnected: true; server: string } | { isConnected: false; reason: string; message: string }>
+  call: (tool: string, args: Record<string, unknown>) => Promise<McpToolResult>
+}
+
+/**
+ * Connects the board of the session to meld mcp. The desktop app can start a session parked, before its MCP servers
+ * run, so the hooks that start or drive a run call it again while the session has no server. A run that lives in the
+ * session state stays there: only a session with no such run connects.
+ */
+export async function connectBoard(session: SessionBoard, link: BoardLink, held: Run | null = null): Promise<void> {
+  if (session.server || (held && held.state !== 'delivered')) return
+  const connected = await link.connect().catch((error: unknown) => ({ isConnected: false as const, reason: 'failed', message: String(error) }))
+  session.server = connected.isConnected ? connected.server : ''
+  session.problem = connected.isConnected ? '' : problemOf(connected)
+  if (!session.server) return
+  session.channel = await link.call('board_channel', {}).then(result => valueOf<{ socketPath: string }>(result).socketPath, () => '')
+  await link.call('lead_board', { board: session.id, owner: session.owner }).catch(() => undefined)
 }
 
 /**

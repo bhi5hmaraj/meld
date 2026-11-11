@@ -59,7 +59,7 @@ Name the model or type as `/meld --agents` does: `opus`, `Explore`, or `general-
 
 ## Deliver, archives and old runs
 
-Deliver merges the final commit into your branch with a merge commit, and removes the workspaces. Your checkout must have no uncommitted changes. If the merge stops, meld aborts it, and nothing changes.
+Deliver merges the final commit into your branch with a merge commit, and removes the workspaces. Your checkout can have uncommitted changes in files that the result does not change. With a change in a file that the result changes too, Deliver refuses and names the file. If the merge stops, meld aborts it, and nothing changes.
 
 Deliver refuses a final commit that lacks the commit of a task that is done on the board. The reply names the tasks, and you steer the run so that an agent merges them. The subject of the merge commit is `meld: ` and the summary of the final commit, cut at a space to 72 characters at most. With no summary, it is the first line of the request. The body holds the full request.
 
@@ -98,6 +98,23 @@ meld works in the folder where the chat starts the server. To work in another re
 The agents use eleven board tools: `board`, `add_tasks`, `claim`, `split`, `release`, `finish_task`, `note`, `share`, `check`, `integrate` and `finish`. The main session has three more: `start`, `steer` and `stop`. These three refuse a call from an agent or another subagent.
 
 With `view: "status"`, `board` gives the main session a short board, and with no view the full board. The short board has the run state, the task counts and the log entries since the last status read. A task row has the id, title, state, owner, and the needs that are not done. A worker row has the id, state, claims, and the seconds since the last call.
+
+### Short replies and the board files
+
+Each model call of an agent reads its whole context again, so a long board reply costs tokens at each later call. A board reply carries what changes and what is short:
+
+- **tasks:** one line for each task, with its id, title, state, owner, version and needs.
+- **yours:** the tasks that the reader claims, in full.
+- **news and context:** the entries that are new for the reader. A text over 600 characters comes as its first words, its size and a ref.
+- **request and steers:** at the first read only, with the rules. A new steer comes in each reply until the agent saw it.
+
+A ref names one whole item: `request`, `tasks`, `tasks/<id>`, `log/<id>` or `context/<id>`. `board` with `ref` gives the item. One function makes the text of each item, for the reply, for the read by ref and for the files, so the three cannot differ.
+
+With Bun, `meld mcp` also writes the items as files in `/tmp/meld/<run>/board/`: `request.md`, `tasks.md`, `tasks/<id>.md`, `context.jsonl` and `log.jsonl`. An agent searches them with one Bash command, for example `rg`, `jq`, `sed -n` or `head`, and takes only the lines that it needs. `tasks.md` shows the task tree: the parts of a task come under it, each with two more spaces at its start. A task with no parent starts at the left.
+
+The process of `meld mcp` that leads the board writes the files when the board changes, at most half a second later. Each version is a folder, and `board` is a link that moves to the new version in one step. So a reader sees one whole version. The files can be older than the board by a moment. That is safe: a claim and a finish go through the board tools, which check the version.
+
+The plugin reads the run of its board over the Unix socket of `meld mcp`. Claude Code limits the size of an MCP tool result, and a run of about 20 tasks passes that limit.
 
 ### Versions
 
@@ -147,6 +164,8 @@ The session that writes a board owns it for 60 s from its last write. Another se
 
 Only meld calls the tools of `meld mcp`. The permission check allows the calls of meld, and refuses the calls of agents and of the main session. The board tool of the main session names the store, and why `meld mcp` did not connect. When the session started before meld was installed or updated, a new session starts `meld mcp`. In a local session, `/reload-plugins` starts it too.
 
+The desktop app can start a session parked, before its MCP servers run. So each meld command, start tool and press of the pane connects again while the session has no board server. A run that lives in the session state stays there.
+
 Deliver marks the run delivered, and Discard drops it, before they remove its folder. So no restart gives a new agent to a run whose folder goes.
 
 ### Backups
@@ -165,6 +184,12 @@ meld refuses an edit that an agent makes outside its own workspace. It also refu
 
 The edit guard covers Edit, Write, MultiEdit and NotebookEdit. A Bash command can write in other folders, so the guard is a guard rail, not a sandbox. The rules tell each agent to write only in its own folder.
 
+### Shared machine
+
+All local agents run on one machine. A type check, a type-aware lint, a test runner or a build can use every core and gigabytes of memory. Two of them in swap run many times slower.
+
+So before a heavy command, an agent looks at the load, the free memory and the swap. It starts the command only when the machine has room, and it notes the command on the board. It stops a command of its own that makes the swap grow. It also stops the processes that it started, and it never waits on a command that does not end.
+
 ### Version control in the folder of an agent
 
 The shell of an agent starts in the folder of the session, not in its own folder. So an agent runs `git -C <its folder>` or `jj -R <its folder>`, and Claude Code asks a person for that form. meld allows that form in the agent's own folder, for the commands of the rules and with no shell syntax. So a run with no person can commit.
@@ -177,7 +202,7 @@ meld has three `tool.check` hooks. Claude Code runs the `tool.check` hooks of al
 
 - **The board check** allows the calls of meld to `meld mcp`, and refuses the calls of agents, of the main session and of other plugins. Without it, the other plugin or the mode of your session decides each call. A call of meld can wait for your answer or fail, and a call of an agent is not refused.
 - **The Agent check** approves each start and restart of an agent in auto mode, while a run that you started is live. Without it, auto mode refuses these starts, and the pane shows the reason under the header.
-- **The version control check** allows `git -C` and `jj -R` in the own folder of an agent, for the commands of the rules. Without it, Claude Code asks you for each such call, and a run with no person cannot commit.
+- **The worker check** allows two kinds of calls of an agent. The first is `git -C` and `jj -R` in its own folder, for the commands of the rules. The second is a read of the board files: one search command (`rg`, `grep`, `jq`, `sed -n`, `head`, `tail`, `cat`, `wc` or `ls`) or a read tool, on paths in the folder of the board files and on no other path. Without it, Claude Code asks you for each such call, and a run with no person cannot commit or search its board.
 
 The edit guard is a `tool.call` hook, and a skip in `tool.check` does not stop it.
 
@@ -193,7 +218,11 @@ Claude Code ends an agent when the agent returns its result. At the end of each 
 
 A restarted agent reads its rules at its first board read. meld reads the agent list of Claude Code, so it finds an agent that ended when meld did not see the end. meld does not restart a stopped agent. After three restarts in a row that finish no task, meld stops the restarts and tells you. A finished task or a steer starts the count from zero. A steer goes as a message to each running agent, and it restarts the agents that ended.
 
-A restart waits for the end of a turn of your session. In a session with no person, nothing starts that turn, so idle agents wait ([#12](https://github.com/bhi5hmaraj/meld/issues/12)).
+Of the idle agents with no claim, meld starts first the agent that it started for open tasks the fewest times since its last claim. So an agent that stopped with no claim leaves the next start to another agent.
+
+A restart waits for the end of a turn of your session. One step does not wait. When an agent of the run is about to stop, meld looks for a step for its worker. With a step, and with room in its context (see the next section), the agent goes on in the same turn. With every task done and no integrator, this agent integrates.
+
+An idle agent of another worker still waits for a turn of your session, and so does a worker that needs a new agent ([#12](https://github.com/bhi5hmaraj/meld/issues/12)).
 
 ### A short session, then a new agent
 

@@ -117,6 +117,9 @@ const MIGRATIONS: ((db: Database, now: number) => void)[] = [
  * events and context entries of their runs. Each session keeps its run on one board. Each write is one transaction
  * that takes the write lock first, so two processes that write one board lose no write.
  */
+/** The most characters of a request in the list of boards: the list is one MCP result, and the engine limits its size. */
+export const LISTED_REQUEST_CHARS = 200
+
 export class SqliteBoards {
   private readonly db: Database
   private readonly newer: boolean
@@ -310,7 +313,7 @@ export class SqliteBoards {
     const rows = this.db.query('SELECT id, run, version, owner, owner_at FROM boards WHERE run IS NOT NULL ORDER BY owner_at DESC').all() as Row[]
     return rows.map(row => {
       const run = JSON.parse(row.run ?? 'null') as Run
-      return { board: row.id, run: run.id, state: run.state, request: run.request, repo: run.repo, owner: row.owner, ownerAt: row.owner_at }
+      return { board: row.id, run: run.id, state: run.state, request: run.request.slice(0, LISTED_REQUEST_CHARS), repo: run.repo, owner: row.owner, ownerAt: row.owner_at }
     })
   }
 

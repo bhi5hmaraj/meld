@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -35,7 +35,7 @@ async function setup(kinds: readonly WorkerKind[] = [ACP_WORKER]): Promise<Setup
   const workers = kinds.map(kind => ({ id: kind.id, path: kind === ACP_WORKER ? folder : `${folder}/${kind.id}`, ref: `meld/r1/${kind.id}`, agent: kind.agent }))
   await boards.board(BOARD).write(() => startRun({ id: 'r1', request: 'Add a greeting', repo: folder, base: 'a'.repeat(40), vcs: 'git', now: Date.now(), workers }))
   const updates: AcpUpdate[] = []
-  const runner = new AcpRunner(boards, { commands: STUB, onUpdate: (_, update) => updates.push(update), pollMs: 20 })
+  const runner = new AcpRunner(boards, { commands: STUB, onUpdate: (_, update) => updates.push(update), pollMs: 20, viewRoot: () => join(folder, 'board') })
   runner.lead(BOARD, BOARD)
   runners.push(runner)
   return { boards, folder, runner, updates }
@@ -154,4 +154,13 @@ test('a stop ends the agent of an ACP worker', async () => {
   await until(() => one.runner.states().get(agentId) === 'live')
   await one.runner.stop(agentId)
   expect(one.runner.states().get(agentId)).toBeUndefined()
+})
+
+test('the leader writes the files of the board that it leads, and writes them again when the board changes', async () => {
+  const { boards, folder } = await setup()
+  const tasks = join(folder, 'board', 'tasks.md')
+  await until(() => existsSync(tasks))
+  expect(readFileSync(join(folder, 'board', 'request.md'), 'utf8')).toContain('Add a greeting')
+  await boards.board(BOARD).write(run => run && runOf(addTasks(run, 'w1', { seen: run.taskList, tasks: [{ title: 'Greeting text' }] }, Date.now())))
+  await until(() => readFileSync(tasks, 'utf8').includes('Greeting text'))
 })

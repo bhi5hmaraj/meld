@@ -1,16 +1,17 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentStatus, HookFailure, Register } from 'claude-code'
 
-import { compactWorker, controlRun, countStep, guardCall, markWorker, noteTime, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll, timeCall, vcsVerdict } from '../core/actions'
+import { compactWorker, controlRun, countStep, guardCall, markWorker, noteTime, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stepAtStop, stopAll, timeCall, workerVerdict } from '../core/actions'
 import { CONTEXT_CAP } from '../core/board'
 import { cleanFolders } from '../core/clean'
-import type { Action, BoardRead, Boards, BoardSummary, Committed } from '../core/remote-store'
+import type { Action, Boards, BoardSummary, Committed } from '../core/remote-store'
 import { reportCommand } from '../core/report'
 import { resumeRun } from '../core/resume'
+import { viewRoot } from '../core/view'
 import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL, TOOL_PREFIX, TOOL_SPECS, WORKER_SYSTEM } from '../core/contract'
-import type { AgentState, FactsStore, Files, Io, RunRecord, RunRecords, Spawned, Store } from '../core/ports'
+import type { AgentState, Clock, FactsStore, Files, Io, RunRecord, RunRecords, Spawned, Store } from '../core/ports'
 import { MAX_AGENTS, parseStart, WORKER_TYPE } from '../core/options'
-import { adoptedOf, BOARD_STORE_TOOLS, boardVerdict, copyFromChannel, noBoardWarning, problemOf, sessionRunner, sessionStore, storeNote, valueOf, withNote, workerOffer } from './board-store'
+import { adoptedOf, BOARD_STORE_TOOLS, boardVerdict, connectBoard, copyFromChannel, noBoardWarning, readRow, sessionRunner, sessionStore, storeNote, valueOf, withNote, workerOffer } from './board-store'
 import type { SessionBoard } from './board-store'
 import { DEFAULT_VIEW, paneTree } from './pane'
 
@@ -77,13 +78,9 @@ function stateOf(status: AgentStatus): AgentState {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     sessionCwd = e.cwd
-    const connected = await $.mcp.connect('board').catch((error: unknown) => ({ isConnected: false as const, reason: 'failed', message: String(error) }))
-    board.server = connected.isConnected ? connected.server : ''
-    board.problem = connected.isConnected ? '' : problemOf(connected)
-    board.channel = board.server ? await $.mcp.call(board.server, 'board_channel', {}).then(result => valueOf<{ socketPath: string }>(result).socketPath, () => '') : ''
     board.owner = await $.session.id()
     board.id = (await read($, boardRef)) ?? board.owner
-    if (board.server) await $.mcp.call(board.server, 'lead_board', { board: board.id, owner: board.owner }).catch(() => undefined)
+    await connectBoard(board, { connect: () => $.mcp.connect('board'), call: (tool, args) => $.mcp.call(board.server, tool, args) })
     const sessionState: Store & FactsStore = {
       read: () => read($, runRef),
       write: change => update($, runRef, change),
@@ -99,7 +96,7 @@ export const register: Register = on => {
       ...sessionStore(
         board,
         {
-          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
         },
         sessionState,
@@ -163,10 +160,12 @@ export const register: Register = on => {
     decision: 'deny',
   }))
 
-  // A worker runs git -C or jj -R with its own folder, and the engine asks a person for that form: see vcsVerdict.
-  on('tool.check', { tool: 'Bash' }, async ($, e, next) => vcsVerdict(await next(e), e.agentId, String((e.input as { command?: unknown }).command ?? ''), await read($, runRef))).catch(
-    ($, e, next) => next(e),
-  )
+  // A worker runs git -C or jj -R in its own folder, and searches the files of its board: see workerVerdict.
+  on('tool.check', { tool: ['Bash', 'Read', 'Grep', 'Glob'] }, async ($, e, next) => {
+    const run = await read($, runRef)
+    const root = run ? viewRoot({ store: board.server ? 'file' : 'session' }, run) : undefined
+    return workerVerdict(await next(e), { agentId: e.agentId, tool: String(e.tool), input: e.input }, run, root)
+  }).catch(($, e, next) => next(e))
 
   // A worker spawn is an Agent call that meld raises, and auto mode cannot link it to the person: see spawnVerdict.
   on('tool.check', { tool: 'Agent' }, async ($, e, next) => spawnVerdict(await next(e), next.origin.plugin, await read($, runRef))).catch(
@@ -174,6 +173,7 @@ export const register: Register = on => {
   )
 
   on('command.run', { command: ['meld', 'meld-steer', 'meld-status', 'meld-stop', 'meld-clean', 'meld-deliver', 'meld-discard', 'meld-add', 'meld-resume', 'meld-report'] }, async ($, e) => {
+    await connectBoard(board, { connect: () => $.mcp.connect('board'), call: (tool, args) => $.mcp.call(board.server, tool, args) }, await read($, runRef))
     const io: Io & Files & RunRecords = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
@@ -183,7 +183,7 @@ export const register: Register = on => {
       ...sessionStore(
         board,
         {
-          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
         },
         {
@@ -251,6 +251,7 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: SESSION_TOOLS }, async ($, e) => {
+    await connectBoard(board, { connect: () => $.mcp.connect('board'), call: (tool, args) => $.mcp.call(board.server, tool, args) }, await read($, runRef))
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
@@ -260,7 +261,7 @@ export const register: Register = on => {
       ...sessionStore(
         board,
         {
-          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
         },
         {
@@ -320,7 +321,7 @@ export const register: Register = on => {
         ...sessionStore(
           board,
           {
-            read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+            read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
             commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
           },
           {
@@ -381,7 +382,7 @@ export const register: Register = on => {
       ...sessionStore(
         board,
         {
-          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
         },
         {
@@ -438,7 +439,7 @@ export const register: Register = on => {
       ...sessionStore(
         board,
         {
-          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
         },
         {
@@ -485,7 +486,7 @@ export const register: Register = on => {
     const io: Store = sessionStore(
       board,
       {
-        read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+        read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
         commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
       },
       {
@@ -500,6 +501,30 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
 
+  // The agent of a worker is about to stop: with a step for it on the board, it goes on in its turn (see stepAtStop).
+  on('classic.SubagentStop', async ($, e, next) => {
+    const io: Store & Clock = {
+      now: () => $.clock.now(),
+      sleep: ms => $.clock.sleep(ms),
+      ...sessionStore(
+        board,
+        {
+          read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
+          commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
+        },
+        {
+          read: () => read($, runRef),
+          write: change => update($, runRef, change),
+          readFacts: () => read($, factsRef),
+          writeFacts: facts => update($, factsRef, () => facts),
+        },
+      ),
+    }
+    const step = await stepAtStop(io, e.agent_id)
+    const stopped = await next(e)
+    return step && !stopped.block ? { ...stopped, block: step } : stopped
+  }).catch(($, e, next) => next(e))
+
   on('turn.complete', async ($, e, next) => {
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
@@ -510,7 +535,7 @@ export const register: Register = on => {
       ...sessionStore(
         board,
         {
-          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
         },
         {
@@ -565,7 +590,7 @@ export const register: Register = on => {
       ...sessionStore(
         board,
         {
-          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
         },
         {
@@ -612,6 +637,7 @@ export const register: Register = on => {
   })
 
   on('ui.press', { plugin: 'meld', element: PRESS_KEYS }, async ($, e) => {
+    await connectBoard(board, { connect: () => $.mcp.connect('board'), call: (tool, args) => $.mcp.call(board.server, tool, args) }, await read($, runRef))
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
@@ -621,7 +647,7 @@ export const register: Register = on => {
       ...sessionStore(
         board,
         {
-          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
         },
         {
@@ -668,6 +694,7 @@ export const register: Register = on => {
 
   on('ui.input', { plugin: 'meld', element: ['task', 'steer'] }, async ($, e, next) => {
     if (e.kind !== 'submit') return next(e)
+    await connectBoard(board, { connect: () => $.mcp.connect('board'), call: (tool, args) => $.mcp.call(board.server, tool, args) }, await read($, runRef))
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
@@ -677,7 +704,7 @@ export const register: Register = on => {
       ...sessionStore(
         board,
         {
-          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
         },
         {

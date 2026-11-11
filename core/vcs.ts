@@ -1,5 +1,5 @@
 import type { CommitFact, LaneFacts, ResultFacts, Run, VcsKind, Worker, WorkerId } from '../types'
-import { command, git, gitChange, mergeInto } from './git'
+import { changedFiles, command, git, gitChange, mergeInto } from './git'
 import type { CommandResult } from './git'
 import type { CodeHost } from './ports'
 
@@ -45,6 +45,8 @@ export type Vcs = {
    */
   lanes(io: CodeHost, run: LanePlace, read?: LaneRead): Promise<LaneFacts[]>
   result(io: CodeHost, run: Run, commit: string): Promise<ResultFacts>
+  /** The files that `commit` changes since the base of the run, or undefined when git cannot read them. */
+  changed(io: CodeHost, run: Run, commit: string): Promise<string[] | undefined>
   /**
    * The commits of `commits` that `final` does not hold, as git merge-base --is-ancestor reads them: in the repository of
    * the person for git, in the store of the run for jj. A commit that git cannot read counts as missing.
@@ -280,6 +282,7 @@ const GIT: Vcs = {
   },
 
   result: (io, run, commit) => gitChange(io, run.repo, run.base, commit),
+  changed: (io, run, commit) => changedFiles(io, run.repo, run.base, commit),
 
   missing: (io, run, final, commits) => missingIn(io, run.repo, final, commits),
 
@@ -376,6 +379,7 @@ const JJ: Vcs = {
   },
 
   result: (io, run, commit) => gitChange(io, storeOf(run.id), run.base, commit),
+  changed: (io, run, commit) => changedFiles(io, storeOf(run.id), run.base, commit),
 
   /** jj keeps each commit in the git store of the run, so git reads the ancestors there. */
   missing: (io, run, final, commits) => missingIn(io, storeOf(run.id), final, commits),

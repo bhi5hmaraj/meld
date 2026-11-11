@@ -341,7 +341,7 @@ export function claimTask(run: Run, by: WorkerId, id: number, version: number, n
   const need = taskOf(run.tasks, waitsFor(run.tasks, checked))
   if (need) return failure('WAITING', `#${id} waits for #${need.id}, which is ${describeTask(need)}. Claim a task that is ready.`)
   const claimed: Task = { ...checked, state: 'claimed', owner: by, version: checked.version + 1, claimedAt: now, calls: 0, nudged: undefined }
-  return updateTask(run, claimed, by, now, `claimed #${id}`)
+  return updateTask(replaceWorker(run, { ...findWorker(run, by), offers: undefined }), claimed, by, now, `claimed #${id}`)
 }
 
 export function releaseTask(run: Run, by: WorkerId, id: number, version: number, note: string, now: number): Change<Task> {
@@ -651,6 +651,11 @@ function hasEnded(state: AgentState | undefined, isQuiet: boolean): boolean {
 
 export function countNudge(run: Run): Run {
   return { ...run, nudges: run.nudges + 1 }
+}
+
+/** One more beat that started a worker, and one more offer for each of `offered`: meld started them for the open tasks. */
+export function countBeat(run: Run, offered: readonly WorkerId[]): Run {
+  return countNudge({ ...run, workers: run.workers.map(worker => (offered.includes(worker.id) ? { ...worker, offers: (worker.offers ?? 0) + 1 } : worker)) })
 }
 
 export function setActivity(run: Run, by: WorkerId, activity: string, now: number): Run {

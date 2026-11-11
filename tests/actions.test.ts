@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
-import { compactWorker, costTokens, deliver, discard, guardCall, markWorker, recordSleep, refreshFacts, restartIdleWorkers, serveTool, SLEEP_GAP_MS, SPAWN_APPROVAL, spawnVerdict, startFromView, startRun, steerRun, stopOne, VCS_APPROVAL, vcsVerdict } from '../core/actions'
+import { compactWorker, costTokens, deliver, discard, guardCall, markWorker, recordSleep, refreshFacts, restartIdleWorkers, serveTool, SLEEP_GAP_MS, SPAWN_APPROVAL, spawnVerdict, startFromView, startRun, steerRun, stepAtStop, stopOne, VCS_APPROVAL, vcsVerdict, VIEW_APPROVAL, viewVerdict } from '../core/actions'
 import { addTasks, bindWorker, claimTask, CONTEXT_CAP, declareFinal, isFailure, setActivity, shareEntry, startRun as startBoard, steer, stopRun, stopWorker, takeIntegration } from '../core/board'
 import { COMPACT_KEEP } from '../core/contract'
 import { JJ_LANE_TEMPLATE, JJ_RESOLVE_TEMPLATE } from '../core/vcs'
@@ -613,6 +613,77 @@ test('when every worker has ended with open tasks, meld starts one worker for ea
   expect(io.spawned[1]?.prompt).toContain('These tasks are open: #1 Tokens')
 })
 
+test('a worker that meld started for an open task, and that stopped with no claim, leaves the next start to the other idle worker', async () => {
+  const io = ioWith(runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }] }, NOW)))
+  await markWorker(io, 'agent-1', 'idle')
+  await markWorker(io, 'agent-2', 'idle')
+  await restartIdleWorkers(io)
+  await markWorker(io, 'spawned-1', 'idle')
+  await restartIdleWorkers(io)
+  expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w1', 'meld w2'])
+})
+
+test('a claim clears the offers of a worker, so list order decides again', async () => {
+  const io = ioWith(runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }, { title: 'Docs' }] }, NOW)))
+  await markWorker(io, 'agent-2', 'idle')
+  await markWorker(io, 'agent-1', 'idle')
+  await restartIdleWorkers(io)
+  expect(io.current?.workers.map(worker => worker.offers)).toEqual([1, 1])
+  await serveTool(io, call({ tool: 'mcp__meld__claim', task: 1, version: 1, agentId: 'spawned-1' }))
+  expect(io.current?.workers.map(worker => worker.offers)).toEqual([undefined, 1])
+})
+
+const ROOM = { used: 40_000, size: 200_000 }
+
+/** Two workers and two tasks: w1 works on #1, #2 is open, and the agent of w2 is about to stop, with `context`. */
+function stopping(context = ROOM): FakeIo {
+  const planned = runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }, { title: 'Docs' }] }, NOW))
+  const claimed = runOf(claimTask(planned, 'w1', 1, 1, NOW))
+  return ioWith({ ...claimed, workers: claimed.workers.map(worker => (worker.id === 'w2' ? { ...worker, context } : worker)) })
+}
+
+test('a worker whose agent is about to stop goes on in its session with the open task, and waits for no turn of the main session', async () => {
+  const io = stopping()
+  expect(await stepAtStop(io, 'agent-2')).toBe('meld: These tasks are open: #2 Docs. Claim one and do it. Read the board with mcp__meld__board, then go on.')
+  expect(io.current?.workers[1]).toMatchObject({ state: 'working', activity: 'goes on' })
+  expect(io.current?.nudges).toBe(1)
+  expect(io.spawned).toEqual([])
+})
+
+test('an agent stops when the board has no step for its worker', async () => {
+  const io = ioWith(working())
+  expect(await stepAtStop(io, 'agent-2')).toBeUndefined()
+  expect(io.current?.nudges).toBe(0)
+})
+
+test('an agent with half of its window full stops, so its worker gets a fresh agent', async () => {
+  const io = stopping({ used: 100_000, size: 200_000 })
+  expect(await stepAtStop(io, 'agent-2')).toBeUndefined()
+})
+
+test('after three steps that finish nothing, an agent stops', async () => {
+  const io = stopping()
+  await stepAtStop(io, 'agent-2')
+  await stepAtStop(io, 'agent-2')
+  await stepAtStop(io, 'agent-2')
+  expect(await stepAtStop(io, 'agent-2')).toBeUndefined()
+  expect(io.current?.nudges).toBe(3)
+})
+
+test('with every task done and no integrator, the worker whose agent is about to stop integrates, not the first worker', async () => {
+  const planned = runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }] }, NOW))
+  const io = ioWith({ ...planned, workers: planned.workers.map(worker => ({ ...worker, context: ROOM })) })
+  await serveTool(io, call({ tool: 'mcp__meld__claim', task: 1, version: 1, agentId: 'agent-2' }))
+  io.answers['git rev-parse --verify --quiet HEAD^{commit}'] = FULL
+  await serveTool(io, call({ tool: 'mcp__meld__finish_task', task: 1, version: 2, commit: 'HEAD', summary: 'Tokens added', agentId: 'agent-2' }))
+  await markWorker(io, 'agent-1', 'idle')
+  expect(await stepAtStop(io, 'agent-2')).toContain('Integrate: call mcp__meld__integrate')
+})
+
+test('the agent of no worker stops as it likes', async () => {
+  expect(await stepAtStop(stopping(), 'agent-9')).toBeUndefined()
+})
+
 test('a restart offers the tasks that a worker can claim, not a parent or a task that waits', async () => {
   const tasks = [{ title: 'Theme' }, { title: 'Tokens', parent: 1 }, { title: 'Docs', needs: [2] }]
   const io = ioWith(runOf(addTasks(working(3), 'w1', { seen: 0, tasks }, NOW)))
@@ -815,10 +886,28 @@ test('the tokens of each turn add up on the worker', async () => {
   expect(io.current?.workers[1]?.tokens).toBe(2000)
 })
 
-test('deliver refuses a checkout with uncommitted changes', async () => {
+const RESULT_FILES = `git diff --no-renames --name-only ${HEAD} ${FULL}`
+
+test('deliver refuses when an uncommitted change is in a file that the result changes', async () => {
   const io = ioWith(runOf(declareFinal(runOf(takeIntegration(working(), 'w2', NOW)), 'w2', FULL, 'Done', NOW)))
   io.dirty = true
-  expect(await deliver(io)).toBe('Commit or stash the changes in your checkout first, then deliver.')
+  io.answers[RESULT_FILES] = 'src/a.ts\nsrc/b.ts'
+  expect(await deliver(io)).toBe('Commit or stash your changes in src/a.ts first, then deliver: the result changes that file too.')
+  expect(io.ran('git merge')).toBe(false)
+})
+
+test('deliver merges when the uncommitted changes are in files that the result does not change', async () => {
+  const io = ioWith(runOf(declareFinal(runOf(takeIntegration(working(), 'w2', NOW)), 'w2', FULL, 'Done', NOW)))
+  io.dirty = true
+  io.answers[RESULT_FILES] = 'src/b.ts'
+  expect(await deliver(io)).toBe(`Merged ${FULL.slice(0, 7)} into your branch.`)
+})
+
+test('deliver refuses each uncommitted change when git cannot list the files of the result', async () => {
+  const io = ioWith(runOf(declareFinal(runOf(takeIntegration(working(), 'w2', NOW)), 'w2', FULL, 'Done', NOW)))
+  io.dirty = true
+  io.failing.push('git diff --no-renames --name-only')
+  expect(await deliver(io)).toBe('Commit or stash your changes in src/a.ts first, then deliver: the result changes that file too.')
   expect(io.ran('git merge')).toBe(false)
 })
 
@@ -1085,4 +1174,53 @@ test('after its agent compacts, the next board read of a worker gives its rules 
 test('the compaction of an agent that is no worker changes nothing', async () => {
   const io = ioWith(working())
   expect(await compactWorker(io, 'agent-9')).toBeUndefined()
+})
+
+const BOARD_FILES = '/tmp/meld/r1/board'
+const VIEW_READS = [
+  `rg -n "theme" ${BOARD_FILES}/log.jsonl`,
+  `jq -c 'select(.kind == "fail") | .text' ${BOARD_FILES}/context.jsonl`,
+  `sed -n '10,40p' ${BOARD_FILES}/tasks/3.md`,
+  `head -n 20 ${BOARD_FILES}/tasks.md`,
+  `ls ${BOARD_FILES}/tasks`,
+]
+const NOT_VIEW_READS = [
+  `cat ${BOARD_FILES}/tasks.md /repo/.env`,
+  `cat ${BOARD_FILES}/../../r2/board/tasks.md`,
+  `rg secret .env ${BOARD_FILES}`,
+  `sed -n 'w /tmp/x' ${BOARD_FILES}/tasks.md`,
+  `sed -i 's/a/b/' ${BOARD_FILES}/tasks.md`,
+  `jq env ${BOARD_FILES}/log.jsonl`,
+  `jq --rawfile x /etc/hosts . ${BOARD_FILES}/log.jsonl`,
+  `cat ${BOARD_FILES}/tasks.md > /tmp/x`,
+  `rg theme ${BOARD_FILES} | sh`,
+  `rm -rf ${BOARD_FILES}`,
+  'rg theme',
+]
+
+/** The verdict for worker w2 on a call that the engine asks a person for. */
+function asked(tool: string, input: object) {
+  return viewVerdict(ASK, 'agent-2', tool, input, working(), BOARD_FILES)
+}
+
+test('meld allows a worker a read of the files of its board with one search command', () => {
+  for (const command of VIEW_READS) expect(asked('Bash', { command })).toEqual({ decision: 'allow', reason: VIEW_APPROVAL })
+})
+
+test('meld allows a worker the read tools on the files of its board', () => {
+  expect(asked('Read', { file_path: `${BOARD_FILES}/tasks/3.md` })).toEqual({ decision: 'allow', reason: VIEW_APPROVAL })
+  expect(asked('Grep', { pattern: 'theme', path: BOARD_FILES })).toEqual({ decision: 'allow', reason: VIEW_APPROVAL })
+})
+
+test('the ask stands for a read that also reaches another file, for a write, and for shell syntax', () => {
+  for (const command of NOT_VIEW_READS) expect(asked('Bash', { command })).toBe(ASK)
+  expect(asked('Read', { file_path: '/repo/.env' })).toBe(ASK)
+  expect(asked('Read', { file_path: `${BOARD_FILES}/../../../etc/hosts` })).toBe(ASK)
+})
+
+test('the ask on a read of the board files stands for an agent that is no worker, and where no host writes the files', () => {
+  const input = { command: `rg theme ${BOARD_FILES}` }
+  expect(viewVerdict(ASK, 'agent-9', 'Bash', input, working(), BOARD_FILES)).toBe(ASK)
+  expect(viewVerdict(ASK, undefined, 'Bash', input, working(), BOARD_FILES)).toBe(ASK)
+  expect(viewVerdict(ASK, 'agent-2', 'Bash', input, working(), undefined)).toBe(ASK)
 })

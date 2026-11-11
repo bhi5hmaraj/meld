@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { MockClock } from 'claude-code/testing'
 import type { McpToolResult, On, TurnUsage } from 'claude-code'
 
-import { addTasks, bindWorker, CONTEXT_CAP, isFailure, setWorkerState, startRun } from '../core/board'
+import { addTasks, bindWorker, claimTask, CONTEXT_CAP, isFailure, setWorkerState, startRun } from '../core/board'
 import type { RunRecord } from '../core/ports'
 import type { Change, Run, WorkerId } from '../types'
 import { HEAD } from './fake-io'
@@ -60,9 +60,12 @@ class FakeMcp {
   calls: Call[] = []
   actions: Action[] = []
   channel = CHANNEL
+  /** The text that the engine gives for a tool result over its size limit, in place of the result. */
+  overLimit = ''
 
   answer(tool: string, args: Record<string, unknown>): McpToolResult {
     this.calls.push({ tool, args })
+    if (tool === 'read_board' && this.overLimit) return { content: [{ type: 'text', text: this.overLimit }], isError: false }
     return { content: [{ type: 'text', text: JSON.stringify(this.value(tool, args)) }], isError: false }
   }
 
@@ -99,7 +102,7 @@ class FakeMcp {
 }
 
 /** What the engine answers for a session start; with a FakeMcp, meld mcp connects, and without one it does not start. */
-function answerTheEngine(on: On, mcp: FakeMcp | undefined, agents: { name: string; autoCompactWindow?: number }[] = []): MockClock {
+function answerTheEngine(on: On, mcp: FakeMcp | undefined, agents: { name: string; autoCompactWindow?: number }[] = [], isUp = () => true): MockClock {
   const clock = mock.clock(on, { now: NOW })
   on('session.id', () => ({ value: SESSION }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -109,7 +112,7 @@ function answerTheEngine(on: On, mcp: FakeMcp | undefined, agents: { name: strin
     agents.push({ name: e.name, autoCompactWindow: e.autoCompactWindow })
     return { value: { agent: e.name } }
   })
-  on('mcp.connect', () => ({ value: mcp ? { isConnected: true, server: SERVER } : { isConnected: false, reason: 'failed', message: 'bun: not found' } }))
+  on('mcp.connect', () => ({ value: mcp && isUp() ? { isConnected: true, server: SERVER } : { isConnected: false, reason: 'failed', message: 'bun: not found' } }))
   if (mcp) on('mcp.call', ($, e) => ({ value: mcp.answer(e.tool, e.args) }))
   return clock
 }
@@ -434,6 +437,23 @@ test('at the end of a turn, the plugin carries out what workers of meld mcp left
   expect(toasts).toEqual(['meld: the result is ready.'])
 })
 
+test('an agent of a worker that is about to stop goes on with the open task: the plugin blocks the stop with the step', async ($, on) => {
+  const mcp = new FakeMcp()
+  answerTheEngine(on, mcp)
+  on('state.get', () => ({ value: { value: undefined, version: 0 } }))
+  on('state.set', () => ({ value: { isSet: true, version: 1 } }))
+  on('classic.SubagentStop', () => ({}))
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  const planned = runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }, { title: 'Docs' }] }, NOW))
+  const claimed = runOf(claimTask(planned, 'w1', 1, 1, NOW))
+  const roomy = { ...claimed, workers: claimed.workers.map(worker => ({ ...worker, context: { used: 40_000, size: WINDOW } })) }
+  mcp.boards[SESSION] = { run: roomy, version: 1, owner: SESSION, ownerAt: NOW }
+  const stop = { agent_id: 'agent-2', agent_type: 'meld:worker', agent_transcript_path: '/tmp/agent-2.jsonl', stop_hook_active: false }
+  expect((await $.classic.SubagentStop(stop)).block).toContain('These tasks are open: #2 Docs. Claim one and do it.')
+  expect(mcp.boards[SESSION]?.run?.workers[1]).toMatchObject({ state: 'working', activity: 'goes on', offers: 1 })
+  expect((await $.classic.SubagentStop({ ...stop, agent_id: 'agent-9' })).block).toBeUndefined()
+})
+
 test('without meld mcp, a start that starts no worker gives no warning about the board file', async ($, on) => {
   let stored: unknown
   answerTheEngine(on, undefined)
@@ -458,4 +478,56 @@ test('the worker type compacts its agent at the context cap', async ($, on) => {
   answerTheEngine(on, new FakeMcp(), registered)
   await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
   expect(registered).toEqual([{ name: 'worker', autoCompactWindow: CONTEXT_CAP }])
+})
+
+test('a session that started before meld mcp ran connects at its first command, and its codex worker starts on the board', async ($, on) => {
+  const mcp = new FakeMcp()
+  let isUp = false
+  answerTheEngine(on, mcp, [], () => isUp)
+  on('state.get', () => ({ value: { value: undefined, version: 0 } }))
+  on('state.set', () => ({ value: { isSet: true, version: 1 } }))
+  on('process.run', ($, e) => gitAnswer(e.argv))
+  on('session.usage', () => ({ value: { startedAt: NOW, cost: { usd: 0 } } as never }))
+  on('agent.list', () => ({ value: [] }))
+  on('ui.open', () => ({ value: { isPlaced: false, reason: 'a test draws no pane' } }))
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  isUp = true
+  const replied = await $.command.run({ command: 'meld', args: '--agents codex --vcs git Add a greeting', ...TYPED })
+  expect(replied.text).toContain('workers on git')
+  expect(mcp.boards[SESSION]?.run?.workers[0]?.agentId).toBe('acp-1')
+})
+
+test('a run that lives in the session state stays there when meld mcp comes up later', async ($, on) => {
+  const mcp = new FakeMcp()
+  let isUp = false
+  let stored: unknown = { shape: 'run-4', value: working() }
+  answerTheEngine(on, mcp, [], () => isUp)
+  on('state.get', ($, e) => ({ value: e.key === 'run' ? { value: stored, version: 1 } : { value: undefined, version: 0 } }))
+  on('state.set', ($, e) => {
+    if (e.key === 'run') stored = e.value
+    return { value: { isSet: true, version: 2 } }
+  })
+  on('agent.list', () => ({ value: [] }))
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  isUp = true
+  await $.command.run({ command: 'meld-stop', args: '', ...TYPED })
+  expect(mcp.calls.map(call => call.tool)).not.toContain('lead_board')
+  expect((stored as { value: Run }).value.state).toBe('stopped')
+})
+
+const OVER_LIMIT = 'Error: result (58.6 KB) exceeds maximum allowed tokens. Output has been saved to a file.'
+
+test('a board read comes over the channel, so a run past the size limit of an MCP result still reads', async ($, on) => {
+  const mcp = new FakeMcp()
+  mcp.overLimit = OVER_LIMIT
+  answerTheEngine(on, mcp)
+  on('state.get', () => ({ value: { value: undefined, version: 0 } }))
+  on('state.set', () => ({ value: { isSet: true, version: 1 } }))
+  on('agent.list', () => ({ value: [] }))
+  on('http.fetch', ($, e) => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify(mcp.boards[decodeURIComponent(e.url.split('/').pop() ?? '')]) } }))
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  mcp.boards[SESSION] = { run: working(), version: 4, owner: SESSION, ownerAt: NOW }
+  const replied = await $.command.run({ command: 'meld-stop', args: '', ...TYPED })
+  expect(replied.text).toContain('Stopped.')
+  expect(mcp.boards[SESSION]?.run?.state).toBe('stopped')
 })

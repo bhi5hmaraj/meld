@@ -16,6 +16,7 @@ node scripts/shots.mjs
 - `core/ports.ts` holds the ports that a host gives the core. They are `Store` (the run of the session), `FactsStore` (what the pane shows of the run), `CodeHost` (commands and files), `Runner` (agents), `Clock`, `Surface` (toasts, the pane, commands), `Ledger` (the cost) and `Archive` (the folder of the run records). A function takes only the ports that it uses. `Io` is all of them.
 - `core/board.ts` holds the board rules as pure functions, `core/tasks.ts` the task tree, and `core/progress.ts` the percent.
 - `core/actions.ts` holds the steps of a run, and the verdicts on the tool calls of agents.
+- `core/view.ts` holds the items of the board with their refs: the short board reply, the read by ref, and the texts of the board files.
 - `core/vcs.ts` holds the version control port and its two adapters, jj and git, and `core/git.ts` the git commands.
 - `core/contract.ts` holds the tools, the rules and the prompts of the agents.
 - `core/options.ts` reads the options of `/meld`.
@@ -28,7 +29,8 @@ node scripts/shots.mjs
 - `mcp/worker.ts` is the worker mode, `meld mcp --worker`: the board tools of one ACP worker, with the commands of `mcp/code-host.ts`. A message of a worker to another agent becomes an action for the leader.
 - `mcp/leader.ts` is the ACP runner of the leader. For each ACP worker, `meld mcp` starts an ACP agent with its own `meld mcp --worker`, sends its prompts, and starts the idle ACP workers again at the end of each prompt. `mcp/io.ts` gives the ports of the core in `meld mcp`.
 - `mcp/chat.ts` is the chat mode, `meld mcp --chat`: the tools of the main session for an MCP client such as Cursor. `mcp/agents.ts` reads the ACP agents of `MELD_ACP_AGENTS`.
-- `mcp/channel.ts` answers the reads of boards on a Unix socket. The timer of the pane reads its board there, as a timer cannot call `meld mcp`.
+- `mcp/mirror.ts` writes the board files, one folder for each version behind a link. The leader calls it on its beat.
+- `mcp/channel.ts` answers the reads of boards on a Unix socket. The plugin reads its board there too. The timer of the pane reads its board there, as a timer cannot call `meld mcp`.
 - `mcp/backup.ts` makes the daily copy of the board file.
 - `hooks/board-store.ts` connects the hooks to `meld mcp`.
 - `hooks/pane.tsx` and `hooks/drawing.ts` draw the pane.
