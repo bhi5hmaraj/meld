@@ -5,6 +5,10 @@ import { deliver, discard, LEADING_CD, stopAll, stopOne } from '../core/actions'
 import { currentContext, NOT_STARTED } from '../core/board'
 import { STEER_PRESETS } from '../core/contract'
 import { agentColor, BAR_HEIGHT, BAR_WIDTH, barCells, LANE_HEIGHT, LANE_WIDTH, laneAlt, laneGlyphs, laneSvg, partsBarSvg, ROW_BAR_WIDTH, STATUS } from './drawing'
+import { FLOW_CELLS, FLOW_HEIGHT, FLOW_LEGEND, FLOW_WIDTH, flowCells, flowSvg, partsIn, partWords } from './drawing'
+import type { TimeSpan } from './drawing'
+import { efficiencyOf, lanesOf, progressOf } from '../core/metrics'
+import type { LanePart } from '../core/metrics'
 import type { Io } from '../core/ports'
 import { agentsOf, formatStart, MAX_AGENTS, MODELS, WORKER_TYPE } from '../core/options'
 import { ownersOf, partsOf, percentLabel, percentOf, requestParts, requestPercent, topTasks } from '../core/progress'
@@ -49,6 +53,8 @@ const BAR_RUNS = 3
 /** The words of the rows: the progress block holds 100 words with its heading, the bar and percent of the request, and the count of the rows left out. */
 const ROW_WORDS = 90
 const REQUEST_CHARS = 72
+const FLOW_WINDOW_MS = 30 * 60_000
+const FLOW_WINDOW_WORDS = 'last 30m'
 const SKIPPED_ARGUMENT = /^(?:-|\d|\.$|[|&;<>]+$)/
 const AGENT_OPTIONS = Array.from({ length: MAX_AGENTS }, (_, index) => ({ value: String(index + 1), label: `${index + 1}` }))
 const MODEL_OPTIONS = [{ value: 'inherit', label: 'Same as this session' }, ...MODELS.map(model => ({ value: model, label: model }))]
@@ -86,6 +92,7 @@ export function paneTree(input: PaneInput) {
       {refusedSection(input, run)}
       {agentsSection(input, run, facts)}
       {progressSection(input, run)}
+      {flowSection(input, run)}
       {contextSection(input, run)}
       {checksSection(input, run)}
       {run.final && resultSection(input, run, facts?.result)}
@@ -334,6 +341,65 @@ function waitText(id: number): string {
 function toggled(open: readonly number[] | undefined, id: number): number[] {
   const current = open ?? []
   return current.includes(id) ? current.filter(one => one !== id) : [...current, id]
+}
+
+/**
+ * One lane for each worker over the whole run, or the last 30 minutes of a longer one, and four metrics of section 4 of
+ * docs/design/pane-metrics-logs.md. A graphic surface draws each lane as a picture with its parts in words; the terminal
+ * draws it as a row of cells.
+ */
+function flowSection(input: PaneInput, run: Run) {
+  const { Box, Text } = input.table
+  const Svg = input.surface !== 'terminal' && 'Svg' in input.table ? input.table.Svg : undefined
+  const end = run.endedAt ?? input.now
+  const window = { from: Math.max(run.startedAt, end - FLOW_WINDOW_MS), to: end }
+  const lanes = lanesOf(run, input.now).filter(lane => lane.to > lane.from && lane.to > window.from)
+  if (!lanes.length) return undefined
+  const sleeps: TimeSpan[] = run.log.filter(entry => entry.kind === 'host').map(entry => ({ from: entry.from ?? entry.at, to: entry.at }))
+  return (
+    <Box key="sec-flow" flexDirection="column" gap="xs">
+      <Box flexDirection="row" gap="sm">
+        <Text bold>Flow</Text>
+        <Text dimColor>{end - run.startedAt > FLOW_WINDOW_MS ? FLOW_WINDOW_WORDS : 'whole run'}</Text>
+      </Box>
+      {lanes.map(lane => {
+        const color = run.workers.findIndex(worker => worker.id === lane.worker)
+        const parts = partsIn(lane.parts, window)
+        return (
+          <Box key={`flow-${lane.worker}`} flexDirection="row" gap="sm" alignItems="center">
+            {Svg && <Text>{lane.worker}</Text>}
+            {Svg ? (
+              <Svg source={flowSvg(parts, sleeps, window, color)} alt={laneWords(lane.worker, parts)} width={FLOW_WIDTH} height={FLOW_HEIGHT} />
+            ) : (
+              <Text color={agentColor(color).light}>{`${lane.worker} ${flowCells(parts, sleeps, window, FLOW_CELLS)}`}</Text>
+            )}
+          </Box>
+        )
+      })}
+      {!Svg && <Text dimColor>{FLOW_LEGEND}</Text>}
+      <Text dimColor wrap="wrap">
+        {flowMetrics(run, input.now)}
+      </Text>
+    </Box>
+  )
+}
+
+function laneWords(id: WorkerId, parts: readonly LanePart[]): string {
+  return `${id}: ${parts.map(part => `${partWords(part)} ${ago(part.to - part.from)}`).join(', ')}`
+}
+
+/** Busy share, ready with no agent, task time and cost per finished task: the same words on every surface. */
+function flowMetrics(run: Run, now: number): string {
+  const { busyShare, costPerTask } = efficiencyOf(run, now)
+  const { done, readyNoAgent, taskMs } = progressOf(run, now)
+  const ready = `ready with no agent ${ago(readyNoAgent.ms)}${readyNoAgent.now ? `, ${readyNoAgent.now} now` : ''}`
+  const finished = done ? [`task time ${ago(taskMs)}`, `${tokenCount(costPerTask)} tokens per finished task`] : ['no finished task yet']
+  return [`busy ${Math.round(busyShare * 100)}%`, ready, ...finished].join('; ')
+}
+
+function tokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
+  return tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : String(Math.round(tokens))
 }
 
 /** One line for each of the newest current entries. The cut is in words, so that five lines keep the block under 100 words. */
