@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.10.2
+
+These fixes come from the runs of 10 and 11 November 2026. Two runs in a session with no person checked the board reads and the stop of an agent live.
 
 - **Board reads over the channel.** The plugin reads the run of its board over the Unix socket of `meld mcp`. Claude Code limits the size of an MCP tool result, and a run of about 20 tasks passed that limit: each board call then failed with a JSON parse error, and the agents stalled. ([#15](https://github.com/bhi5hmaraj/meld/issues/15))
 - **Short board replies.** A board reply has one line for each task, the claimed tasks of the reader in full, and the request only at the first read. A long item comes as its first words with a ref, and `board` with `ref` gives it whole. On the board of a run with 29 tasks, a read with no news went from 29,500 to 4,900 characters.
