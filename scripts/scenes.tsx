@@ -3,7 +3,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { addCheck, addTasks, bindWorker, boardFor, claimTask, declareFinal, finishTask, isFailure, setActivity, setWorkerState, shareEntry, splitTask, startRun, takeIntegration } from '../core/board'
+import { addCheck, addNote, addTasks, bindWorker, boardFor, claimTask, declareFinal, finishTask, isFailure, setActivity, setSaid, setWorkerState, shareEntry, splitTask, startRun, steer, takeIntegration } from '../core/board'
 import type { Change, CommitFact, Facts, FileChange, PaneView, Run, WorkerId } from '../types'
 
 declare const console: { log: (line: string) => void }
@@ -91,15 +91,23 @@ function checked(run: Run): Run {
 function busy(run: Run): Run {
   const activities = [
     { id: 'w1' as const, text: 'Bash: pnpm test', at: NOW - 8_000, calls: 42 },
-    { id: 'w2' as const, text: 'Edit: src/header.tsx', at: NOW - 40_000, calls: 37 },
-    { id: 'w3' as const, text: 'Read: src/theme.css', at: NOW - 150_000, calls: 29 },
+    { id: 'w2' as const, text: 'Edit src/header.tsx', at: NOW - 40_000, calls: 37 },
+    { id: 'w3' as const, text: 'Read src/theme.css', at: NOW - 150_000, calls: 29 },
   ]
   const active = activities.reduce((current, one) => setActivity(current, one.id, one.text, one.at), run)
   return { ...active, workers: active.workers.map(worker => ({ ...worker, calls: activities.find(one => one.id === worker.id)?.calls ?? 0 })) }
 }
 
+/** The notes of the agents and one steer of the person, for the Conversation section. */
+function talked(run: Run): Run {
+  let talking = runOf(addNote(run, 'w1', 'The colour tokens are in src/theme.css. Use var(--surface), not a hex value.', undefined, NOW - 6 * MINUTE))
+  talking = runOf(steer(talking, 'Keep the old light theme as the default.', NOW - 4 * MINUTE))
+  return runOf(addNote(talking, 'w2', 'Agreed. The toggle starts in the light theme.', undefined, NOW - 3 * MINUTE))
+}
+
+/** w2 wrote a sentence a moment ago, so its card shows its own words. */
 function working(): Run {
-  return busy(checked(shared(planned())))
+  return setSaid(busy(checked(talked(shared(planned())))), 'w2', 'Adding the toggle to the header, next to the search box.', NOW - 20_000)
 }
 
 function ready(): Run {
