@@ -2,6 +2,8 @@ import type { BoardView, Entry, Run, Task, WorkerId } from '../types'
 import { steersOf } from './board'
 import { TOOL } from './contract'
 import type { Store } from './ports'
+import { topTasks } from './progress'
+import { childrenOf } from './tasks'
 import { runHome } from './vcs'
 
 /**
@@ -113,7 +115,7 @@ const README = `# The board of a meld run, as files
 meld writes these files from the board. Read them, and change the board only with the meld tools.
 
 - request.md: the request and the steers of the person.
-- tasks.md: one line for each task. tasks/<id>.md: one task with its detail, its summary and its handover.
+- tasks.md: one line for each task, as a tree. The parts of a task come under it, each with two more spaces at its start. tasks/<id>.md: one task with its detail, its summary and its handover.
 - context.jsonl: the shared context, one entry in each line.
 - log.jsonl: the log of the run, one entry in each line.
 
@@ -125,8 +127,17 @@ function requestText(run: Run): string {
   return [`# Request (revision ${run.revision})`, '', run.request, ...(steers.length ? ['', '## Steers of the person, oldest first', '', ...steers] : []), ''].join('\n')
 }
 
+/** The task tree: each part comes under its parent, with two more spaces than its parent. */
 function tasksText(run: Run): string {
-  return `${run.tasks.map(task => `#${task.id} ${task.state}${task.owner ? ` ${task.owner}` : ''}${task.needs?.length ? ` needs ${task.needs.map(need => `#${need}`).join(' ')}` : ''}: ${task.title}`).join('\n')}\n`
+  return `${treeLines(run.tasks, topTasks(run.tasks), '').join('\n')}\n`
+}
+
+function treeLines(tasks: readonly Task[], level: readonly Task[], indent: string): string[] {
+  return level.flatMap(task => [`${indent}${taskSummary(task)}`, ...treeLines(tasks, childrenOf(tasks, task.id), `${indent}  `)])
+}
+
+function taskSummary(task: Task): string {
+  return `#${task.id} ${task.state}${task.owner ? ` ${task.owner}` : ''}${task.needs?.length ? ` needs ${task.needs.map(need => `#${need}`).join(' ')}` : ''}: ${task.title}`
 }
 
 function taskText(task: Task): string {

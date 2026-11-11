@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
 import { serveTool } from '../core/actions'
-import { addNote, addTasks, bindWorker, claimTask, isFailure, startRun, steer } from '../core/board'
+import { addNote, addTasks, bindWorker, claimTask, isFailure, splitTask, startRun, steer } from '../core/board'
 import { TOOL } from '../core/contract'
 import { INLINE_CHARS, nodeText, viewFiles, viewRoot } from '../core/view'
 import type { Change, Run, WorkerId } from '../types'
@@ -107,6 +107,23 @@ test('the board files hold the same texts that the refs give', () => {
   expect(files['request.md']).toBe(nodeText(run, 'request'))
   expect(files['request.md']).toContain(STEER)
   expect(files['log.jsonl']).toContain(LONG_NOTE)
+})
+
+test('tasks.md shows the task tree: each part comes under its parent with two more spaces, and a top task starts at the left', () => {
+  let run = planned()
+  run = runOf(splitTask(run, 'w1', { task: 1, version: 2, seen: run.taskList, tasks: [{ title: 'Light tokens' }, { title: 'Dark tokens' }] }, NOW))
+  run = runOf(splitTask(run, 'w1', { task: 3, version: 1, seen: run.taskList, tasks: [{ title: 'Light colours' }, { title: 'Light fonts' }] }, NOW))
+  expect(viewFiles(run)['tasks.md']).toBe(
+    [
+      '#1 open: Theme tokens',
+      '  #3 open: Light tokens',
+      '    #5 claimed w1: Light colours',
+      '    #6 open: Light fonts',
+      '  #4 open: Dark tokens',
+      '#2 open needs #1: Dark pane',
+      '',
+    ].join('\n'),
+  )
 })
 
 test('the board files are in the folder of the run only for a run in the board file', () => {

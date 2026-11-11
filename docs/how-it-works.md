@@ -110,7 +110,7 @@ Each model call of an agent reads its whole context again, so a long board reply
 
 A ref names one whole item: `request`, `tasks`, `tasks/<id>`, `log/<id>` or `context/<id>`. `board` with `ref` gives the item. One function makes the text of each item, for the reply, for the read by ref and for the files, so the three cannot differ.
 
-With Bun, `meld mcp` also writes the items as files in `/tmp/meld/<run>/board/`: `request.md`, `tasks.md`, `tasks/<id>.md`, `context.jsonl` and `log.jsonl`. An agent searches them with one Bash command, for example `rg`, `jq`, `sed -n` or `head`, and takes only the lines that it needs.
+With Bun, `meld mcp` also writes the items as files in `/tmp/meld/<run>/board/`: `request.md`, `tasks.md`, `tasks/<id>.md`, `context.jsonl` and `log.jsonl`. An agent searches them with one Bash command, for example `rg`, `jq`, `sed -n` or `head`, and takes only the lines that it needs. `tasks.md` shows the task tree: the parts of a task come under it, each with two more spaces at its start. A task with no parent starts at the left.
 
 The process of `meld mcp` that leads the board writes the files when the board changes, at most half a second later. Each version is a folder, and `board` is a link that moves to the new version in one step. So a reader sees one whole version. The files can be older than the board by a moment. That is safe: a claim and a finish go through the board tools, which check the version.
 
