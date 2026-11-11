@@ -649,11 +649,11 @@ export async function acpRefusal(io: Store, agentId: string, ask: { kind: string
   return refusalOf(run, worker, ACP_EDIT_KINDS.has(ask.kind) ? ask.paths : [])
 }
 
-/** A tool call of an ACP worker becomes the activity of its worker, and counts as a call, as a tool call of a subagent does. */
-export async function recordActivity(io: Store & Clock & Runner, agentId: string, activity: string): Promise<void> {
+/** A tool call of an ACP worker becomes the activity of its worker, and counts as a call, as a tool call of a subagent does. The words of the agent before it become its said. */
+export async function recordActivity(io: Store & Clock & Runner, agentId: string, activity: string, words?: string): Promise<void> {
   const run = await readRun(io)
   const worker = run ? board.workerOf(run, agentId) : undefined
-  if (worker) await recordCall(io, worker, activity)
+  if (worker) await recordCall(io, worker, activity, words)
 }
 
 /** A worker that meld mcp runs through ACP: only meld mcp starts it again. */
@@ -675,11 +675,11 @@ function refusalOf(run: Run, worker: Worker, edited: readonly string[]): string 
 }
 
 /** Records a call as the activity of the worker and counts it; a worker with many calls on one task gets a nudge to split it. */
-async function recordCall(io: Store & Clock & Runner, worker: Worker, activity: string): Promise<void> {
+async function recordCall(io: Store & Clock & Runner, worker: Worker, activity: string, words?: string): Promise<void> {
   const now = await io.now()
   let nudge: Task | undefined
   await writeRun(io, current => {
-    const counted = countedCall(board.setActivity(current, worker.id, activity, now), worker.id, now)
+    const counted = countedCall(board.setSaid(board.setActivity(current, worker.id, activity, now), worker.id, words, now), worker.id, now)
     nudge = counted.task
     return counted.run
   })
@@ -814,16 +814,17 @@ function contextTokens(usage: TokenUsage): number {
 /**
  * One model call of an agent: its cost in input tokens adds up on its worker at once. A worker does a task in one long turn, so
  * a count at the end of the turn showed 0 tokens while it worked. With the window of the model of the agent, the call
- * also gives the context of the agent. The main session and agents that are no worker count nothing.
+ * also gives the context of the agent, and its answer gives the said of the worker. The main session and agents that are no worker count nothing.
  */
-export async function countStep(io: Store, agentId: string | undefined, usage: TokenUsage | null | undefined, window?: number): Promise<void> {
+export async function countStep(io: Store & Clock, agentId: string | undefined, usage: TokenUsage | null | undefined, window?: number, answer?: string): Promise<void> {
   const tokens = costTokens(usage ?? undefined)
   if (agentId === undefined || !usage || !tokens) return
   const run = await readRun(io)
   const worker = run ? board.workerOf(run, agentId) : undefined
   if (!worker) return
+  const now = await io.now()
   await writeRun(io, current => {
-    const counted = board.addTokens(current, worker.id, tokens)
+    const counted = board.setSaid(board.addTokens(current, worker.id, tokens), worker.id, answer, now)
     return window ? board.setContext(counted, worker.id, { used: contextTokens(usage), size: window }) : counted
   })
 }
@@ -847,14 +848,14 @@ export async function recordContext(io: Store, agentId: string, context: AgentCo
   if (worker) await writeRun(io, current => board.setContext(current, worker.id, context))
 }
 
-/** A worker's turn ended: it is idle. Its tokens added up at each model call (countStep). The clock of meld starts workers again (see restartIdleWorkers). */
-export async function markWorker(io: Store & Clock, agentId: string | undefined, state: WorkerState, tokens = 0): Promise<void> {
+/** A worker's turn ended: it is idle. Its tokens added up at each model call (countStep), and the last words of its agent become its said. The clock of meld starts workers again (see restartIdleWorkers). */
+export async function markWorker(io: Store & Clock, agentId: string | undefined, state: WorkerState, tokens = 0, words?: string): Promise<void> {
   if (agentId === undefined) return
   const run = await readRun(io)
   const worker = run ? board.workerOf(run, agentId) : undefined
   if (!run || !worker) return
   const now = await io.now()
-  await writeRun(io, current => board.addTokens(board.setWorkerState(current, worker.id, state, now), worker.id, tokens))
+  await writeRun(io, current => board.setSaid(board.addTokens(board.setWorkerState(current, worker.id, state, now), worker.id, tokens), worker.id, words, now))
 }
 
 type Restart = { worker: Worker; step: string }

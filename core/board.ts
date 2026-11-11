@@ -610,6 +610,22 @@ export function setActivity(run: Run, by: WorkerId, activity: string, now: numbe
   return replaceWorker(run, { ...worker, activity, activityAt: now })
 }
 
+/** The most words of the said sentence of an agent. */
+const SAID_WORDS = 20
+
+/** The first sentence of a text of an agent, cut to SAID_WORDS words with an ellipsis; undefined for a text with no words. */
+export function saidOf(text: string): string | undefined {
+  const words = (text.trim().split(/(?<=[.!?])\s|\n/)[0] ?? '').split(/\s+/).filter(Boolean)
+  if (!words.length) return undefined
+  return words.length > SAID_WORDS ? `${words.slice(0, SAID_WORDS).join(' ')}...` : words.join(' ')
+}
+
+/** The agent of a worker wrote text: its first sentence is the said of the worker. A text with no words changes nothing. */
+export function setSaid(run: Run, by: WorkerId, text: string | undefined, now: number): Run {
+  const said = text === undefined ? undefined : saidOf(text)
+  return said ? replaceWorker(run, { ...findWorker(run, by), said, saidAt: now }) : run
+}
+
 export function setWorkerState(run: Run, by: WorkerId, state: WorkerState, now: number): Run {
   const worker = findWorker(run, by)
   if (worker.state === 'stopped') return run
