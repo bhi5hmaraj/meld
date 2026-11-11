@@ -1,18 +1,19 @@
 import type { ElementTable, RenderSurface } from 'claude-code'
 
-import type { Activity, AgentSpec, ContextKind, Entry, Facts, PaneView, ResultFacts, Run, RunState, Task, Worker, WorkerId } from '../types'
+import type { Activity, AgentSpec, ContextKind, Facts, PaneView, ResultFacts, Run, RunState, Task, Worker, WorkerId } from '../types'
 import { deliver, discard, LEADING_CD, stopAll } from '../core/actions'
 import { currentContext, NOT_STARTED } from '../core/board'
 import { activityOf, sharedContextOf } from '../core/metrics'
 import type { SharedContext } from '../core/metrics'
 import { STEER_PRESETS } from '../core/contract'
 import { agentColor, BAR_HEIGHT, BAR_WIDTH, barCells, partsBarSvg, STATUS } from './drawing'
-import { FLOW_CELLS, FLOW_HEIGHT, FLOW_LEGEND, FLOW_WIDTH, flowCells, flowSvg, partsIn, partWords } from './drawing'
-import type { TimeSpan } from './drawing'
+import { FLOW_HEIGHT, FLOW_WIDTH, flowSvg } from './drawing'
 import { efficiencyOf, lanesOf, progressOf } from '../core/metrics'
 import type { LanePart } from '../core/metrics'
+import { FLOW_CELLS, FLOW_LEGEND, flowAxis, flowCells, partsIn, partWords, reportOf, sleepsOf, tokenCount } from '../core/report'
+import type { TimeSpan } from '../core/report'
 import type { Io } from '../core/ports'
-import { agentsOf, formatStart, MAX_AGENTS, MODELS, WORKER_TYPE } from '../core/options'
+import { MAX_AGENTS, MODELS, WORKER_TYPE } from '../core/options'
 import { leavesOf, requestParts, topTasks } from '../core/progress'
 import type { Parts } from '../core/progress'
 import { childrenOf, claimable, waitsFor } from '../core/tasks'
@@ -58,9 +59,7 @@ const CLASS_WORDS: Partial<Record<Activity, string>> = {
   background: 'waiting for its background work',
   board: 'using the board',
 }
-const CHECK_CHIPS = 6
 const CARD_INDENT = 3
-const SUMMARY_WORDS = 24
 const REQUEST_BAR = { width: BAR_WIDTH, cells: 24 }
 const ROW_INDENT = 2
 const TITLE_WORDS = 8
@@ -70,8 +69,6 @@ const ROW_WORDS = 90
 const READY_WARN_MS = 300_000
 /** The characters of the request that the header shows before a press: two lines. */
 const REQUEST_CHARS = 144
-const FLOW_WINDOW_MS = 30 * 60_000
-const FLOW_WINDOW_WORDS = 'last 30m'
 const AGENT_OPTIONS = Array.from({ length: MAX_AGENTS }, (_, index) => ({ value: String(index + 1), label: `${index + 1}` }))
 const MODEL_OPTIONS = [{ value: 'inherit', label: 'Same as this session' }, ...MODELS.map(model => ({ value: model, label: model }))]
 const VCS_OPTIONS = [
@@ -102,18 +99,15 @@ export function paneTree(input: PaneInput) {
   const run = input.run
   if (!run) return <Box flexDirection="column">{startSection(input)}</Box>
   const facts = input.facts?.run === run.id ? input.facts : null
+  const working = run.state === 'starting' || run.state === 'working'
   return (
     <Box flexDirection="column" gap="lg">
       {headerSection(input, run)}
       {refusedSection(input, run)}
-      {agentsSection(input, run)}
-      {progressSection(input, run)}
-      {flowSection(input, run)}
-      {contextSection(input, run)}
-      {contextEntriesSection(input, run)}
-      {checksSection(input, run)}
-      {run.final && resultSection(input, run, facts?.result)}
-      {LIVE.has(run.state) && steerSection(input, run)}
+      {working
+        ? [agentsSection(input, run), contextSection(input, run), contextEntriesSection(input, run), progressSection(input, run)]
+        : reportSections(input, run, facts)}
+      {(working || (run.state === 'ready' && input.view.asking)) && steerSection(input, run)}
     </Box>
   )
 }
@@ -148,11 +142,6 @@ function headerSection(input: PaneInput, run: Run) {
           {!LIVE.has(run.state) && (
             <Button key="discard" onPress={() => void act(io, () => discard(io))}>
               {run.state === 'delivered' ? 'Clear' : '✗ Discard'}
-            </Button>
-          )}
-          {run.state === 'ready' && (
-            <Button key="discard" dimColor onPress={() => void act(io, () => discard(io))}>
-              ✗ Discard
             </Button>
           )}
         </Box>
@@ -472,63 +461,82 @@ function chosen(view: PaneView, id: number, isOpen: boolean): PaneView {
 }
 
 /**
- * One lane for each worker over the whole run, or the last 30 minutes of a longer one, and four metrics of section 4 of
- * docs/design/pane-metrics-logs.md. A graphic surface draws each lane as a picture with its parts in words; the terminal
+ * One lane for each worker with time in the window, an axis of minutes, and on the terminal the legend of the cells; no
+ * rows when no worker has time in it. A graphic surface draws each lane as a picture with its parts in words; the terminal
  * draws it as a row of cells.
  */
-function flowSection(input: PaneInput, run: Run) {
+function laneRows(input: PaneInput, run: Run, window: TimeSpan) {
   const { Box, Text } = input.table
   const Svg = input.surface !== 'terminal' && 'Svg' in input.table ? input.table.Svg : undefined
-  const end = run.endedAt ?? input.now
-  const window = { from: Math.max(run.startedAt, end - FLOW_WINDOW_MS), to: end }
   const lanes = lanesOf(run, input.now).filter(lane => lane.to > lane.from && lane.to > window.from)
-  if (!lanes.length) return undefined
-  const sleeps: TimeSpan[] = run.log.filter(entry => entry.kind === 'host').map(entry => ({ from: entry.from ?? entry.at, to: entry.at }))
-  return (
-    <Box key="sec-flow" flexDirection="column" gap="xs">
-      <Box flexDirection="row" gap="sm">
-        <Text bold>Flow</Text>
-        <Text dimColor>{end - run.startedAt > FLOW_WINDOW_MS ? FLOW_WINDOW_WORDS : 'whole run'}</Text>
+  if (!lanes.length) return []
+  const sleeps = sleepsOf(run)
+  const rows = lanes.map(lane => {
+    const color = run.workers.findIndex(worker => worker.id === lane.worker)
+    const parts = partsIn(lane.parts, window)
+    return (
+      <Box key={`flow-${lane.worker}`} flexDirection="row" gap="sm" alignItems="center">
+        {Svg && <Text>{lane.worker}</Text>}
+        {Svg ? (
+          <Svg source={flowSvg(parts, sleeps, window, color)} alt={laneWords(lane.worker, parts)} width={FLOW_WIDTH} height={FLOW_HEIGHT} />
+        ) : (
+          <Text color={agentColor(color).light}>{`${lane.worker} ${flowCells(parts, sleeps, window, FLOW_CELLS)}`}</Text>
+        )}
       </Box>
-      {lanes.map(lane => {
-        const color = run.workers.findIndex(worker => worker.id === lane.worker)
-        const parts = partsIn(lane.parts, window)
-        return (
-          <Box key={`flow-${lane.worker}`} flexDirection="row" gap="sm" alignItems="center">
-            {Svg && <Text>{lane.worker}</Text>}
-            {Svg ? (
-              <Svg source={flowSvg(parts, sleeps, window, color)} alt={laneWords(lane.worker, parts)} width={FLOW_WIDTH} height={FLOW_HEIGHT} />
-            ) : (
-              <Text color={agentColor(color).light}>{`${lane.worker} ${flowCells(parts, sleeps, window, FLOW_CELLS)}`}</Text>
-            )}
-          </Box>
-        )
-      })}
-      {!Svg && <Text dimColor>{FLOW_LEGEND}</Text>}
-      <Text dimColor wrap="wrap">
-        {flowMetrics(run, input.now)}
-      </Text>
-    </Box>
-  )
+    )
+  })
+  const axis = <Text key="flow-axis" dimColor>{`${' '.repeat((lanes[0]?.worker.length ?? 0) + 1)}${flowAxis(window, FLOW_CELLS)}`}</Text>
+  return Svg ? [...rows, axis] : [...rows, axis, <Text key="flow-legend" dimColor>{FLOW_LEGEND}</Text>]
 }
 
 function laneWords(id: WorkerId, parts: readonly LanePart[]): string {
   return `${id}: ${parts.map(part => `${partWords(part)} ${ago(part.to - part.from)}`).join(', ')}`
 }
 
-/** Busy share, ready with no agent, task time and cost per finished task: the same words on every surface. */
-function flowMetrics(run: Run, now: number): string {
-  const { busyShare, costPerTask } = efficiencyOf(run, now)
-  const { done, readyNoAgent, taskMs } = progressOf(run, now)
-  const ready = `ready with no agent ${ago(readyNoAgent.ms)}${readyNoAgent.now ? `, ${readyNoAgent.now} now` : ''}`
-  const finished = done ? [`task time ${ago(taskMs)}`, `${tokenCount(costPerTask)} tokens per finished task`] : ['no finished task yet']
-  return [`busy ${Math.round(busyShare * 100)}%`, ready, ...finished].join('; ')
-}
-
-/** A count of tokens in a few characters: 182k, 1.2M. */
-function tokenCount(tokens: number): string {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
-  return tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : String(Math.round(tokens))
+/**
+ * The report of a ready, delivered or stopped run, in place of the main view: the final commit, the story, what each
+ * agent did, and the lanes of the whole run with three numbers.
+ */
+function reportSections(input: PaneInput, run: Run, facts: Facts | null) {
+  const { Box, Text } = input.table
+  const report = reportOf(run, input.now)
+  const labels = run.workers.map(worker => (sharedSpec(run) === undefined ? specLabel(worker.agent) : ''))
+  const row = (texts: string[]) => (
+    <Box flexDirection="row" gap="md" flexWrap="wrap">
+      {texts.map(text => (
+        <Text key={text} dimColor>
+          {text}
+        </Text>
+      ))}
+    </Box>
+  )
+  return [
+    run.final && resultSection(input, run, facts?.result),
+    <Box key="sec-story" flexDirection="column" gap="xs">
+      <Text bold>Story</Text>
+      <Text wrap="wrap">{report.story}</Text>
+    </Box>,
+    <Box key="agents-did" flexDirection="column" gap="sm">
+      <Text bold>What each agent did</Text>
+      {report.agents.map((agent, index) => (
+        <Box key={`sec-did-${agent.worker}`} flexDirection="column" gap="xs">
+          <Box flexDirection="row" gap="sm">
+            <Text bold color={agentColor(index).light}>
+              {agent.worker}
+            </Text>
+            {labels[index] && <Text dimColor>{labels[index]}</Text>}
+          </Box>
+          <Text wrap="wrap">{agent.did}</Text>
+          {row(agent.counts)}
+        </Box>
+      ))}
+    </Box>,
+    <Box key="sec-timeline" flexDirection="column" gap="xs">
+      <Text bold>Timeline</Text>
+      {laneRows(input, run, { from: run.startedAt, to: run.endedAt ?? input.now })}
+      {row(report.numbers)}
+    </Box>,
+  ]
 }
 
 /** The heading and the metrics of the shared context: whether the agents learn from each other. */
@@ -602,24 +610,6 @@ function counted(count: number, one: string, many = `${one}s`): string {
   return `${count} ${count === 1 ? one : many}`
 }
 
-function checksSection(input: PaneInput, run: Run) {
-  const { Box, Text } = input.table
-  const latest = latestChecks(run).slice(-CHECK_CHIPS)
-  if (!latest.length) return undefined
-  return (
-    <Box key="sec-checks" flexDirection="row" gap="lg" flexWrap="wrap">
-      {latest.map(check => (
-        <Box key={`check-${check.id}`} flexDirection="row" gap="sm">
-          <Text color={check.passed ? 'success' : 'error'} bold>
-            {check.passed ? '✓' : '✗'} {cut(check.text, 28)}
-          </Text>
-          <Text dimColor>{(check.commit ?? '').slice(0, 7)}</Text>
-        </Box>
-      ))}
-    </Box>
-  )
-}
-
 function resultSection(input: PaneInput, run: Run, result: ResultFacts | undefined) {
   const { Box, Text, Button, Code } = input.table
   const { io, view, setView } = input
@@ -629,26 +619,31 @@ function resultSection(input: PaneInput, run: Run, result: ResultFacts | undefin
   return (
     <Box key="sec-result" flexDirection="column" gap="md" borderStyle="round" borderColor="suggestion" paddingX="md" paddingY="sm">
       <Box flexDirection="row" gap="md" flexWrap="wrap" alignItems="center">
-        <Text bold>★ {final.commit.slice(0, 7)}</Text>
+        <Text bold>Final commit {final.commit.slice(0, 7)}</Text>
         {result ? <Text>{result.fileCount} files</Text> : <Text dimColor>reading the change</Text>}
-        {result && <Text color="success">+{result.added}</Text>}
-        {result && <Text color="error">−{result.removed}</Text>}
         <Text color={verdict.tone}>
           {verdict.icon} {verdict.word}
         </Text>
       </Box>
-      <Text dimColor wrap="wrap">
-        {final.by}: {cutWords(final.summary, SUMMARY_WORDS)}
-      </Text>
       <Box flexDirection="row" gap="sm" flexWrap="wrap">
         {run.state === 'ready' && (
           <Button key="deliver" variant="primary" hotkey="d" onPress={() => void act(io, () => deliver(io))}>
-            ✓ Deliver into your branch
+            Deliver
           </Button>
         )}
         {result && result.files.length > 0 && (
           <Button key="diff" hotkey="v" onPress={() => void setView(current => ({ ...current, showDiff: !current.showDiff }))}>
             {view.showDiff ? 'Hide diff' : 'Show diff'}
+          </Button>
+        )}
+        {run.state === 'ready' && (
+          <Button key="ask" onPress={() => void setView(current => ({ ...current, asking: !current.asking }))}>
+            Ask for changes
+          </Button>
+        )}
+        {run.state === 'ready' && (
+          <Button key="discard" onPress={() => void act(io, () => discard(io))}>
+            Discard
           </Button>
         )}
       </Box>
@@ -750,12 +745,6 @@ function sharedSpec(run: Run): string | undefined {
 function specLabel(agent: AgentSpec): string {
   if (agent.type === WORKER_TYPE) return agent.model ?? ''
   return agent.model ? `${agent.type} ${agent.model}` : agent.type
-}
-
-function latestChecks(run: Run): Entry[] {
-  const byCommand = new Map<string, Entry>()
-  for (const entry of run.log) if (entry.kind === 'check') byCommand.set(entry.text, entry)
-  return [...byCommand.values()].sort((one, two) => one.id - two.id)
 }
 
 function verdictOf(run: Run, commit: string): { icon: string; word: string; tone: string } {

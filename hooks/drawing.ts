@@ -1,4 +1,6 @@
 import type { LaneKind, LanePart } from '../core/metrics'
+import { PART_WORDS, partWords } from '../core/report'
+import type { TimeSpan } from '../core/report'
 import { floored } from '../core/progress'
 import type { Parts } from '../core/progress'
 
@@ -55,60 +57,14 @@ export function barCells(shares: Parts, cells: number): Parts {
   return { done, claimed, open: cells - done - claimed }
 }
 
-/** A span of time, as a Flow window or a sleep of the machine. */
-export type TimeSpan = { from: number; to: number }
-
-/** The shape of each kind of part of a Flow lane on the terminal, so each kind reads with no colour. */
-export const FLOW_SHAPE: Record<LaneKind, string> = { working: '█', merging: '◆', waiting: '▒', idle: '·', asleep: 'z' }
-export const FLOW_CELLS = 30
 export const FLOW_WIDTH = 240
 export const FLOW_HEIGHT = 12
-const PART_WORDS: Record<LaneKind, string> = { working: 'working', merging: 'merging', waiting: 'waiting on meld', idle: 'idle', asleep: 'asleep' }
-const TASK_WORDS: Partial<Record<LaneKind, string>> = { working: ' on #', merging: ' #' }
-export const FLOW_LEGEND = (Object.keys(FLOW_SHAPE) as LaneKind[]).map(kind => `${FLOW_SHAPE[kind]} ${PART_WORDS[kind]}`).join('  ')
 /** Each kind has its own height, so the parts of a lane read with no colour. A sleep is a band over the whole height. */
 const PART_BOX: Record<Exclude<LaneKind, 'asleep'>, { y: number; height: number; paint: (fill: string) => string }> = {
   working: { y: 1, height: 10, paint: fill => `class="${fill}"` },
   merging: { y: 1, height: 10, paint: fill => `class="${fill}" opacity="0.5"` },
   waiting: { y: 3, height: 6, paint: () => `fill="${STATUS.warning}"` },
   idle: { y: 5, height: 2, paint: () => `fill="${MUTED}"` },
-}
-
-/** The parts of a lane inside the window, cut at its edges. */
-export function partsIn(parts: readonly LanePart[], window: TimeSpan): LanePart[] {
-  return parts.flatMap(part => {
-    const from = Math.max(part.from, window.from)
-    const to = Math.min(part.to, window.to)
-    return to > from ? [{ ...part, from, to }] : []
-  })
-}
-
-export function partWords(part: LanePart): string {
-  if (part.kind === 'idle' && part.reason === 'background') return 'waiting for its background work'
-  const join = TASK_WORDS[part.kind]
-  const task = join && part.task !== undefined ? `${join}${part.task}` : ''
-  const reason = part.kind === 'waiting' && part.reason ? `: ${part.reason}` : ''
-  return `${PART_WORDS[part.kind]}${task}${reason}`
-}
-
-/**
- * A Flow lane in text cells over the window: each cell shows the kind that covers the most of its time. The sleeps of the
- * machine cover every lane, and a cell outside the worker time is a space.
- */
-export function flowCells(parts: readonly LanePart[], sleeps: readonly TimeSpan[], window: TimeSpan, cells: number): string {
-  const size = (window.to - window.from) / cells
-  const covers = [...parts.filter(part => part.kind !== 'asleep'), ...sleeps.map(span => ({ ...span, kind: 'asleep' as const }))]
-  return Array.from({ length: cells }, (_, index) => {
-    const from = window.from + index * size
-    const to = from + size
-    const ms = new Map<LaneKind, number>()
-    for (const part of covers) {
-      const overlap = Math.min(to, part.to) - Math.max(from, part.from)
-      if (overlap > 0) ms.set(part.kind, (ms.get(part.kind) ?? 0) + overlap)
-    }
-    const top = [...ms].reduce<[LaneKind, number] | undefined>((best, one) => (!best || one[1] > best[1] ? one : best), undefined)
-    return top ? FLOW_SHAPE[top[0]] : ' '
-  }).join('')
 }
 
 /** A Flow lane as a picture over the window, in the colour of its agent, with the sleeps of the machine as bands. */

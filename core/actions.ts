@@ -7,6 +7,7 @@ import { command, GIT_MIN, gitVersion, headCommit, isDirty, isOldGit, repoRoot }
 import type { Archive, Clock, CodeHost, CommandReply, FactsStore, Io, Runner, Spawned, Store, Surface, TokenUsage, ToolCall, ToolReply } from './ports'
 import { agentSpecOf, agentsOf, isAcpSpec, MAX_AGENTS, parseStart, WORKER_TYPE } from './options'
 import type { StartOptions } from './options'
+import { endOf, reportText } from './report'
 import { claimable } from './tasks'
 import { detectVcs, heldWork, runHome, vcsFor } from './vcs'
 import type { Prepared } from './vcs'
@@ -1223,12 +1224,12 @@ async function dropRun(io: Store & FactsStore & CodeHost & Archive, run: Run): P
 
 /**
  * Writes the record of the run to <archive folder>/<run id>.json, open to its user only: the run, the board (request,
- * steers, tasks), the events and the context entries. The folder is 0700 before the file is there, so no other user
+ * steers, tasks), the events, the context entries and the report, for the person to share. The folder is 0700 before the file is there, so no other user
  * reads the file before its chmod. Gives the reason when it could not write the record.
  */
 async function archiveRun(io: CodeHost & Archive, run: Run): Promise<string | undefined> {
   const { request, tasks, log, context, ...rest } = run
-  const record = { run: rest, board: { request, steers: board.steersOf(run), tasks }, events: log, context: context ?? [] }
+  const record = { run: rest, board: { request, steers: board.steersOf(run), tasks }, events: log, context: context ?? [], report: reportText(run, endOf(run)) }
   try {
     const folder = await io.archiveFolder()
     const path = `${folder}/${run.id}.json`
