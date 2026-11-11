@@ -11,6 +11,7 @@ import { FLOW_CELLS, FLOW_HEIGHT, FLOW_LEGEND, FLOW_WIDTH, flowCells, flowSvg, p
 import type { TimeSpan } from './drawing'
 import { efficiencyOf, lanesOf, progressOf } from '../core/metrics'
 import type { LanePart } from '../core/metrics'
+import { reportOf, tokenCount } from '../core/report'
 import type { Io } from '../core/ports'
 import { agentsOf, formatStart, isAcpSpec, MAX_AGENTS, MODELS, WORKER_TYPE } from '../core/options'
 import { ownersOf, partsOf, percentLabel, percentOf, requestParts, requestPercent, topTasks } from '../core/progress'
@@ -114,7 +115,7 @@ export function paneTree(input: PaneInput) {
       {refusedSection(input, run)}
       {agentsSection(input, run, facts)}
       {progressSection(input, run)}
-      {flowSection(input, run)}
+      {run.state === 'starting' || run.state === 'working' ? flowSection(input, run) : reportSections(input, run)}
       {contextSection(input, run)}
       {contextEntriesSection(input, run)}
       {checksSection(input, run)}
@@ -317,11 +318,6 @@ function costLine(worker: Worker): string {
   return worker.context ? `context ${tokenCount(worker.context.used)} of ${tokenCount(CONTEXT_CAP)} cap, ${cost}` : cost
 }
 
-function tokenCount(count: number): string {
-  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`
-  return count >= 1000 ? `${Math.round(count / 1000)}k` : String(count)
-}
-
 /** The one warning of a card, the most urgent first. A stuck agent shows its last command as a clue. */
 function warningOf(run: Run, worker: Worker, now: number): string | undefined {
   if (!LIVE.has(run.state) || worker.state === 'stopped') return undefined
@@ -462,38 +458,45 @@ function toggled(open: readonly number[] | undefined, id: number): number[] {
  */
 function flowSection(input: PaneInput, run: Run) {
   const { Box, Text } = input.table
-  const Svg = input.surface !== 'terminal' && 'Svg' in input.table ? input.table.Svg : undefined
   const end = run.endedAt ?? input.now
-  const window = { from: Math.max(run.startedAt, end - FLOW_WINDOW_MS), to: end }
-  const lanes = lanesOf(run, input.now).filter(lane => lane.to > lane.from && lane.to > window.from)
-  if (!lanes.length) return undefined
-  const sleeps: TimeSpan[] = run.log.filter(entry => entry.kind === 'host').map(entry => ({ from: entry.from ?? entry.at, to: entry.at }))
+  const rows = laneRows(input, run, { from: Math.max(run.startedAt, end - FLOW_WINDOW_MS), to: end })
+  if (!rows.length) return undefined
   return (
     <Box key="sec-flow" flexDirection="column" gap="xs">
       <Box flexDirection="row" gap="sm">
         <Text bold>Flow</Text>
         <Text dimColor>{end - run.startedAt > FLOW_WINDOW_MS ? FLOW_WINDOW_WORDS : 'whole run'}</Text>
       </Box>
-      {lanes.map(lane => {
-        const color = run.workers.findIndex(worker => worker.id === lane.worker)
-        const parts = partsIn(lane.parts, window)
-        return (
-          <Box key={`flow-${lane.worker}`} flexDirection="row" gap="sm" alignItems="center">
-            {Svg && <Text>{lane.worker}</Text>}
-            {Svg ? (
-              <Svg source={flowSvg(parts, sleeps, window, color)} alt={laneWords(lane.worker, parts)} width={FLOW_WIDTH} height={FLOW_HEIGHT} />
-            ) : (
-              <Text color={agentColor(color).light}>{`${lane.worker} ${flowCells(parts, sleeps, window, FLOW_CELLS)}`}</Text>
-            )}
-          </Box>
-        )
-      })}
-      {!Svg && <Text dimColor>{FLOW_LEGEND}</Text>}
+      {rows}
       <Text dimColor wrap="wrap">
         {flowMetrics(run, input.now)}
       </Text>
     </Box>
   )
+}
+
+/** One row for each worker with time in the window, then the legend of the cells on the terminal; no rows when no worker has time in it. */
+function laneRows(input: PaneInput, run: Run, window: TimeSpan) {
+  const { Box, Text } = input.table
+  const Svg = input.surface !== 'terminal' && 'Svg' in input.table ? input.table.Svg : undefined
+  const lanes = lanesOf(run, input.now).filter(lane => lane.to > lane.from && lane.to > window.from)
+  if (!lanes.length) return []
+  const sleeps: TimeSpan[] = run.log.filter(entry => entry.kind === 'host').map(entry => ({ from: entry.from ?? entry.at, to: entry.at }))
+  const rows = lanes.map(lane => {
+    const color = run.workers.findIndex(worker => worker.id === lane.worker)
+    const parts = partsIn(lane.parts, window)
+    return (
+      <Box key={`flow-${lane.worker}`} flexDirection="row" gap="sm" alignItems="center">
+        {Svg && <Text>{lane.worker}</Text>}
+        {Svg ? (
+          <Svg source={flowSvg(parts, sleeps, window, color)} alt={laneWords(lane.worker, parts)} width={FLOW_WIDTH} height={FLOW_HEIGHT} />
+        ) : (
+          <Text color={agentColor(color).light}>{`${lane.worker} ${flowCells(parts, sleeps, window, FLOW_CELLS)}`}</Text>
+        )}
+      </Box>
+    )
+  })
+  return Svg ? rows : [...rows, <Text key="flow-legend" dimColor>{FLOW_LEGEND}</Text>]
 }
 
 function laneWords(id: WorkerId, parts: readonly LanePart[]): string {
@@ -509,9 +512,29 @@ function flowMetrics(run: Run, now: number): string {
   return [`busy ${Math.round(busyShare * 100)}%`, ready, ...finished].join('; ')
 }
 
-function tokenCount(tokens: number): string {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
-  return tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : String(Math.round(tokens))
+/** When the run is ready, delivered or stopped, in place of Flow: the story and the lanes of the whole run, its metrics, and a block for each worker. */
+function reportSections(input: PaneInput, run: Run) {
+  const { Box, Text } = input.table
+  const report = reportOf(run, input.now)
+  const lines = (key: string, texts: string[]) => (
+    <Box key={key} flexDirection="column" gap="xs">
+      {texts.map(text => (
+        <Text key={text} dimColor wrap="wrap">
+          {text}
+        </Text>
+      ))}
+    </Box>
+  )
+  return [
+    <Box key="sec-report" flexDirection="column" gap="xs">
+      <Text bold>Report</Text>
+      <Text wrap="wrap">{report.story}</Text>
+      {laneRows(input, run, { from: run.startedAt, to: run.endedAt ?? input.now })}
+    </Box>,
+    lines('sec-report-run', report.run),
+    lines('sec-report-team', report.team),
+    ...report.workers.map((text, index) => lines(`sec-report-${run.workers[index]?.id ?? index}`, [text])),
+  ]
 }
 
 /** The heading and the metrics of the shared context: whether the agents learn from each other. */
