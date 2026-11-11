@@ -14,7 +14,7 @@ import type { SessionBoard } from './board-store'
 import { DEFAULT_VIEW, paneTree } from './pane'
 
 // Change a shape tag when the fields of its value change: a value stored by an older version then reads as the initial value.
-const runRef = atom({ plugin: 'meld', key: 'run' } as const, null, { shape: 'run-4' })
+const runRef = atom({ plugin: 'meld', key: 'run' } as const, null, { shape: 'run-5' })
 const factsRef = atom({ plugin: 'meld', key: 'facts' } as const, null, { shape: 'facts-1' })
 const viewRef = atom({ plugin: 'meld', key: 'view' } as const, null, { shape: 'view-1' })
 const boardRef = atom({ plugin: 'meld', key: 'board' } as const, null, { shape: 'board-1' })

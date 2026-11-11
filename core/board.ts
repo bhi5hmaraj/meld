@@ -13,10 +13,12 @@ import type {
   Final,
   Handover,
   HandoverView,
+  LaneState,
   Line,
   NewTask,
   Notice,
   Run,
+  StartReason,
   Task,
   TaskSize,
   VcsKind,
@@ -25,7 +27,7 @@ import type {
   WorkerState,
 } from '../types'
 import type { AgentState } from './ports'
-import { childrenOf, isParent, isReady, taskOf, waitsFor, waitsOn } from './tasks'
+import { childrenOf, claimable, isParent, isReady, taskOf, waitsFor, waitsOn } from './tasks'
 
 const LOG_LIMIT = 500
 /** The random characters at the end of a run id. */
@@ -98,7 +100,8 @@ export function bindWorker(run: Run, id: WorkerId, agentId: string, now: number)
   const worker = findWorker(run, id)
   if (worker.agentId) return failure('TAKEN', `${id} is already bound to another agent.`)
   const bound: Worker = { ...worker, agentId, state: 'working', activity: 'started', activityAt: now }
-  return { run: settled(replaceWorker(run, bound)), value: bound }
+  const start = run.state === 'starting' ? 'start' : 'join'
+  return { run: settled(withWorkerEntry(replaceWorker(run, bound), id, 'working', now, `${id} starts`, start)), value: bound }
 }
 
 /** Marks the last action of a worker that never started, ahead of the engine's reason for the refusal. */
@@ -108,7 +111,7 @@ export const NOT_STARTED = 'not started: '
 export function refuseWorker(run: Run, id: WorkerId, reason: string, now: number): Run {
   const worker = findWorker(run, id)
   const refused = replaceWorker(run, { ...worker, state: 'stopped', activity: `${NOT_STARTED}${reason}`, activityAt: now })
-  return settled(withEntry(refused, { at: now, by: 'you', kind: 'event', text: `${id} did not start: ${reason}` }))
+  return settled(withWorkerEntry(refused, id, 'stopped', now, `${id} did not start: ${reason}`))
 }
 
 /** A starting run works once every worker is bound or refused, and stops when none started. */
@@ -151,7 +154,7 @@ export function restartWorker(run: Run, id: WorkerId, agentId: string, now: numb
   const { seenContext: _seen, context: _context, resumedAt: _resumed, ...worker } = findWorker(run, id)
   if (worker.state === 'stopped') return failure('WORKER_STOPPED', `The person stopped ${id}.`)
   const restarted: Worker = { ...worker, agentId, state: 'working', briefed: false, activity: 'started again', activityAt: now }
-  return { run: withEntry(replaceWorker(run, restarted), { at: now, by: 'you', kind: 'event', text: `${id} starts again` }), value: restarted }
+  return { run: withWorkerEntry(replaceWorker(run, restarted), id, 'working', now, `${id} starts again`, 'restart'), value: restarted }
 }
 
 /**
@@ -163,7 +166,7 @@ export function resumeWorker(run: Run, id: WorkerId, now: number): Change<Worker
   const worker = findWorker(run, id)
   if (worker.state === 'stopped') return failure('WORKER_STOPPED', `The person stopped ${id}.`)
   const resumed: Worker = { ...worker, state: 'working', activity: 'goes on', activityAt: now, resumedAt: now }
-  return { run: withEntry(replaceWorker(run, resumed), { at: now, by: 'you', kind: 'event', text: `${id} goes on in its session` }), value: resumed }
+  return { run: withWorkerEntry(replaceWorker(run, resumed), id, 'working', now, `${id} goes on in its session`, 'resume'), value: resumed }
 }
 
 /** Below this share of its window, the context of an agent leaves room for one more task. */
@@ -284,7 +287,7 @@ export function splitTask(run: Run, by: WorkerId, input: SplitInput, now: number
   const added = [kept, ...others]
   const taskList = run.taskList + 1
   const text = `split #${id} into ${added.map(task => `#${task.id} ${task.title}`).join('; ')}, and claimed #${kept.id}`
-  return { run: withEntry({ ...run, tasks: [...tasks, ...added], taskList }, { at: now, by, kind: 'task', text }), value: { tasks: added, taskList } }
+  return { run: withEntry({ ...run, tasks: [...tasks, ...added], taskList }, { at: now, by, kind: 'task', text, task: id }), value: { tasks: added, taskList } }
 }
 
 /** The task and the tasks above it, up to the top. */
@@ -594,7 +597,8 @@ export function setActivity(run: Run, by: WorkerId, activity: string, now: numbe
 export function setWorkerState(run: Run, by: WorkerId, state: WorkerState, now: number): Run {
   const worker = findWorker(run, by)
   if (worker.state === 'stopped') return run
-  return replaceWorker(run, { ...worker, state, activityAt: now })
+  const changed = replaceWorker(run, { ...worker, state, activityAt: now })
+  return state === worker.state || state === 'starting' ? changed : withWorkerEntry(changed, by, state, now, `${by} is ${state}`)
 }
 
 export function stopWorker(run: Run, by: WorkerId, now: number): Run {
@@ -602,7 +606,7 @@ export function stopWorker(run: Run, by: WorkerId, now: number): Run {
   const tasks = run.tasks.map(task => (task.state === 'claimed' && task.owner === by ? givenBack(task) : task))
   const integrator = run.integrator === by ? undefined : run.integrator
   const stopped = replaceWorker({ ...run, tasks, integrator }, { ...worker, state: 'stopped', activity: 'stopped', activityAt: now })
-  return withEntry(stopped, { at: now, by: 'you', kind: 'event', text: `stopped ${by}` })
+  return withWorkerEntry(stopped, by, 'stopped', now, `stopped ${by}`)
 }
 
 export function stopRun(run: Run, now: number): Run {
@@ -679,6 +683,16 @@ function withEntry(run: Run, entry: Omit<Entry, 'id'> & { by: Author }): Run {
   return { ...run, log: [...run.log, { ...entry, id }].slice(-LOG_LIMIT) }
 }
 
+/**
+ * A record of the lane of a worker: its new state, or a start of its agent. A restart or a resume that finds no ready task,
+ * no claim of the worker and no integration of the worker has noTask.
+ */
+function withWorkerEntry(run: Run, worker: WorkerId, state: LaneState, now: number, text: string, start?: StartReason): Run {
+  const again = start === 'restart' || start === 'resume'
+  const noTask = again && !claimable(run.tasks).length && !run.tasks.some(task => isClaimedBy(task, worker)) && run.integrator !== worker
+  return withEntry(run, { at: now, by: 'you', kind: 'worker', text, worker, state, ...(start && { start }), ...(noTask && { noTask }) })
+}
+
 function withContext(run: Run, entry: Omit<ContextEntry, 'id' | 'seenBy'>): Run {
   const context = contextOf(run)
   const id = (context.at(-1)?.id ?? 0) + 1
@@ -737,7 +751,7 @@ function checkOwnedTask(run: Run, by: WorkerId, id: number, version: number): Ta
 
 function updateTask(run: Run, task: Task, by: WorkerId, now: number, text: string, commit?: string): Change<Task> {
   const tasks = withReadyTimes(withDoneParents(run.tasks.map(one => (one.id === task.id ? task : one)), now), now)
-  return { run: withEntry({ ...run, tasks }, { at: now, by, kind: 'task', text, commit }), value: task }
+  return { run: withEntry({ ...run, tasks }, { at: now, by, kind: 'task', text, commit, task: task.id }), value: task }
 }
 
 /** A task back to open: a release, or the stop of its owner. */

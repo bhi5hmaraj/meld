@@ -40,7 +40,7 @@ class FakeState {
 
   load(run: Run | null, facts: Facts | null, view?: object): FakeState {
     this.values.clear()
-    if (run) this.values.set('run', { value: { shape: 'run-4', value: run }, version: 1 })
+    if (run) this.values.set('run', { value: { shape: 'run-5', value: run }, version: 1 })
     if (facts) this.values.set('facts', { value: { shape: 'facts-1', value: facts }, version: 1 })
     if (view) this.values.set('view', { value: { shape: 'view-1', value: view }, version: 1 })
     return this

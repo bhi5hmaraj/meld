@@ -96,7 +96,7 @@ class RacingIo extends FakeIo {
 
 /** The run as the engine stores it for the plugin. */
 function stored(run: Run, key: string) {
-  return key === 'run' ? { value: { shape: 'run-4', value: run }, version: 1 } : { value: undefined, version: 0 }
+  return key === 'run' ? { value: { shape: 'run-5', value: run }, version: 1 } : { value: undefined, version: 0 }
 }
 
 /** git answers each command with no output, and fails the check that FULL holds TOGGLE. */
