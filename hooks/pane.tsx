@@ -1,10 +1,9 @@
 import type { ElementTable, RenderSurface } from 'claude-code'
 
-import type { Activity, AgentSpec, ContextKind, Facts, PaneView, ResultFacts, Run, RunState, Task, Worker, WorkerId } from '../types'
+import type { Activity, AgentSpec, ContextEntry, ContextKind, Facts, PaneView, ResultFacts, Run, RunState, Task, Worker, WorkerId } from '../types'
 import { deliver, discard, LEADING_CD, stopAll } from '../core/actions'
-import { currentContext, NOT_STARTED } from '../core/board'
-import { activityOf, sharedContextOf } from '../core/metrics'
-import type { SharedContext } from '../core/metrics'
+import { currentContext, NOT_STARTED, saidOf } from '../core/board'
+import { activityOf } from '../core/metrics'
 import { STEER_PRESETS } from '../core/contract'
 import { agentColor, BAR_HEIGHT, BAR_WIDTH, barCells, partsBarSvg, STATUS } from './drawing'
 import { FLOW_HEIGHT, FLOW_WIDTH, flowSvg } from './drawing'
@@ -36,12 +35,13 @@ const STATE_TONE: Record<RunState, string> = {
   delivered: 'inactive',
   stopped: 'error',
 }
-const KIND_SHAPE: Record<ContextKind, string> = { fact: '■', fail: '✕', interface: '◇' }
-const KIND_TONE: Record<ContextKind, string | undefined> = { fact: undefined, fail: 'error', interface: 'suggestion' }
-const KIND_ORDER: readonly ContextKind[] = ['fact', 'fail', 'interface']
-const CONTEXT_ROWS = 5
-const CONTEXT_WORDS = 8
-const NAMED_WORKERS = 3
+const LEARNING_GROUPS: readonly { kind: ContextKind; heading: string; tone?: string }[] = [
+  { kind: 'fact', heading: 'Facts' },
+  { kind: 'fail', heading: 'Avoid', tone: 'error' },
+  { kind: 'interface', heading: 'Contracts' },
+]
+/** The words of the lines of Learnings: the block holds 100 words with its heading and the three group headings. */
+const LEARNING_WORDS = 96
 /** After this long with no text, the Now line of a card gives plain words from the tool calls of its agent. */
 const SAID_FRESH_MS = 60_000
 /** The finished tasks that a card names; four would pass the 100 words of the block with long titles. */
@@ -104,9 +104,7 @@ export function paneTree(input: PaneInput) {
     <Box flexDirection="column" gap="lg">
       {headerSection(input, run)}
       {refusedSection(input, run)}
-      {working
-        ? [agentsSection(input, run), contextSection(input, run), contextEntriesSection(input, run), progressSection(input, run)]
-        : reportSections(input, run, facts)}
+      {working ? [agentsSection(input, run), learningsSection(input, run), progressSection(input, run)] : reportSections(input, run, facts)}
       {(working || (run.state === 'ready' && input.view.asking)) && steerSection(input, run)}
     </Box>
   )
@@ -539,42 +537,32 @@ function reportSections(input: PaneInput, run: Run, facts: Facts | null) {
   ]
 }
 
-/** The heading and the metrics of the shared context: whether the agents learn from each other. */
-function contextSection(input: PaneInput, run: Run) {
-  const { Box, Text } = input.table
-  if (!currentContext(run, 1).length) return undefined
-  return (
-    <Box key="sec-context" flexDirection="column" gap="xs">
-      <Text bold>Shared context</Text>
-      <Box key="context-metrics" flexDirection="row" gap="sm" flexWrap="wrap">
-        {contextMetrics(sharedContextOf(run, input.now)).map(metric => (
-          <Text key={metric} dimColor>
-            {metric}
-          </Text>
-        ))}
-      </Box>
-    </Box>
-  )
-}
+/** One line of Learnings: the first sentence of an entry, and who used it, heeded it or how many got it. */
+type Learning = { entry: ContextEntry; sentence: string; use?: string }
 
-/** The newest current entries, by kind: who shared each one, who got it and who used it. A block of its own, as five lines fill most of 100 words. */
-function contextEntriesSection(input: PaneInput, run: Run) {
+/** The current shared context as sentences under Facts, Avoid and Contracts: what the agents learn from each other. */
+function learningsSection(input: PaneInput, run: Run) {
   const { Box, Text } = input.table
-  const entries = currentContext(run, CONTEXT_ROWS).sort((one, other) => KIND_ORDER.indexOf(one.kind) - KIND_ORDER.indexOf(other.kind))
-  if (!entries.length) return undefined
+  const learnings = learningsOf(run)
+  if (!learnings.length) return undefined
   return (
-    <Box key="sec-context-entries" flexDirection="column" gap="xs">
-      {entries.map(entry => {
-        const users = usersOf(run, entry.id)
+    <Box key="sec-learnings" flexDirection="column" gap="xs">
+      <Text bold>Learnings</Text>
+      {LEARNING_GROUPS.map(group => {
+        const rows = learnings.filter(learning => learning.entry.kind === group.kind)
+        if (!rows.length) return undefined
         return (
-          <Box key={`context-${entry.id}`} flexDirection="row" gap="sm">
-            <Text color={KIND_TONE[entry.kind]}>{KIND_SHAPE[entry.kind]}</Text>
-            <Text color={agentColor(run.workers.findIndex(worker => worker.id === entry.by)).light}>{entry.by}</Text>
-            <Text dimColor wrap="truncate-end">
-              {cutWords(entry.text, CONTEXT_WORDS)}
+          <Box key={`learnings-${group.kind}`} flexDirection="column">
+            <Text bold color={group.tone}>
+              {group.heading}
             </Text>
-            <Text dimColor>{`got ${workersText(entry.seenBy)}`}</Text>
-            {users.length > 0 && <Text>{`used by ${workersText(users)}`}</Text>}
+            {rows.map(({ entry, sentence, use }) => (
+              <Box key={`learning-${entry.id}`} flexDirection="row" gap="sm">
+                <Text wrap="wrap">{sentence}</Text>
+                <Text color={agentColor(run.workers.findIndex(worker => worker.id === entry.by)).light}>{entry.by}</Text>
+                {use && <Text dimColor>{use}</Text>}
+              </Box>
+            ))}
           </Box>
         )
       })}
@@ -582,32 +570,23 @@ function contextEntriesSection(input: PaneInput, run: Run) {
   )
 }
 
-/** The workers whose finished tasks name the entry in used. */
-function usersOf(run: Run, id: number): WorkerId[] {
-  return [...new Set(run.tasks.flatMap(task => (task.state === 'done' && task.owner && task.used?.includes(id) ? [task.owner] : [])))]
-}
-
-/** A few workers by name; more as a count, so that a line stays short with eight agents. */
-function workersText(workers: readonly WorkerId[]): string {
-  if (!workers.length) return 'none'
-  return workers.length > NAMED_WORKERS ? `${workers.length} agents` : workers.join(' ')
-}
-
-/** The metrics of section 4.4 of the pane note, one short text each. */
-function contextMetrics(shared: SharedContext): string[] {
-  const { entries, all, delivered, deliveryMs, cited, received, failsHeeded, failsReceived, repeatedFails, perTask } = shared
-  return [
-    `${counted(all, 'entry', 'entries')}: ${counted(entries.fact, 'fact')}, ${counted(entries.fail, 'fail')}, ${counted(entries.interface, 'interface')}`,
-    ...(perTask ? [`${Number(perTask.toFixed(1))} for each done task`] : []),
-    `${delivered} of ${all} delivered${delivered ? `, median ${ago(deliveryMs)}` : ''}`,
-    `${cited} of ${counted(received, 'received entry', 'received entries')} cited`,
-    `${failsHeeded} of ${counted(failsReceived, 'fail')} heeded`,
-    `${counted(repeatedFails, 'fail')} repeated`,
-  ]
-}
-
-function counted(count: number, one: string, many = `${one}s`): string {
-  return `${count} ${count === 1 ? one : many}`
+/** The newest current entries whose words fit in the block. */
+function learningsOf(run: Run): Learning[] {
+  const learnings: Learning[] = []
+  let words = 0
+  for (const entry of currentContext(run, Infinity)) {
+    const users = [...new Set(run.tasks.flatMap(task => (task.state === 'done' && task.owner && task.used?.includes(entry.id) ? [task.owner] : [])))]
+    const use = users.length
+      ? `${entry.kind === 'fail' ? 'heeded' : 'used'} by ${users.join(', ')}`
+      : entry.seenBy.length
+        ? `got by ${entry.seenBy.length}`
+        : undefined
+    const learning = { entry, sentence: saidOf(entry.text) ?? entry.text, use }
+    words += wordCount(`${learning.sentence} ${entry.by} ${use ?? ''}`)
+    if (words > LEARNING_WORDS) break
+    learnings.push(learning)
+  }
+  return learnings
 }
 
 function resultSection(input: PaneInput, run: Run, result: ResultFacts | undefined) {
