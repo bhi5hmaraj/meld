@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentStatus, HookFailure, Register } from 'claude-code'
 
-import { compactWorker, controlRun, countStep, guardCall, markWorker, noteTime, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll, timeCall, workerVerdict } from '../core/actions'
+import { compactWorker, controlRun, countStep, guardCall, markWorker, noteTime, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stepAtStop, stopAll, timeCall, workerVerdict } from '../core/actions'
 import { CONTEXT_CAP } from '../core/board'
 import { cleanFolders } from '../core/clean'
 import type { Action, Boards, BoardSummary, Committed } from '../core/remote-store'
@@ -9,7 +9,7 @@ import { reportCommand } from '../core/report'
 import { resumeRun } from '../core/resume'
 import { viewRoot } from '../core/view'
 import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL, TOOL_PREFIX, TOOL_SPECS, WORKER_SYSTEM } from '../core/contract'
-import type { AgentState, FactsStore, Files, Io, RunRecord, RunRecords, Spawned, Store } from '../core/ports'
+import type { AgentState, Clock, FactsStore, Files, Io, RunRecord, RunRecords, Spawned, Store } from '../core/ports'
 import { MAX_AGENTS, parseStart, WORKER_TYPE } from '../core/options'
 import { adoptedOf, BOARD_STORE_TOOLS, boardVerdict, connectBoard, copyFromChannel, noBoardWarning, readRow, sessionRunner, sessionStore, storeNote, valueOf, withNote, workerOffer } from './board-store'
 import type { SessionBoard } from './board-store'
@@ -500,6 +500,30 @@ export const register: Register = on => {
     return next(keep ? { ...e, instructions: e.instructions ? `${e.instructions}\n\n${keep}` : keep } : e)
   }).catch(($, e, next) => next(e))
 
+
+  // The agent of a worker is about to stop: with a step for it on the board, it goes on in its turn (see stepAtStop).
+  on('classic.SubagentStop', async ($, e, next) => {
+    const io: Store & Clock = {
+      now: () => $.clock.now(),
+      sleep: ms => $.clock.sleep(ms),
+      ...sessionStore(
+        board,
+        {
+          read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
+          commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
+        },
+        {
+          read: () => read($, runRef),
+          write: change => update($, runRef, change),
+          readFacts: () => read($, factsRef),
+          writeFacts: facts => update($, factsRef, () => facts),
+        },
+      ),
+    }
+    const step = await stepAtStop(io, e.agent_id)
+    const stopped = await next(e)
+    return step && !stopped.block ? { ...stopped, block: step } : stopped
+  }).catch(($, e, next) => next(e))
 
   on('turn.complete', async ($, e, next) => {
     const io: Io = {

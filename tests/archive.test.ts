@@ -72,10 +72,11 @@ test('Discard writes the archive before it removes the folder', async () => {
   expect(io.commands.indexOf(OWNER_ONLY)).toBeLessThan(io.commands.indexOf(REMOVE_HOME))
 })
 
-test('Deliver with changes in the checkout refuses as before and writes no archive', async () => {
+test('Deliver with a change in the checkout that the result changes too refuses and writes no archive', async () => {
   const io = ioWith(ready())
   io.dirty = true
-  expect(await deliver(io)).toBe('Commit or stash the changes in your checkout first, then deliver.')
+  io.answers[`git diff --no-renames --name-only ${HEAD} ${FULL}`] = 'src/a.ts'
+  expect(await deliver(io)).toBe('Commit or stash your changes in src/a.ts first, then deliver: the result changes that file too.')
   expect(io.files[FILE]).toBeUndefined()
 })
 

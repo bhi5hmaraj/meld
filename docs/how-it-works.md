@@ -59,7 +59,7 @@ Name the model or type as `/meld --agents` does: `opus`, `Explore`, or `general-
 
 ## Deliver, archives and old runs
 
-Deliver merges the final commit into your branch with a merge commit, and removes the workspaces. Your checkout must have no uncommitted changes. If the merge stops, meld aborts it, and nothing changes.
+Deliver merges the final commit into your branch with a merge commit, and removes the workspaces. Your checkout can have uncommitted changes in files that the result does not change. With a change in a file that the result changes too, Deliver refuses and names the file. If the merge stops, meld aborts it, and nothing changes.
 
 Deliver refuses a final commit that lacks the commit of a task that is done on the board. The reply names the tasks, and you steer the run so that an agent merges them. The subject of the merge commit is `meld: ` and the summary of the final commit, cut at a space to 72 characters at most. With no summary, it is the first line of the request. The body holds the full request.
 
@@ -218,7 +218,11 @@ Claude Code ends an agent when the agent returns its result. At the end of each 
 
 A restarted agent reads its rules at its first board read. meld reads the agent list of Claude Code, so it finds an agent that ended when meld did not see the end. meld does not restart a stopped agent. After three restarts in a row that finish no task, meld stops the restarts and tells you. A finished task or a steer starts the count from zero. A steer goes as a message to each running agent, and it restarts the agents that ended.
 
-A restart waits for the end of a turn of your session. In a session with no person, nothing starts that turn, so idle agents wait ([#12](https://github.com/bhi5hmaraj/meld/issues/12)).
+Of the idle agents with no claim, meld starts first the agent that it started for open tasks the fewest times since its last claim. So an agent that stopped with no claim leaves the next start to another agent.
+
+A restart waits for the end of a turn of your session. One step does not wait. When an agent of the run is about to stop, meld looks for a step for its worker. With a step, and with room in its context (see the next section), the agent goes on in the same turn. With every task done and no integrator, this agent integrates.
+
+An idle agent of another worker still waits for a turn of your session, and so does a worker that needs a new agent ([#12](https://github.com/bhi5hmaraj/meld/issues/12)).
 
 ### A short session, then a new agent
 

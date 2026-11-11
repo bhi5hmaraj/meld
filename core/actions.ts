@@ -3,7 +3,7 @@ import * as board from './board'
 import { activityOf } from './metrics'
 import { COMPACT_KEEP, CONTROL_TOOLS, HAND_BACK, integrateDetail, integrateStep, missingWorkText, splitNudge, STATUS_VIEW, TOOL, wakeText, workerPrompt, workerRules } from './contract'
 import type { Control } from './contract'
-import { command, GIT_MIN, gitVersion, headCommit, isDirty, isOldGit, repoRoot } from './git'
+import { command, dirtyFiles, GIT_MIN, gitVersion, headCommit, isDirty, isOldGit, repoRoot } from './git'
 import type { Archive, Clock, CodeHost, CommandReply, FactsStore, Io, Runner, Spawned, Store, Surface, TokenUsage, ToolCall, ToolReply } from './ports'
 import { agentSpecOf, agentsOf, isAcpSpec, MAX_AGENTS, parseStart, WORKER_TYPE } from './options'
 import type { StartOptions } from './options'
@@ -12,6 +12,7 @@ import { claimable } from './tasks'
 import { refReply, shortView, taskLine, viewRoot } from './view'
 import type { ShortView } from './view'
 import { detectVcs, heldWork, runHome, vcsFor } from './vcs'
+import type { Vcs } from './vcs'
 import type { Prepared } from './vcs'
 import { listed } from './words'
 
@@ -993,7 +994,8 @@ export async function markWorker(io: Store & Clock, agentId: string | undefined,
   })
 }
 
-type Restart = { worker: Worker; step: string }
+/** A start of a worker with a step. `offer` marks a start for the open tasks: the worker claims one or leaves them. */
+type Restart = { worker: Worker; step: string; offer?: true }
 
 /**
  * One beat of the clock. The run of an idle worker has ended (the engine drops a spawned agent at its hand-back, and an
@@ -1017,7 +1019,7 @@ export async function restartIdleWorkers(io: Store & Clock & Runner & Surface, o
     if (!run || run.state !== 'working' || run.nudges > NUDGE_LIMIT) return []
     const restarts = restartsFor(run).filter(restart => owns(restart.worker))
     if (!restarts.length) return []
-    await writeRun(io, board.countNudge)
+    await writeRun(io, current => board.countBeat(current, offeredIn(restarts)))
     if (run.nudges === NUDGE_LIMIT) {
       io.toast(STUCK_TOAST)
       return []
@@ -1025,6 +1027,33 @@ export async function restartIdleWorkers(io: Store & Clock & Runner & Surface, o
     const started: WorkerId[] = []
     for (const { worker, step } of restarts) if (await restart(io, worker, wakeText(step))) started.push(worker.id)
     return started
+  } finally {
+    restarting = false
+  }
+}
+
+/**
+ * The agent of a worker is about to stop. Gives the step that meld would start the worker again with, when its agent
+ * can go on in its own session (board.keepsSession): the host keeps the agent in its turn with that step, so the step
+ * waits for no turn of the main session. Undefined lets the agent stop. A step counts as a beat of restartIdleWorkers.
+ */
+export async function stepAtStop(io: Store & Clock, agentId: string): Promise<string | undefined> {
+  if (restarting) return undefined
+  restarting = true
+  try {
+    const run = await readRun(io)
+    const worker = run ? board.workerOf(run, agentId) : undefined
+    if (!run || !worker || run.state !== 'working' || worker.state === 'stopped' || run.nudges >= NUDGE_LIMIT || !board.keepsSession(worker)) return undefined
+    const now = await io.now()
+    const next = restartsFor(board.setWorkerState(run, worker.id, 'idle', now), worker.id).find(restart => restart.worker.id === worker.id)
+    if (!next) return undefined
+    let goesOn = false
+    await writeRunOf(io, run.id, current => {
+      const resumed = board.resumeWorker(board.countBeat(current, offeredIn([next])), worker.id, now)
+      goesOn = !board.isFailure(resumed)
+      return board.isFailure(resumed) ? current : resumed.run
+    })
+    return goesOn ? wakeText(next.step) : undefined
   } finally {
     restarting = false
   }
@@ -1042,6 +1071,10 @@ async function settleEnded(io: Store & Clock & Runner, owns: (worker: Worker) =>
   await writeRun(io, current => board.settleEnded(current, agents, before, now, owns))
 }
 
+function offeredIn(restarts: readonly Restart[]): WorkerId[] {
+  return restarts.filter(restart => restart.offer).map(restart => restart.worker.id)
+}
+
 function everyWorker(): boolean {
   return true
 }
@@ -1051,21 +1084,30 @@ function everyWorker(): boolean {
  * again for one, or it planned the tasks, and the task stays open until its claim. Such a worker is pending, so the idle
  * workers start for the other open tasks only, and a ready task gets one agent. The integrator integrates and takes no
  * task, and a worker that is starting has no agent yet: neither is pending, so they hold back no idle worker.
+ *
+ * Of the idle workers, those with the fewest offers go first (Worker.offers): a worker that meld started for the open
+ * tasks, and that stopped with no claim, has left them to the others.
+ *
+ * `stopping` is the worker whose agent is about to stop (see stepAtStop). With no integrator yet, it leads: its agent
+ * can go on at once, and the agent of another worker waits for a turn of the main session.
  */
-function restartsFor(run: Run): Restart[] {
+function restartsFor(run: Run, stopping?: WorkerId): Restart[] {
   const live = run.workers.filter(worker => worker.state !== 'stopped')
   const idle = live.filter(worker => worker.state === 'idle')
   const everyoneIdle = idle.length === live.length
   const open = claimable(run.tasks)
   const owners = idle.filter(worker => claimsOf(run, worker).length && (everyoneIdle || hasNews(run, worker)))
   const pending = live.filter(worker => isPending(run, worker)).length
-  const takers = idle.filter(worker => !claimsOf(run, worker).length).slice(0, Math.max(0, open.length - pending))
+  const takers = idle
+    .filter(worker => !claimsOf(run, worker).length)
+    .sort((one, other) => (one.offers ?? 0) - (other.offers ?? 0))
+    .slice(0, Math.max(0, open.length - pending))
   const restarts = [
     ...owners.map(worker => ({ worker, step: `Your task is not done: ${titles(claimsOf(run, worker))}. Go on with it, or release it with a note.` })),
-    ...takers.map(worker => ({ worker, step: `These tasks are open: ${titles(open)}. Claim one and do it.` })),
+    ...takers.map(worker => ({ worker, step: `These tasks are open: ${titles(open)}. Claim one and do it.`, offer: true })),
   ]
   if (restarts.length || !everyoneIdle) return restarts
-  const lead = live.find(worker => worker.id === run.integrator) ?? live[0]
+  const lead = live.find(worker => worker.id === run.integrator) ?? live.find(worker => worker.id === stopping) ?? live[0]
   return lead ? [{ worker: lead, step: leadStep(run, lead) }] : []
 }
 
@@ -1265,16 +1307,28 @@ export async function deliver(io: Store & CodeHost & Clock & Archive): Promise<s
   if (!run || run.state !== 'ready' || !run.final) return 'There is no final commit to deliver.'
   const missing = lackingWork(run, await heldInFinal(io, run, run.final.commit))
   if (missing.length) return lackingDelivery(run.final.commit, missing)
-  if (await isDirty(io, run.repo)) return 'Commit or stash the changes in your checkout first, then deliver.'
+  const vcs = vcsFor(run.vcs)
+  const held = await changesInTheWay(io, run, vcs, run.final.commit)
+  if (held.length) return `Commit or stash your changes in ${listed(held)} first, then deliver: the result changes ${held.length === 1 ? 'that file' : 'those files'} too.`
   const now = await io.now()
   const unarchived = await archiveRun(io, board.markDelivered(run, now))
   if (unarchived) return unarchived
-  const vcs = vcsFor(run.vcs)
   const merged = await vcs.deliver(io, run, run.final.commit, deliveryMessage(run))
   if (!merged.ok) return `The merge stopped, and nothing changed: ${merged.err || merged.out}`
   await writeRunOf(io, run.id, current => board.markDelivered(current, now))
   await vcs.remove(io, run)
   return `Merged ${run.final.commit.slice(0, 7)} into your branch.`
+}
+
+/**
+ * The files with an uncommitted change in the checkout of the person that the result changes too. The merge leaves the
+ * other uncommitted changes as they are. When git cannot list the files of the result, each uncommitted change counts.
+ */
+async function changesInTheWay(io: CodeHost, run: Run, vcs: Vcs, commit: string): Promise<string[]> {
+  const uncommitted = await dirtyFiles(io, run.repo)
+  if (!uncommitted.length) return []
+  const changed = await vcs.changed(io, run, commit)
+  return changed ? uncommitted.filter(path => changed.includes(path)) : uncommitted
 }
 
 /** Why Deliver refuses a final commit that lacks the work of done tasks: the tasks, and a steer that makes a new final commit. */

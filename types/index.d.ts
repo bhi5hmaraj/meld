@@ -71,6 +71,8 @@ export type Worker = {
   context?: AgentContext
   /** When meld last gave the agent of this worker a new prompt in its own session. Absent for a new agent. */
   resumedAt?: number
+  /** How many times meld started this worker for the open tasks since its last claim. Absent for none. */
+  offers?: number
   /** The last sentence of the agent, at most 20 words, and when it said it. Absent until the agent writes text. */
   said?: string
   saidAt?: number

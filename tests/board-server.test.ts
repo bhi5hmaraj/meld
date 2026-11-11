@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { MockClock } from 'claude-code/testing'
 import type { McpToolResult, On, TurnUsage } from 'claude-code'
 
-import { addTasks, bindWorker, CONTEXT_CAP, isFailure, setWorkerState, startRun } from '../core/board'
+import { addTasks, bindWorker, claimTask, CONTEXT_CAP, isFailure, setWorkerState, startRun } from '../core/board'
 import type { RunRecord } from '../core/ports'
 import type { Change, Run, WorkerId } from '../types'
 import { HEAD } from './fake-io'
@@ -435,6 +435,23 @@ test('at the end of a turn, the plugin carries out what workers of meld mcp left
   await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
   expect(sent).toEqual(['agent-2: There is open work on the board.'])
   expect(toasts).toEqual(['meld: the result is ready.'])
+})
+
+test('an agent of a worker that is about to stop goes on with the open task: the plugin blocks the stop with the step', async ($, on) => {
+  const mcp = new FakeMcp()
+  answerTheEngine(on, mcp)
+  on('state.get', () => ({ value: { value: undefined, version: 0 } }))
+  on('state.set', () => ({ value: { isSet: true, version: 1 } }))
+  on('classic.SubagentStop', () => ({}))
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  const planned = runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }, { title: 'Docs' }] }, NOW))
+  const claimed = runOf(claimTask(planned, 'w1', 1, 1, NOW))
+  const roomy = { ...claimed, workers: claimed.workers.map(worker => ({ ...worker, context: { used: 40_000, size: WINDOW } })) }
+  mcp.boards[SESSION] = { run: roomy, version: 1, owner: SESSION, ownerAt: NOW }
+  const stop = { agent_id: 'agent-2', agent_type: 'meld:worker', agent_transcript_path: '/tmp/agent-2.jsonl', stop_hook_active: false }
+  expect((await $.classic.SubagentStop(stop)).block).toContain('These tasks are open: #2 Docs. Claim one and do it.')
+  expect(mcp.boards[SESSION]?.run?.workers[1]).toMatchObject({ state: 'working', activity: 'goes on', offers: 1 })
+  expect((await $.classic.SubagentStop({ ...stop, agent_id: 'agent-9' })).block).toBeUndefined()
 })
 
 test('without meld mcp, a start that starts no worker gives no warning about the board file', async ($, on) => {

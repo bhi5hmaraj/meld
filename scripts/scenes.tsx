@@ -76,7 +76,7 @@ function shared(run: Run): Run {
     { by: 'w3' as const, kind: 'interface', text: "useTheme(): 'light' | 'dark' reads the stored theme." },
   ]
   const added = entries.reduce((current, entry) => runOf(shareEntry(current, entry.by, { kind: entry.kind, text: entry.text }, NOW - 5 * MINUTE)), run)
-  return WORKERS.reduce((current, id) => boardFor(current, id).run, added)
+  return WORKERS.reduce((current, id) => boardFor(current, id, NOW).run, added)
 }
 
 function checked(run: Run): Run {
