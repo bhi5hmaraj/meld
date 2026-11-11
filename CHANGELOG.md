@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Board reads over the channel.** The plugin reads the run of its board over the Unix socket of `meld mcp`. Claude Code limits the size of an MCP tool result, and a run of about 20 tasks passed that limit: each board call then failed with a JSON parse error, and the agents stalled. ([#15](https://github.com/bhi5hmaraj/meld/issues/15))
+- **Short board replies.** A board reply has one line for each task, the claimed tasks of the reader in full, and the request only at the first read. A long item comes as its first words with a ref, and `board` with `ref` gives it whole. On the board of a run with 29 tasks, a read with no news went from 29,500 to 4,900 characters.
+- **The board as files.** `meld mcp` writes the board to `/tmp/meld/<run>/board/`, and an agent searches it with `rg`, `jq`, `sed -n` or `head`. meld allows these reads for an agent of the run, with no person to ask.
 - **A higher context cap.** A `meld:worker` compacts before 500k tokens, and an idle worker past 500k gets a fresh agent. With the cap of 150k, a worker compacted every few minutes, as it holds about 70k tokens just after a compaction.
 - **A parked session connects late.** The desktop app can start a session as a parked spare, before its MCP servers run. meld connected to `meld mcp` only at the start of the session, so such a session refused every Codex worker, and its run had no board file. Now each meld command, start tool and press of the pane connects again while the session has no board server. A run that lives in the session state stays there.
 - **Agents share the machine.** Before a heavy command, the rules tell each agent to look at the load, the free memory and the swap, and to start it only when the machine has room. An agent stops a command of its own that makes the swap grow. Two type-aware lints at once had pushed a full machine into swap, and a lint of one minute ran for more than 25.

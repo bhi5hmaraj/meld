@@ -9,8 +9,8 @@
 import { Peer, readLines } from './json-rpc'
 
 type Server = { command: string; args: string[]; env: { name: string; value: string }[] }
-type BoardTask = { id: number; title: string; detail: string; state: string; owner?: string; version: number; needs?: number[] }
-type BoardView = { you: { id: string; path: string; ref: string }; request: string; state: string; taskList: number; tasks: BoardTask[]; integrator?: string }
+type BoardTask = { id: number; title: string; state: string; owner?: string; version: number; needs?: number[] }
+type BoardView = { you: { id: string; path: string; ref: string }; request?: string; state: string; taskList: number; tasks: BoardTask[]; integrator?: string }
 type Reply = { ok?: boolean; error?: string }
 
 const SESSION = 'stub-worker-session'
@@ -80,21 +80,27 @@ async function work(): Promise<void> {
 /** Plans one task for each file that the request names after "files:", when the board has no task. The first plan wins. */
 async function plan(): Promise<void> {
   const view = await call<BoardView>('board')
-  const files = PLAN.exec(view.request)?.[1]?.split(',').map(file => file.trim()).filter(Boolean) ?? []
+  const request = view.request ?? (await whole('request'))
+  const files = PLAN.exec(request)?.[1]?.split(',').map(file => file.trim()).filter(Boolean) ?? []
   if (view.tasks.length || !files.length) return
   await call('add_tasks', { seen: view.taskList, tasks: files.map(file => ({ title: `Add ${file}`, detail: file })) })
 }
 
-/** The task this worker claimed, or the first ready open task whose detail names a file, while the run works and some task is not done. */
+/** The task this worker claimed, or the first ready open task, while the run works and some task is not done. */
 async function openTask(): Promise<BoardTask | undefined> {
   for (let waited = 0; waited < WAIT_MS; waited += POLL_MS) {
     const view = await call<BoardView>('board')
-    const open = view.tasks.find(task => (task.state === 'claimed' && task.owner === view.you.id) || (task.state === 'open' && task.detail && isReady(view.tasks, task)))
+    const open = view.tasks.find(task => (task.state === 'claimed' && task.owner === view.you.id) || (task.state === 'open' && isReady(view.tasks, task)))
     const allDone = view.tasks.length > 0 && view.tasks.every(task => task.state === 'done')
     if (open || view.state !== 'working' || allDone) return open
     await Bun.sleep(POLL_MS)
   }
   return undefined
+}
+
+/** The whole text of an item of the board: a board reply carries a line for each task, and the request only at the first read. */
+async function whole(ref: string): Promise<string> {
+  return (await call<{ text?: string }>('board', { ref })).text ?? ''
 }
 
 function isReady(tasks: readonly BoardTask[], task: BoardTask): boolean {
@@ -103,7 +109,7 @@ function isReady(tasks: readonly BoardTask[], task: BoardTask): boolean {
 
 async function doTask(task: BoardTask): Promise<void> {
   if (task.state === 'open' && !(await call<Reply>('claim', { task: task.id, version: task.version })).ok) return
-  const name = FILE_NAME.exec(task.detail)?.[0] ?? `task-${task.id}.txt`
+  const name = FILE_NAME.exec(await whole(`tasks/${task.id}`))?.[0] ?? `task-${task.id}.txt`
   const path = `${cwd}/${name}`
   if (!(await allowed(`Write ${path}`, 'edit', path))) return
   await Bun.write(path, `${task.title}\n`)

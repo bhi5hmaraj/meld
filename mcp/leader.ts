@@ -1,15 +1,17 @@
 import { join } from 'node:path'
 
-import type { Activity } from '../types'
+import type { Activity, Run } from '../types'
 import { acpRefusal, markWorker, noteTime, ownedByAcp, recordActivity, recordContext, recordSleep, restartIdleWorkers } from '../core/actions'
 import { workerOf } from '../core/board'
 import { activityOf } from '../core/metrics'
 import { WORKER_SYSTEM } from '../core/contract'
 import { ACP_AGENT_PREFIX, ACP_AGENTS, ACP_PREFIX } from '../core/options'
 import type { AgentState, Runner, SpawnArgs, Spawned } from '../core/ports'
+import { viewFiles, viewRoot } from '../core/view'
 import { AcpAgent } from './acp'
 import type { AcpUpdate, McpServerSpec, PermissionAsk } from './acp'
 import { mcpIo } from './io'
+import { writeMirror } from './mirror'
 import type { SqliteBoards } from './sqlite-store'
 
 /** How often the runner takes the messages that workers of meld mcp left for its ACP agents, and starts idle ACP workers again. */
@@ -20,6 +22,8 @@ const BIND_POLL_MS = 50
 const MAIN = join(import.meta.dir, 'main.ts')
 
 export type RunnerOptions = {
+  /** Where the files of the board of a run go, for a spec; by default, the folder that the board replies name. */
+  viewRoot?: (run: Run) => string | undefined
   /** The ACP agents by name, with their commands: ACP_AGENTS when absent. */
   commands?: Readonly<Record<string, readonly string[]>>
   onUpdate?: (agentId: string, update: AcpUpdate) => void
@@ -51,6 +55,8 @@ export class AcpRunner {
   private leading: Lead | undefined
   private closed = false
   private lastBeat = Date.now()
+  /** The version of the led board that its files show. */
+  private mirrored: number | undefined
 
   constructor(
     private readonly boards: SqliteBoards,
@@ -223,6 +229,15 @@ export class AcpRunner {
     if (this.leading) await recordSleep(mcpIo(this.boards, this.leading.board), from, this.lastBeat)
     await this.deliverMessages()
     if (this.leading) await this.restartIdle(this.leading.board)
+    if (this.leading && this.leads(this.leading.board)) this.mirror(this.leading.board)
+  }
+
+  /** Writes the files of the board when its version changed: the agents search them, so a board reply stays short. */
+  private mirror(board: string): void {
+    const { run, version } = this.boards.read(board)
+    if (!run || version === this.mirrored) return
+    const root = (this.options.viewRoot ?? (one => viewRoot({ store: 'file' }, one)))(run)
+    if (root && writeMirror(root, viewFiles(run), version)) this.mirrored = version
   }
 
   private updated(board: string, agentId: string, update: AcpUpdate): void {

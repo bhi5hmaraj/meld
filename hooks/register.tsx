@@ -1,12 +1,13 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentStatus, HookFailure, Register } from 'claude-code'
 
-import { compactWorker, controlRun, countStep, guardCall, markWorker, noteTime, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll, timeCall, vcsVerdict } from '../core/actions'
+import { compactWorker, controlRun, countStep, guardCall, markWorker, noteTime, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll, timeCall, workerVerdict } from '../core/actions'
 import { CONTEXT_CAP } from '../core/board'
 import { cleanFolders } from '../core/clean'
 import type { Action, Boards, BoardSummary, Committed } from '../core/remote-store'
 import { reportCommand } from '../core/report'
 import { resumeRun } from '../core/resume'
+import { viewRoot } from '../core/view'
 import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL, TOOL_PREFIX, TOOL_SPECS, WORKER_SYSTEM } from '../core/contract'
 import type { AgentState, FactsStore, Files, Io, RunRecord, RunRecords, Spawned, Store } from '../core/ports'
 import { MAX_AGENTS, parseStart, WORKER_TYPE } from '../core/options'
@@ -159,10 +160,12 @@ export const register: Register = on => {
     decision: 'deny',
   }))
 
-  // A worker runs git -C or jj -R with its own folder, and the engine asks a person for that form: see vcsVerdict.
-  on('tool.check', { tool: 'Bash' }, async ($, e, next) => vcsVerdict(await next(e), e.agentId, String((e.input as { command?: unknown }).command ?? ''), await read($, runRef))).catch(
-    ($, e, next) => next(e),
-  )
+  // A worker runs git -C or jj -R in its own folder, and searches the files of its board: see workerVerdict.
+  on('tool.check', { tool: ['Bash', 'Read', 'Grep', 'Glob'] }, async ($, e, next) => {
+    const run = await read($, runRef)
+    const root = run ? viewRoot({ store: board.server ? 'file' : 'session' }, run) : undefined
+    return workerVerdict(await next(e), { agentId: e.agentId, tool: String(e.tool), input: e.input }, run, root)
+  }).catch(($, e, next) => next(e))
 
   // A worker spawn is an Agent call that meld raises, and auto mode cannot link it to the person: see spawnVerdict.
   on('tool.check', { tool: 'Agent' }, async ($, e, next) => spawnVerdict(await next(e), next.origin.plugin, await read($, runRef))).catch(

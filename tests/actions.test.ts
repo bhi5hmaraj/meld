@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
-import { compactWorker, costTokens, deliver, discard, guardCall, markWorker, recordSleep, refreshFacts, restartIdleWorkers, serveTool, SLEEP_GAP_MS, SPAWN_APPROVAL, spawnVerdict, startFromView, startRun, steerRun, stopOne, VCS_APPROVAL, vcsVerdict } from '../core/actions'
+import { compactWorker, costTokens, deliver, discard, guardCall, markWorker, recordSleep, refreshFacts, restartIdleWorkers, serveTool, SLEEP_GAP_MS, SPAWN_APPROVAL, spawnVerdict, startFromView, startRun, steerRun, stopOne, VCS_APPROVAL, vcsVerdict, VIEW_APPROVAL, viewVerdict } from '../core/actions'
 import { addTasks, bindWorker, claimTask, CONTEXT_CAP, declareFinal, isFailure, setActivity, shareEntry, startRun as startBoard, steer, stopRun, stopWorker, takeIntegration } from '../core/board'
 import { COMPACT_KEEP } from '../core/contract'
 import { JJ_LANE_TEMPLATE, JJ_RESOLVE_TEMPLATE } from '../core/vcs'
@@ -1085,4 +1085,53 @@ test('after its agent compacts, the next board read of a worker gives its rules 
 test('the compaction of an agent that is no worker changes nothing', async () => {
   const io = ioWith(working())
   expect(await compactWorker(io, 'agent-9')).toBeUndefined()
+})
+
+const BOARD_FILES = '/tmp/meld/r1/board'
+const VIEW_READS = [
+  `rg -n "theme" ${BOARD_FILES}/log.jsonl`,
+  `jq -c 'select(.kind == "fail") | .text' ${BOARD_FILES}/context.jsonl`,
+  `sed -n '10,40p' ${BOARD_FILES}/tasks/3.md`,
+  `head -n 20 ${BOARD_FILES}/tasks.md`,
+  `ls ${BOARD_FILES}/tasks`,
+]
+const NOT_VIEW_READS = [
+  `cat ${BOARD_FILES}/tasks.md /repo/.env`,
+  `cat ${BOARD_FILES}/../../r2/board/tasks.md`,
+  `rg secret .env ${BOARD_FILES}`,
+  `sed -n 'w /tmp/x' ${BOARD_FILES}/tasks.md`,
+  `sed -i 's/a/b/' ${BOARD_FILES}/tasks.md`,
+  `jq env ${BOARD_FILES}/log.jsonl`,
+  `jq --rawfile x /etc/hosts . ${BOARD_FILES}/log.jsonl`,
+  `cat ${BOARD_FILES}/tasks.md > /tmp/x`,
+  `rg theme ${BOARD_FILES} | sh`,
+  `rm -rf ${BOARD_FILES}`,
+  'rg theme',
+]
+
+/** The verdict for worker w2 on a call that the engine asks a person for. */
+function asked(tool: string, input: object) {
+  return viewVerdict(ASK, 'agent-2', tool, input, working(), BOARD_FILES)
+}
+
+test('meld allows a worker a read of the files of its board with one search command', () => {
+  for (const command of VIEW_READS) expect(asked('Bash', { command })).toEqual({ decision: 'allow', reason: VIEW_APPROVAL })
+})
+
+test('meld allows a worker the read tools on the files of its board', () => {
+  expect(asked('Read', { file_path: `${BOARD_FILES}/tasks/3.md` })).toEqual({ decision: 'allow', reason: VIEW_APPROVAL })
+  expect(asked('Grep', { pattern: 'theme', path: BOARD_FILES })).toEqual({ decision: 'allow', reason: VIEW_APPROVAL })
+})
+
+test('the ask stands for a read that also reaches another file, for a write, and for shell syntax', () => {
+  for (const command of NOT_VIEW_READS) expect(asked('Bash', { command })).toBe(ASK)
+  expect(asked('Read', { file_path: '/repo/.env' })).toBe(ASK)
+  expect(asked('Read', { file_path: `${BOARD_FILES}/../../../etc/hosts` })).toBe(ASK)
+})
+
+test('the ask on a read of the board files stands for an agent that is no worker, and where no host writes the files', () => {
+  const input = { command: `rg theme ${BOARD_FILES}` }
+  expect(viewVerdict(ASK, 'agent-9', 'Bash', input, working(), BOARD_FILES)).toBe(ASK)
+  expect(viewVerdict(ASK, undefined, 'Bash', input, working(), BOARD_FILES)).toBe(ASK)
+  expect(viewVerdict(ASK, 'agent-2', 'Bash', input, working(), undefined)).toBe(ASK)
 })

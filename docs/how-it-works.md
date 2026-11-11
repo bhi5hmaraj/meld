@@ -99,6 +99,23 @@ The agents use eleven board tools: `board`, `add_tasks`, `claim`, `split`, `rele
 
 With `view: "status"`, `board` gives the main session a short board, and with no view the full board. The short board has the run state, the task counts and the log entries since the last status read. A task row has the id, title, state, owner, and the needs that are not done. A worker row has the id, state, claims, and the seconds since the last call.
 
+### Short replies and the board files
+
+Each model call of an agent reads its whole context again, so a long board reply costs tokens at each later call. A board reply carries what changes and what is short:
+
+- **tasks:** one line for each task, with its id, title, state, owner, version and needs.
+- **yours:** the tasks that the reader claims, in full.
+- **news and context:** the entries that are new for the reader. A text over 600 characters comes as its first words, its size and a ref.
+- **request and steers:** at the first read only, with the rules. A new steer comes in each reply until the agent saw it.
+
+A ref names one whole item: `request`, `tasks`, `tasks/<id>`, `log/<id>` or `context/<id>`. `board` with `ref` gives the item. One function makes the text of each item, for the reply, for the read by ref and for the files, so the three cannot differ.
+
+With Bun, `meld mcp` also writes the items as files in `/tmp/meld/<run>/board/`: `request.md`, `tasks.md`, `tasks/<id>.md`, `context.jsonl` and `log.jsonl`. An agent searches them with one Bash command, for example `rg`, `jq`, `sed -n` or `head`, and takes only the lines that it needs.
+
+The process of `meld mcp` that leads the board writes the files when the board changes, at most half a second later. Each version is a folder, and `board` is a link that moves to the new version in one step. So a reader sees one whole version. The files can be older than the board by a moment. That is safe: a claim and a finish go through the board tools, which check the version.
+
+The plugin reads the run of its board over the Unix socket of `meld mcp`. Claude Code limits the size of an MCP tool result, and a run of about 20 tasks passes that limit.
+
 ### Versions
 
 The task list has a version. An agent adds its tasks in one call, with the version of its last board read. If another agent added tasks since that read, the add fails and shows the current tasks. A claim is a compare-and-set on the task version, so two agents cannot claim one task.
@@ -185,7 +202,7 @@ meld has three `tool.check` hooks. Claude Code runs the `tool.check` hooks of al
 
 - **The board check** allows the calls of meld to `meld mcp`, and refuses the calls of agents, of the main session and of other plugins. Without it, the other plugin or the mode of your session decides each call. A call of meld can wait for your answer or fail, and a call of an agent is not refused.
 - **The Agent check** approves each start and restart of an agent in auto mode, while a run that you started is live. Without it, auto mode refuses these starts, and the pane shows the reason under the header.
-- **The version control check** allows `git -C` and `jj -R` in the own folder of an agent, for the commands of the rules. Without it, Claude Code asks you for each such call, and a run with no person cannot commit.
+- **The worker check** allows two kinds of calls of an agent. The first is `git -C` and `jj -R` in its own folder, for the commands of the rules. The second is a read of the board files: one search command (`rg`, `grep`, `jq`, `sed -n`, `head`, `tail`, `cat`, `wc` or `ls`) or a read tool, on paths in the folder of the board files and on no other path. Without it, Claude Code asks you for each such call, and a run with no person cannot commit or search its board.
 
 The edit guard is a `tool.call` hook, and a skip in `tool.check` does not stop it.
 

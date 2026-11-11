@@ -37,6 +37,12 @@ test('the rules tell a worker to look at the load, the memory and the swap befor
   expect(rules).toContain('starves the machine: stop it')
 })
 
+test('the rules tell a worker that a board reply is short, and how to get a whole item', () => {
+  const rules = workerRules(runOn('git'), 'w1')
+  expect(rules).toContain('12. A board reply is short.')
+  expect(rules).toContain(`${TOOL.board} and its ref`)
+})
+
 test('the rules name every other worker', () => {
   const rules = workerRules(runOn('git', 3), 'w2')
   expect(rules).toContain('w1 (meld/r1/w1)')

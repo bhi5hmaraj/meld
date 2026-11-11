@@ -153,6 +153,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     inputSchema: {
       type: 'object',
       properties: {
+        ref: { type: 'string', description: 'Gives the whole of one item: request, tasks, tasks/<id>, log/<id> or context/<id>.' },
         view: {
           type: 'string',
           enum: [STATUS_VIEW],
@@ -308,6 +309,7 @@ The rules for a meld worker:
 9. A board reply can carry a notice: the person changed the request. Follow the newest instruction.
 10. After ${TOOL.finishTask}, hand back: end your run. Do not claim the next task: meld starts a new agent for you when a task is ready. End each turn with one line, for example: finished #4, commit 4a0bde04. The board keeps the detail, and the person reads each line in the main session. Do not wait with sleep or loops. When nothing is left for you, end your run the same way. When there is new work, meld starts a new agent for you in your folder, and it reads the board to go on.
 11. A board error (STALE_VERSION, TAKEN, NOT_OWNER, WAITING, CONFLICT, INVALID) fails only that call. Read the board again, fix the call, and go on. WAITING names the task that the claim waits for. Claim another task.
+12. A board reply is short. tasks has one line for each task, and yours has the tasks that you claim, in full. A long item comes as its first words with a ref. Get the whole item with ${TOOL.board} and its ref, or search the files of the board that the reply names in more, with rg, jq, sed -n or head. Do not print a whole file.
 
 Share the machine. The other workers run on this machine too. A type check, a type-aware lint, a test runner or a build can start a worker for each core and hold gigabytes of memory. Your folder has its own dependencies, so two such commands share no memory. When memory runs out, the machine swaps, and a type check runs many times slower, so the slow commands overlap more and starve each other.
 - Before a heavy command, look at the machine: the load against the number of cores (uptime, and nproc or sysctl -n hw.ncpu), the free memory and the swap (free -m, or vm_stat and sysctl vm.swapusage).
