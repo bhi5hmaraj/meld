@@ -49,6 +49,11 @@ export type Vcs = {
    * the person for git, in the store of the run for jj. A commit that git cannot read counts as missing.
    */
   missing(io: CodeHost, run: Run, final: string, commits: readonly string[]): Promise<string[]>
+  /**
+   * The commits that `commit` took from the lanes of other workers: those that came in through a merge. git counts them
+   * where `missing` reads. Undefined when git cannot count them.
+   */
+  taken(io: CodeHost, run: Run, commit: string): Promise<number | undefined>
   /** The integration line as a worker names it in its folder: a branch for git, a bookmark for jj. */
   lineName(run: Run): string
   /**
@@ -212,6 +217,20 @@ async function missingIn(io: CodeHost, gitDir: string, final: string, commits: r
   return missing
 }
 
+/**
+ * The commits since the base less those of the first parent, in the git store `gitDir`.
+ * ponytail: a fast-forward merge of another lane puts its commits on the first parent, so they count as own.
+ */
+async function takenIn(io: CodeHost, gitDir: string, base: string, commit: string): Promise<number | undefined> {
+  const count = async (...flags: string[]) => {
+    const counted = await git(io, gitDir, ['rev-list', '--count', '--no-merges', ...flags, `${base}..${commit}`])
+    return counted.ok && /^\d+$/.test(counted.out) ? Number(counted.out) : undefined
+  }
+  const all = await count()
+  const own = await count('--first-parent')
+  return all === undefined || own === undefined ? undefined : all - own
+}
+
 const GIT: Vcs = {
   kind: 'git',
   commitHint: 'Commit your work, then give HEAD or the commit hash.',
@@ -260,6 +279,8 @@ const GIT: Vcs = {
   result: (io, run, commit) => gitChange(io, run.repo, run.base, commit),
 
   missing: (io, run, final, commits) => missingIn(io, run.repo, final, commits),
+
+  taken: (io, run, commit) => takenIn(io, run.repo, run.base, commit),
 
   lineName: gitLine,
 
@@ -355,6 +376,8 @@ const JJ: Vcs = {
 
   /** jj keeps each commit in the git store of the run, so git reads the ancestors there. */
   missing: (io, run, final, commits) => missingIn(io, storeOf(run.id), final, commits),
+
+  taken: (io, run, commit) => takenIn(io, storeOf(run.id), run.base, commit),
 
   lineName: () => LINE_BOOKMARK,
 

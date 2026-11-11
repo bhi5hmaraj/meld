@@ -378,3 +378,30 @@ test('jj removal keeps the repository config of another meld run', async () => {
   expect(io.commands).not.toContain('rm -rf -- /root/.config/jj/repos/42ee0e08c27ca3c2d862')
   expect(io.commands).toContain('rm -rf -- /tmp/meld/r1')
 })
+
+const ALL_COMMITS = `git rev-list --count --no-merges ${HEAD}..${FULL}`
+const OWN_COMMITS = `git rev-list --count --no-merges --first-parent ${HEAD}..${FULL}`
+
+test('git counts the commits taken from other lanes: the commits since the base less the commits of the first parent', async () => {
+  const io = new FakeIo()
+  io.answers[ALL_COMMITS] = '5'
+  io.answers[OWN_COMMITS] = '3'
+  expect(await vcsFor('git').taken(io, runOn('git'), FULL)).toBe(2)
+  expect(io.cwds[ALL_COMMITS]).toBe('/repo')
+})
+
+test('jj counts the commits taken from other lanes in the store of the run', async () => {
+  const io = new FakeIo()
+  io.answers[ALL_COMMITS] = '4'
+  io.answers[OWN_COMMITS] = '4'
+  expect(await vcsFor('jj').taken(io, runOn('jj'), FULL)).toBe(0)
+  expect(io.cwds[OWN_COMMITS]).toBe(STORE)
+})
+
+test('a count of taken commits that git cannot read is undefined', async () => {
+  const io = new FakeIo()
+  io.answers[ALL_COMMITS] = '5'
+  io.failing = [OWN_COMMITS]
+  expect(await vcsFor('git').taken(io, runOn('git'), FULL)).toBeUndefined()
+  expect(await vcsFor('git').taken(new FakeIo(), runOn('git'), FULL)).toBeUndefined()
+})
