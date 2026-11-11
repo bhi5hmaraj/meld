@@ -458,7 +458,7 @@ export const register: Register = on => {
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
     }
     const window = await $.session.usage().then(usage => usage.context?.window, () => undefined)
-    await countStep(io, e.agentId, response.usage, window).catch(() => undefined)
+    await countStep(io, e.agentId, response.usage, window, response.answer).catch(() => undefined)
     return response
   })
 
