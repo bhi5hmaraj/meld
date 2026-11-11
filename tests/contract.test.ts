@@ -30,6 +30,13 @@ test('the rules tell a worker to write only in its own folder', () => {
   expect(workerRules(runOn('git'), 'w1')).toContain('1. Write only in your own folder.')
 })
 
+test('the rules tell a worker to look at the load, the memory and the swap before a heavy command, and to stop one that starves the machine', () => {
+  const rules = workerRules(runOn('git'), 'w1')
+  expect(rules).toContain('Before a heavy command, look at the machine')
+  expect(rules).toContain('Start it only when the load is under the number of cores and the swap does not grow.')
+  expect(rules).toContain('starves the machine: stop it')
+})
+
 test('the rules name every other worker', () => {
   const rules = workerRules(runOn('git', 3), 'w2')
   expect(rules).toContain('w1 (meld/r1/w1)')

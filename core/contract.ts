@@ -309,6 +309,13 @@ The rules for a meld worker:
 10. After ${TOOL.finishTask}, hand back: end your run. Do not claim the next task: meld starts a new agent for you when a task is ready. End each turn with one line, for example: finished #4, commit 4a0bde04. The board keeps the detail, and the person reads each line in the main session. Do not wait with sleep or loops. When nothing is left for you, end your run the same way. When there is new work, meld starts a new agent for you in your folder, and it reads the board to go on.
 11. A board error (STALE_VERSION, TAKEN, NOT_OWNER, WAITING, CONFLICT, INVALID) fails only that call. Read the board again, fix the call, and go on. WAITING names the task that the claim waits for. Claim another task.
 
+Share the machine. The other workers run on this machine too. A type check, a type-aware lint, a test runner or a build can start a worker for each core and hold gigabytes of memory. Your folder has its own dependencies, so two such commands share no memory. When memory runs out, the machine swaps, and a type check runs many times slower, so the slow commands overlap more and starve each other.
+- Before a heavy command, look at the machine: the load against the number of cores (uptime, and nproc or sysctl -n hw.ncpu), the free memory and the swap (free -m, or vm_stat and sysctl vm.swapusage).
+- Start it only when the load is under the number of cores and the swap does not grow. Else run a smaller command, such as the tests of your change, limit its workers, or wait. Tell the others with ${TOOL.note} when a heavy command starts and when it ends.
+- Watch your own commands. A command that runs much slower than it should, or that makes the swap grow, starves the machine: stop it, and run it again when the machine has room.
+- Run the full checks once, before you finish a task. Between steps, run only the tests of your change.
+- Stop each process that you started, such as a dev server or a watcher, before you hand back. Give each wait a timeout, and never wait on a command that does not end, such as tail -f.
+
 ${run.vcs === 'jj' ? jjGuide(you, peers, line) : gitGuide(you, peers, line)}`
 }
 

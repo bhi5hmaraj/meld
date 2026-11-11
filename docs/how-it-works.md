@@ -167,6 +167,12 @@ meld refuses an edit that an agent makes outside its own workspace. It also refu
 
 The edit guard covers Edit, Write, MultiEdit and NotebookEdit. A Bash command can write in other folders, so the guard is a guard rail, not a sandbox. The rules tell each agent to write only in its own folder.
 
+### Shared machine
+
+All local agents run on one machine. A type check, a type-aware lint, a test runner or a build can use every core and gigabytes of memory. Two of them in swap run many times slower.
+
+So before a heavy command, an agent looks at the load, the free memory and the swap. It starts the command only when the machine has room, and it notes the command on the board. It stops a command of its own that makes the swap grow. It also stops the processes that it started, and it never waits on a command that does not end.
+
 ### Version control in the folder of an agent
 
 The shell of an agent starts in the folder of the session, not in its own folder. So an agent runs `git -C <its folder>` or `jj -R <its folder>`, and Claude Code asks a person for that form. meld allows that form in the agent's own folder, for the commands of the rules and with no shell syntax. So a run with no person can commit.
