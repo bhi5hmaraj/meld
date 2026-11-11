@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
 import { compactWorker, costTokens, deliver, discard, guardCall, markWorker, recordSleep, refreshFacts, restartIdleWorkers, serveTool, SLEEP_GAP_MS, SPAWN_APPROVAL, spawnVerdict, startFromView, startRun, steerRun, stopOne, VCS_APPROVAL, vcsVerdict } from '../core/actions'
-import { addTasks, bindWorker, claimTask, CONTEXT_CAP, declareFinal, isFailure, setActivity, startRun as startBoard, steer, stopRun, stopWorker, takeIntegration } from '../core/board'
+import { addTasks, bindWorker, claimTask, CONTEXT_CAP, declareFinal, isFailure, setActivity, shareEntry, startRun as startBoard, steer, stopRun, stopWorker, takeIntegration } from '../core/board'
 import { COMPACT_KEEP } from '../core/contract'
 import { JJ_LANE_TEMPLATE, JJ_RESOLVE_TEMPLATE } from '../core/vcs'
 import type { AgentSpec, Change, Run, VcsKind, WorkerId } from '../types'
@@ -531,6 +531,15 @@ test('finish_task shows its interfaces and the work it left in the context, with
       { kind: 'interface', by: 'w1', text: '#1: tokens(): Record<string, string>', commit: FULL },
     ],
   })
+})
+
+test('finish_task keeps in used the ids of the shared entries that helped, once each, and drops ids that name no entry', async () => {
+  const planned = runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }] }, NOW))
+  const shared = runOf(shareEntry(planned, 'w2', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW))
+  const io = ioWith(runOf(claimTask(shared, 'w1', 1, 1, NOW)))
+  io.answers['git rev-parse --verify --quiet HEAD^{commit}'] = FULL
+  await serveTool(io, call({ tool: 'mcp__meld__finish_task', task: 1, version: 2, commit: 'HEAD', summary: 'Tokens', used: [1, 1, 9, 'x'], agentId: 'agent-1' }))
+  expect(io.current?.tasks[0]?.used).toEqual([1])
 })
 
 test('a final commit that does not exist is refused', async () => {
