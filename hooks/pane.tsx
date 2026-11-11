@@ -9,7 +9,7 @@ import { STEER_PRESETS } from '../core/contract'
 import { agentColor, BAR_HEIGHT, BAR_WIDTH, barCells, LANE_HEIGHT, LANE_WIDTH, laneAlt, laneGlyphs, laneSvg, partsBarSvg, ROW_BAR_WIDTH, STATUS } from './drawing'
 import type { Io } from '../core/ports'
 import { agentsOf, formatStart, isAcpSpec, MAX_AGENTS, MODELS, WORKER_TYPE } from '../core/options'
-import { ownersOf, partsOf, percentLabel, percentOf, requestParts, requestPercent, topTasks } from '../core/progress'
+import { leavesOf, ownersOf, partsOf, percentLabel, requestParts, requestPercent, topTasks } from '../core/progress'
 import type { Parts } from '../core/progress'
 import { childrenOf, claimable, waitsFor } from '../core/tasks'
 
@@ -70,6 +70,10 @@ const TITLE_WORDS = 8
 const BAR_RUNS = 3
 /** The words of the rows: the progress block holds 100 words with its heading, the bar and percent of the request, and the count of the rows left out. */
 const ROW_WORDS = 90
+/** The words of the line "N done" that the done rows fold into. */
+const FOLD_WORDS = 2
+/** A ready task that waits longer than this while a worker is idle shows in the warning colour. */
+const READY_WARN_MS = 300_000
 const REQUEST_CHARS = 72
 const SKIPPED_ARGUMENT = /^(?:-|\d|\.$|[|&;<>]+$)/
 const AGENT_OPTIONS = Array.from({ length: MAX_AGENTS }, (_, index) => ({ value: String(index + 1), label: `${index + 1}` }))
@@ -328,8 +332,15 @@ function warningOf(run: Run, worker: Worker, now: number): string | undefined {
   return undefined
 }
 
+/** The state of a row: a leaf by its own state, a parent by the leaves under it. Each level of the tree shows the groups in this order. */
+type RowGroup = 'claimed' | 'ready' | 'waiting' | 'done'
+const GROUP_ORDER: Record<RowGroup, number> = { claimed: 0, ready: 1, waiting: 2, done: 3 }
+/** The state of a leaf in words, or "N of M done" for a parent. */
+type Word = { text: string; color?: string }
 /** One row of the progress. isOpen: the rows of its children show under it. */
-type Row = { task: Task; depth: number; isParent: boolean; isOpen: boolean; owners: WorkerId[]; waits?: number }
+type Row = { task: Task; depth: number; isParent: boolean; isOpen: boolean; group: RowGroup; owners: WorkerId[]; word: Word }
+/** What each row of the tree reads: the run, its ready leaves, the choices of the person, and whether a worker is idle. */
+type Tree = { run: Run; ready: ReadonlySet<number>; view: PaneView; now: number; idle: boolean }
 
 /** The percent of the request, and one row for each top-level task, with the rows of its children when it is open. The rows stop before the block passes 100 words. */
 function progressSection(input: PaneInput, run: Run) {
@@ -341,8 +352,12 @@ function progressSection(input: PaneInput, run: Run) {
       </Box>
     )
   }
-  const rows = rowsOf(run.tasks, topTasks(run.tasks), input.view.open ?? [], 0)
-  const shown = rowsWithin(rows)
+  const tree: Tree = { run, ready: new Set(claimable(run.tasks).map(task => task.id)), view: input.view, now: input.now, idle: run.workers.some(worker => worker.state === 'idle') }
+  const rows = rowsOf(tree, topTasks(run.tasks), 0)
+  const fits = rows.reduce((sum, row) => sum + rowWords(row), 0) <= ROW_WORDS
+  const live = rows.filter(row => row.group !== 'done')
+  const folded = fits ? 0 : rows.length - live.length
+  const shown = fits ? rows : rowsWithin(live, ROW_WORDS - (folded ? FOLD_WORDS : 0))
   const percent = percentLabel(requestPercent(run.tasks))
   return (
     <Box key="sec-progress" flexDirection="column" gap="sm">
@@ -357,35 +372,36 @@ function progressSection(input: PaneInput, run: Run) {
       </Box>
       <Box flexDirection="column" gap="xs">
         {shown.map(row => taskRow(input, run, row))}
-        {shown.length < rows.length && <Text dimColor>{`${rows.length - shown.length} more`}</Text>}
+        {folded > 0 && <Text dimColor>{`${folded} done`}</Text>}
+        {shown.length + folded < rows.length && <Text dimColor>{`${rows.length - folded - shown.length} more`}</Text>}
       </Box>
     </Box>
   )
 }
 
-/** The title on the left; the owners, the need, the percent and the bar on the right, so the bars line up. A press on a parent opens its children. */
+/** The title on the left; the word, and for a parent the owners and a small bar, on the right. A press on a parent opens or closes it. */
 function taskRow(input: PaneInput, run: Run, row: Row) {
   const { Box, Text, Button } = input.table
-  const { task, waits } = row
-  const percent = percentLabel(percentOf(run.tasks, task))
+  const { task, word } = row
   return (
     <Box key={`task-${task.id}`} flexDirection="row" justifyContent="space-between" alignItems="center" gap="md" paddingLeft={row.depth * ROW_INDENT}>
       {row.isParent ? (
-        <Button key={`open-${task.id}`} plain onPress={() => void input.setView(view => ({ ...view, open: toggled(view.open, task.id) }))}>
+        <Button key={`open-${task.id}`} plain onPress={() => void input.setView(view => chosen(view, task.id, row.isOpen))}>
           {rowLabel(row)}
         </Button>
       ) : (
         <Text wrap="truncate-end">{rowLabel(row)}</Text>
       )}
       <Box flexDirection="row" gap="sm" alignItems="center">
+        <Text color={word.color} dimColor={!word.color}>
+          {word.text}
+        </Text>
         {row.owners.map(owner => (
           <Text key={`dot-${task.id}-${owner}`} color={agentColor(run.workers.findIndex(worker => worker.id === owner)).light}>
             ●
           </Text>
         ))}
-        {waits !== undefined && <Text color="warning">{waitText(waits)}</Text>}
-        <Text tabular>{percent}</Text>
-        {partsBar(input, String(task.id), partsOf(run.tasks, task), ROW_BAR, `#${task.id}: ${percent} done`)}
+        {row.isParent && partsBar(input, String(task.id), partsOf(run.tasks, task), ROW_BAR, `#${task.id}: ${word.text}`)}
       </Box>
     </Box>
   )
@@ -406,23 +422,54 @@ function partsBar(input: PaneInput, id: string, parts: Parts, size: { width: num
   )
 }
 
-/** The rows in tree order: the rows of the children of an open task follow its row. */
-function rowsOf(tasks: readonly Task[], list: readonly Task[], open: readonly number[], depth: number): Row[] {
-  return list.flatMap(task => {
-    const children = childrenOf(tasks, task.id)
-    const isOpen = children.length > 0 && open.includes(task.id)
-    const row: Row = { task, depth, isParent: children.length > 0, isOpen, owners: ownersOf(tasks, task), waits: waitsFor(tasks, task) }
-    return isOpen ? [row, ...rowsOf(tasks, children, open, depth + 1)] : [row]
-  })
+/** The rows in tree order, each level in the order of GROUP_ORDER: the rows of the children of an open task follow its row. */
+function rowsOf(tree: Tree, list: readonly Task[], depth: number): Row[] {
+  const rows = list.map(task => rowOf(tree, task, depth)).sort((one, two) => GROUP_ORDER[one.group] - GROUP_ORDER[two.group])
+  return rows.flatMap(row => (row.isOpen ? [row, ...rowsOf(tree, childrenOf(tree.run.tasks, row.task.id), depth + 1)] : [row]))
 }
 
-/** The first rows whose words add up to ROW_WORDS at most. */
-function rowsWithin(rows: readonly Row[]): Row[] {
+/** A parent opens itself while a task under it is claimed or ready, and closes itself when they are all done; the choice of the person wins. */
+function rowOf(tree: Tree, task: Task, depth: number): Row {
+  const { run, view } = tree
+  const isParent = childrenOf(run.tasks, task.id).length > 0
+  const leaves = leavesOf(run.tasks, task)
+  const group = groupOf(tree, leaves)
+  const opens = view.open?.includes(task.id) || (!view.closed?.includes(task.id) && (group === 'claimed' || group === 'ready'))
+  if (!isParent) return { task, depth, isParent, isOpen: false, group, owners: [], word: leafWord(tree, task) }
+  const done = leaves.filter(leaf => leaf.state === 'done').length
+  return { task, depth, isParent, isOpen: opens, group, owners: ownersOf(run.tasks, task), word: { text: `${done} of ${leaves.length} done` } }
+}
+
+function groupOf(tree: Tree, leaves: readonly Task[]): RowGroup {
+  if (leaves.some(leaf => leaf.state === 'claimed')) return 'claimed'
+  if (leaves.some(leaf => tree.ready.has(leaf.id))) return 'ready'
+  return leaves.every(leaf => leaf.state === 'done') ? 'done' : 'waiting'
+}
+
+/** A leaf in words: its worker working and for how long, ready and for how long, the task it waits for, or a tick and its short commit. */
+function leafWord(tree: Tree, task: Task): Word {
+  const { run, now } = tree
+  if (task.state === 'claimed') {
+    const time = task.claimedAt === undefined ? '' : ` ${ago(now - task.claimedAt)}`
+    return { text: `${task.owner} working${time}`, color: agentColor(run.workers.findIndex(worker => worker.id === task.owner)).light }
+  }
+  if (task.state === 'done') return { text: `${TICK} ${(task.commit ?? '').slice(0, 7)}`.trim(), color: 'success' }
+  if (tree.ready.has(task.id)) {
+    if (task.readyAt === undefined) return { text: 'ready' }
+    const waited = now - task.readyAt
+    return { text: `ready ${ago(waited)}`, color: waited > READY_WARN_MS && tree.idle ? 'warning' : undefined }
+  }
+  const need = waitsFor(run.tasks, task)
+  return { text: need === undefined ? 'waiting' : waitText(need), color: 'warning' }
+}
+
+/** The first rows whose words add up to `limit` at most. */
+function rowsWithin(rows: readonly Row[], limit: number): Row[] {
   const shown: Row[] = []
   let words = 0
   for (const row of rows) {
     words += rowWords(row)
-    if (words > ROW_WORDS) break
+    if (words > limit) break
     shown.push(row)
   }
   return shown
@@ -430,8 +477,7 @@ function rowsWithin(rows: readonly Row[]): Row[] {
 
 /** The words of a row as the limit of a block counts them, with a text bar on every surface. */
 function rowWords(row: Row): number {
-  const waits = row.waits === undefined ? 0 : wordCount(waitText(row.waits))
-  return wordCount(rowLabel(row)) + 1 + BAR_RUNS + row.owners.length + waits
+  return wordCount(rowLabel(row)) + wordCount(row.word.text) + row.owners.length + (row.isParent ? BAR_RUNS : 0)
 }
 
 function rowLabel(row: Row): string {
@@ -443,9 +489,11 @@ function waitText(id: number): string {
   return `waits for #${id}`
 }
 
-function toggled(open: readonly number[] | undefined, id: number): number[] {
-  const current = open ?? []
-  return current.includes(id) ? current.filter(one => one !== id) : [...current, id]
+/** The view after the person opens or closes a parent: the choice stays in view.open or view.closed until the run ends. */
+function chosen(view: PaneView, id: number, isOpen: boolean): PaneView {
+  const open = (view.open ?? []).filter(one => one !== id)
+  const closed = (view.closed ?? []).filter(one => one !== id)
+  return isOpen ? { ...view, open, closed: [...closed, id] } : { ...view, open: [...open, id], closed }
 }
 
 /** The heading and the metrics of the shared context: whether the agents learn from each other. */

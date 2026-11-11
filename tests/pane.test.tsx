@@ -610,7 +610,7 @@ test('a graphic surface draws the bar of the request and of each row as a pictur
   for (const surface of GRAPHIC_SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
     const alts = (await ui.findAll({ type: 'Svg' })).map(svg => String(svg.props.alt)).filter(alt => !/^w\d+: /.test(alt))
-    expect(alts).toEqual(['The request: 33% done', '#1: 50% done', '#2: 0% done', '#3: 0% done'])
+    expect(alts).toEqual(['The request: 33% done', '#1: 1 of 2 done'])
     await ui.unmount()
   }
 })
@@ -623,25 +623,74 @@ test('the terminal draws the bars in text, with one shape for each part, in the 
   expect(await ui.findAll({ type: 'Svg' })).toHaveLength(0)
   expect(partsOf(await ui.find({ key: 'bar-all' }))).toEqual(['█'.repeat(8), '▓'.repeat(14), '░'.repeat(2)])
   expect(partsOf(await ui.find({ key: 'bar-1' }))).toEqual(['█'.repeat(4), '▓'.repeat(4)])
-  expect(partsOf(await ui.find({ key: 'bar-3' }))).toEqual(['░'.repeat(8)])
+  expect(await ui.find({ key: 'bar-3' })).toBeUndefined()
   await ui.unmount()
 })
 
-test('each top-level task has one row with its title and its percent, and the parts of a task stay closed', async ($, on) => {
+test('a parent opens itself while a task under it is claimed, and each level goes claimed, ready, waiting, done', async ($, on) => {
   const state = new FakeState().load(treeRun(), null)
   on('clock.now', () => ({ value: NOW }))
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   for (const surface of ALL_SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(rowKeys(await ui.findAll({ type: 'Box' }))).toEqual(['task-1', 'task-2', 'task-3'])
-    expect((await ui.find({ key: 'open-1' }))?.text).toBe('▸ #1 Theme tokens')
-    expect(textsOf(await ui.find({ key: 'task-1' })).slice(0, 3)).toEqual(['▸ #1 Theme tokens', '●', '50%'])
-    expect(textsOf(await ui.find({ key: 'task-2' })).slice(0, 3)).toEqual(['· #2 Toggle in the header', '●', '0%'])
+    expect(rowKeys(await ui.findAll({ type: 'Box' })), surface).toEqual(['task-1', 'task-5', 'task-4', 'task-2', 'task-3'])
+    expect(textsOf(await ui.find({ key: 'task-1' })).slice(0, 2)).toEqual(['▾ #1 Theme tokens', '1 of 2 done'])
     await ui.unmount()
   }
 })
 
-test('a row shows a dot in the colour of each worker that claims a part of its task', async ($, on) => {
+test('a parent closes itself when all of its tasks are done, and shows no percent', async ($, on) => {
+  const state = new FakeState().load(splitDoneRun(), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(textsOf(await ui.find({ key: 'task-1' }))).toEqual(['▸ #1 Theme tokens in theme.css', '2 of 2 done'])
+  expect(await ui.find({ key: 'task-5' })).toBeUndefined()
+  await ui.unmount()
+})
+
+/** treeRun with times: w2 claimed #2 five minutes ago, and #6 is ready since `readyFor`. */
+function timedTreeRun(readyFor: number): Run {
+  const run = treeRun()
+  const tasks = run.tasks.map(one => (one.id === 2 ? { ...one, claimedAt: NOW - 5 * 60_000 } : one))
+  return { ...run, tasks: [...tasks, task(6, 'Contrast check', { readyAt: NOW - readyFor })] }
+}
+
+test('a leaf shows a word: its worker working and the time, ready and the time, waits for #N, or a tick and its short commit', async ($, on) => {
+  const state = new FakeState().load(timedTreeRun(3 * 60_000), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  for (const surface of ALL_SURFACES) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(textsOf(await ui.find({ key: 'task-2' }))).toEqual(['· #2 Toggle in the header', 'w2 working 5m'])
+    expect(textsOf(await ui.find({ key: 'task-6' }))).toEqual(['· #6 Contrast check', 'ready 3m'])
+    expect(textsOf(await ui.find({ key: 'task-3' }))).toEqual(['· #3 Docs for the theme', 'waits for #1'])
+    expect(textsOf(await ui.find({ key: 'task-4' })).join(' ')).toContain('fffffff')
+    await ui.unmount()
+  }
+})
+
+test('a ready task that waits more than 5 minutes while a worker is idle shows in the warning colour', async ($, on) => {
+  const state = new FakeState().load(setWorkerState(timedTreeRun(6 * 60_000), 'w1', 'idle', NOW), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: 'ready 6m' }))?.props.color).toBe('warning')
+  await ui.unmount()
+})
+
+test('when the rows pass the word limit, the done rows fold into one line', async ($, on) => {
+  const done = Array.from({ length: 12 }, (_, index) => task(index + 2, LONG_TITLE, { state: 'done', owner: 'w2', version: 3, commit: FULL }))
+  const state = new FakeState().load({ ...workingRun(2), tasks: [task(1, LONG_TITLE, { state: 'claimed', owner: 'w1', version: 2 }), ...done] }, null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(rowKeys(await ui.findAll({ type: 'Box' }))).toEqual(['task-1'])
+  expect(await ui.find({ type: 'Text', text: '12 done' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a parent shows a dot in the colour of each worker that claims a part of it, and a claimed leaf its worker in that colour', async ($, on) => {
   const state = new FakeState().load(treeRun(), null)
   on('clock.now', () => ({ value: NOW }))
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
@@ -660,13 +709,13 @@ test('a row says "waits for #N" while a need of its task is not done', async ($,
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   for (const surface of ALL_SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(textsOf(await ui.find({ key: 'task-3' })).slice(0, 3)).toEqual(['· #3 Docs for the theme', 'waits for #1', '0%'])
+    expect(textsOf(await ui.find({ key: 'task-3' }))).toEqual(['· #3 Docs for the theme', 'waits for #1'])
     expect(await ui.findAll({ type: 'Text', text: /^waits for/ })).toHaveLength(1)
     await ui.unmount()
   }
 })
 
-test('a press on a row opens its children under it, and a second press closes them', async ($, on) => {
+test('a press on an open parent closes it, and a second press opens it again', async ($, on) => {
   const state = new FakeState().load(treeRun(), null)
   on('clock.now', () => ({ value: NOW }))
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
@@ -675,16 +724,16 @@ test('a press on a row opens its children under it, and a second press closes th
   await first.press({ key: 'open-1' })
   await first.unmount()
   const second = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(rowKeys(await second.findAll({ type: 'Box' }))).toEqual(['task-1', 'task-4', 'task-5', 'task-2', 'task-3'])
-  expect((await second.find({ key: 'open-1' }))?.text).toBe('▾ #1 Theme tokens')
+  expect(rowKeys(await second.findAll({ type: 'Box' }))).toEqual(['task-1', 'task-2', 'task-3'])
+  expect((await second.find({ key: 'open-1' }))?.text).toBe('▸ #1 Theme tokens')
   await second.press({ key: 'open-1' })
   await second.unmount()
   const third = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(rowKeys(await third.findAll({ type: 'Box' }))).toEqual(['task-1', 'task-2', 'task-3'])
+  expect(rowKeys(await third.findAll({ type: 'Box' }))).toEqual(['task-1', 'task-5', 'task-4', 'task-2', 'task-3'])
   await third.unmount()
 })
 
-test('the pane view keeps the open rows in its field open, and its shape stays view-1', async ($, on) => {
+test('the pane view keeps the parents that the person closed, and its shape stays view-1', async ($, on) => {
   const state = new FakeState().load(treeRun(), null, CLOSED_VIEW)
   on('clock.now', () => ({ value: NOW }))
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
@@ -692,7 +741,7 @@ test('the pane view keeps the open rows in its field open, and its shape stays v
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui.press({ key: 'open-1' })
   await ui.unmount()
-  expect(state.get('view').value).toEqual({ shape: 'view-1', value: { ...CLOSED_VIEW, open: [1] } })
+  expect(state.get('view').value).toEqual({ shape: 'view-1', value: { ...CLOSED_VIEW, open: [], closed: [1] } })
 })
 
 test('a row of a task with no parts has nothing to open', async ($, on) => {
@@ -726,7 +775,7 @@ test('a run that meld 0.6.0 stored, with no task tree and a view with no open ro
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   for (const surface of ALL_SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(rowKeys(await ui.findAll({ type: 'Box' }))).toEqual(['task-1', 'task-2', 'task-3'])
+    expect(rowKeys(await ui.findAll({ type: 'Box' }))).toEqual(['task-2', 'task-3', 'task-1'])
     expect(textsOf(await ui.find({ key: 'progress-all' })).slice(0, 2)).toEqual(['Progress', '33%'])
     expect(await ui.find({ type: 'Text', text: /^waits for/ })).toBeUndefined()
     await ui.unmount()
@@ -739,7 +788,7 @@ test('a run that meld 0.7.0 stored draws its task tree, its progress and its sha
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   for (const surface of ALL_SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(rowKeys(await ui.findAll({ type: 'Box' }))).toEqual(['task-1', 'task-4', 'task-5', 'task-2', 'task-3'])
+    expect(rowKeys(await ui.findAll({ type: 'Box' }))).toEqual(['task-1', 'task-4', 'task-5', 'task-3', 'task-2'])
     expect(textsOf(await ui.find({ key: 'progress-all' })).slice(0, 2)).toEqual(['Progress', '66%'])
     expect(await ui.find({ type: 'Text', text: 'waits for #1' })).toBeDefined()
     const lines = (await ui.findAll({ type: 'Box' })).filter(box => /^context-\d+$/.test(box.key ?? ''))
@@ -757,19 +806,9 @@ test('a split task shows as a parent row, and its parts open under it with their
   for (const surface of ALL_SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
     expect(rowKeys(await ui.findAll({ type: 'Box' }))).toEqual(['task-1', 'task-5', 'task-6', 'task-2', 'task-3', 'task-4'])
-    expect(textsOf(await ui.find({ key: 'task-1' })).slice(0, 3)).toEqual(['▾ #1 Theme tokens in theme.css', '●', '0%'])
-    expect(textsOf(await ui.find({ key: 'task-5' })).slice(0, 3)).toEqual(['· #5 Colour tokens', '●', '0%'])
-    expect(textsOf(await ui.find({ key: 'task-6' })).slice(0, 2)).toEqual(['· #6 Spacing tokens', '0%'])
+    expect(textsOf(await ui.find({ key: 'task-1' })).slice(0, 3)).toEqual(['▾ #1 Theme tokens in theme.css', '0 of 2 done', '●'])
+    expect(textsOf(await ui.find({ key: 'task-5' }))).toEqual(['· #5 Colour tokens', 'w1 working 0s'])
+    expect(textsOf(await ui.find({ key: 'task-6' }))).toEqual(['· #6 Spacing tokens', 'ready 0s'])
     await ui.unmount()
   }
-})
-
-test('a parent row is at 100% when the workers finish its parts', async ($, on) => {
-  const state = new FakeState().load(splitDoneRun(), null)
-  on('clock.now', () => ({ value: NOW }))
-  on('state.get', ($, e) => ({ value: state.get(e.key) }))
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(textsOf(await ui.find({ key: 'task-1' })).slice(0, 2)).toEqual(['▸ #1 Theme tokens in theme.css', '100%'])
-  expect(textsOf(await ui.find({ key: 'progress-all' })).slice(0, 2)).toEqual(['Progress', '25%'])
-  await ui.unmount()
 })

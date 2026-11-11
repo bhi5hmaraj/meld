@@ -25,11 +25,6 @@ export function partsOf(tasks: readonly Task[], task: Task): Parts {
   return meanOf(tasks, children)
 }
 
-/** A leaf is 0 until a worker finishes it, and 100 after that. No agent reports a percent. */
-export function percentOf(tasks: readonly Task[], task: Task): number {
-  return 100 * partsOf(tasks, task).done
-}
-
 export function requestParts(tasks: readonly Task[]): Parts {
   return meanOf(tasks, topTasks(tasks))
 }
@@ -66,7 +61,8 @@ function meanOf(tasks: readonly Task[], members: readonly Task[]): Parts {
   return { done: sums.done / total, claimed: sums.claimed / total, open: sums.open / total }
 }
 
-function leavesOf(tasks: readonly Task[], task: Task): Task[] {
+/** The leaves under the task, or the task when it is a leaf. */
+export function leavesOf(tasks: readonly Task[], task: Task): Task[] {
   const children = childrenOf(tasks, task.id)
   return children.length ? children.flatMap(child => leavesOf(tasks, child)) : [task]
 }

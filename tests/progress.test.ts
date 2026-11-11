@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { ownersOf, partsOf, percentLabel, percentOf, requestParts, requestPercent, SIZE_WEIGHT, topTasks, weightOf } from '../core/progress'
+import { leavesOf, ownersOf, partsOf, percentLabel, requestParts, requestPercent, SIZE_WEIGHT, topTasks, weightOf } from '../core/progress'
 import type { Task } from '../types'
 
 function task(id: number, fields: Partial<Task> = {}): Task {
@@ -39,27 +39,18 @@ test('a size weighs 1, 3 or 8, and a task with no size weighs as M', () => {
   expect(weightOf(task(1))).toBe(3)
 })
 
-test('a leaf is at 0 percent until a worker finishes it, and at 100 after that', () => {
-  const tasks = [task(1), task(2, { state: 'claimed', owner: 'w1' }), task(3, { state: 'done', owner: 'w1' })]
-  expect(tasks.map(one => percentOf(tasks, one))).toEqual([0, 0, 100])
+test('the done share of a parent of parents takes the share of each child, not the count of its leaves', () => {
+  expect(partsOf(DEEP, task(2, { parent: 1, size: 'L' })).done).toBe(0.5)
+  expect(rounded(partsOf(DEEP, task(1)).done)).toBe(rounded((8 * 0.5) / 9))
 })
 
-test('a parent is the size-weighted mean of its children', () => {
-  expect(rounded(percentOf(TREE, task(1, { size: 'L' })))).toBe(rounded(100 / 12))
+test('the parent state on the board does not change its done share', () => {
+  expect(rounded(partsOf(TREE, task(1, { size: 'L', state: 'done' })).done)).toBe(rounded(1 / 12))
 })
 
-test('a parent of parents takes the percent of each child, not the count of its leaves', () => {
-  expect(percentOf(DEEP, task(2, { parent: 1, size: 'L' }))).toBe(50)
-  expect(rounded(percentOf(DEEP, task(1)))).toBe(rounded((8 * 50) / 9))
-})
-
-test('the parent state on the board does not change its percent', () => {
-  expect(rounded(percentOf(TREE, task(1, { size: 'L', state: 'done' })))).toBe(rounded(100 / 12))
-})
-
-test('a parent is at 100 percent when all its children are done', () => {
-  const tasks = [task(1), task(2, { parent: 1, size: 'S', state: 'done' }), task(3, { parent: 1, size: 'L', state: 'done' }), task(4, { parent: 1, state: 'done' })]
-  expect(percentOf(tasks, task(1))).toBe(100)
+test('the leaves of a task are the tasks under it with no parts, or the task when it is a leaf', () => {
+  expect(leavesOf(DEEP, task(1)).map(one => one.id)).toEqual([4, 5, 6])
+  expect(leavesOf(TREE, task(5)).map(one => one.id)).toEqual([5])
 })
 
 test('the request is the size-weighted mean of the top-level tasks', () => {
