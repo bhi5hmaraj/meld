@@ -1,4 +1,5 @@
 import type {
+  ActivityTimes,
   AgentContext,
   AgentSpec,
   Author,
@@ -21,6 +22,7 @@ import type {
   StartReason,
   Task,
   TaskSize,
+  TokenSums,
   VcsKind,
   Worker,
   WorkerId,
@@ -152,15 +154,38 @@ export function addTokens(run: Run, id: WorkerId, tokens: number): Run {
   return replaceWorker(run, { ...worker, tokens: worker.tokens + tokens })
 }
 
+/** Adds the time of a worker by activity to the worker and to each task that it holds. */
+export function addTimes(run: Run, id: WorkerId, times: ActivityTimes): Run {
+  if (!Object.keys(times).length) return run
+  const worker = findWorker(run, id)
+  const tasks = run.tasks.map(task => (isClaimedBy(task, id) ? { ...task, times: summed(task.times, times) } : task))
+  return replaceWorker({ ...run, tasks }, { ...worker, times: summed(worker.times, times) })
+}
+
+/** Adds the tokens of one model call by kind to the worker and to each task that it holds, and counts the call. */
+export function addUsage(run: Run, id: WorkerId, usage: TokenSums): Run {
+  const worker = findWorker(run, id)
+  const tasks = run.tasks.map(task => (isClaimedBy(task, id) ? { ...task, usage: summed(task.usage, usage) } : task))
+  return replaceWorker({ ...run, tasks }, { ...worker, usage: summed(worker.usage, usage), steps: (worker.steps ?? 0) + 1 })
+}
+
+/** The sum of two records by key: times by activity, or tokens by kind. */
+function summed<T extends Partial<Record<string, number>>>(sum: T | undefined, more: T): T {
+  const total: Partial<Record<string, number>> = { ...sum }
+  for (const [key, value] of Object.entries(more)) total[key] = (total[key] ?? 0) + (value ?? 0)
+  return total as T
+}
+
 /**
  * A new agent takes the place of a worker whose run ended: it works in the same folder, and reads its rules and the current
  * context again. The person can stop the worker or the run while the engine starts the agent: then the agent takes no place.
  */
 export function restartWorker(run: Run, id: WorkerId, agentId: string, now: number): Change<Worker> {
   if (run.state !== 'working') return failure('RUN_ENDED', `The run is ${run.state}.`)
-  const { seenContext: _seen, context: _context, resumedAt: _resumed, ...worker } = findWorker(run, id)
+  const { seenContext: _seen, context, resumedAt: _resumed, ...worker } = findWorker(run, id)
   if (worker.state === 'stopped') return failure('WORKER_STOPPED', `The person stopped ${id}.`)
-  const restarted: Worker = { ...worker, agentId, state: 'working', briefed: false, activity: 'started again', activityAt: now }
+  const capStarts = (context?.used ?? 0) >= CONTEXT_CAP ? { capStarts: (worker.capStarts ?? 0) + 1 } : {}
+  const restarted: Worker = { ...worker, ...capStarts, agentId, state: 'working', briefed: false, activity: 'started again', activityAt: now }
   return { run: withWorkerEntry(replaceWorker(run, restarted), id, 'working', now, `${id} starts again`, 'restart'), value: restarted }
 }
 
@@ -191,8 +216,10 @@ export function keepsSession(worker: Worker): boolean {
   return worker.agentId !== undefined && worker.context !== undefined && worker.context.used < Math.min(AFFINITY_SHARE * worker.context.size, CONTEXT_CAP)
 }
 
+/** The context of the agent of a worker at its last report, and the largest context of its agents so far. */
 export function setContext(run: Run, by: WorkerId, context: AgentContext): Run {
-  return replaceWorker(run, { ...findWorker(run, by), context })
+  const worker = findWorker(run, by)
+  return replaceWorker(run, { ...worker, context, largestContext: Math.max(worker.largestContext ?? 0, context.used) })
 }
 
 /** Adds a batch of tasks only when the worker has seen the current task list: a stale add fails alone and shows the tasks it missed. */

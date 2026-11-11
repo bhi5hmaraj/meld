@@ -1,5 +1,6 @@
-import type { AgentContext, BoardView, Change, Facts, Failure, Final, NewTask, PaneView, Run, Task, TaskSize, VcsKind, Worker, WorkerId, WorkerState } from '../types'
+import type { Activity, ActivityTimes, AgentContext, BoardView, Change, Facts, Failure, Final, NewTask, PaneView, Run, Task, TaskSize, TokenSums, VcsKind, Worker, WorkerId, WorkerState } from '../types'
 import * as board from './board'
+import { activityOf } from './metrics'
 import { COMPACT_KEEP, CONTROL_TOOLS, HAND_BACK, integrateDetail, integrateStep, missingWorkText, splitNudge, STATUS_VIEW, TOOL, wakeText, workerPrompt, workerRules } from './contract'
 import type { Control } from './contract'
 import { command, GIT_MIN, gitVersion, headCommit, isDirty, isOldGit, repoRoot } from './git'
@@ -677,9 +678,11 @@ function refusalOf(run: Run, worker: Worker, edited: readonly string[]): string 
 /** Records a call as the activity of the worker and counts it; a worker with many calls on one task gets a nudge to split it. */
 async function recordCall(io: Store & Clock & Runner, worker: Worker, activity: string, words?: string): Promise<void> {
   const now = await io.now()
+  const times = worker.agentId === undefined ? {} : takeTimes(worker.agentId)
   let nudge: Task | undefined
   await writeRun(io, current => {
-    const counted = countedCall(board.setSaid(board.setActivity(current, worker.id, activity, now), worker.id, words, now), worker.id, now)
+    const spoken = board.setSaid(board.setActivity(current, worker.id, activity, now), worker.id, words, now)
+    const counted = countedCall(board.addTimes(spoken, worker.id, times), worker.id, now)
     nudge = counted.task
     return counted.run
   })
@@ -699,6 +702,28 @@ function isInside(path: string, root: string): boolean {
 
 function moved(path: string, repo: string, root: string): string {
   return path.startsWith(`${repo}/`) ? `${root}${path.slice(repo.length)}` : `a path under ${root}`
+}
+
+/** The time of the tool calls and model calls of each agent that no write of its worker holds yet. */
+const unwritten = new Map<string, ActivityTimes>()
+
+/** Keeps the time of an activity of an agent for the next write of its worker: each write adds no store commit of its own. */
+export function noteTime(agentId: string, activity: Activity, ms: number): void {
+  const times = unwritten.get(agentId) ?? {}
+  unwritten.set(agentId, { ...times, [activity]: (times[activity] ?? 0) + ms })
+}
+
+/** A tool call of an agent took ms: its time counts for the class of the call. */
+export function timeCall(e: ToolCall, ms: number): void {
+  if (e.agentId === undefined) return
+  const args = e as unknown as Args
+  noteTime(e.agentId, activityOf(String(e.tool), text(args.command), text(args.description)), ms)
+}
+
+function takeTimes(agentId: string): ActivityTimes {
+  const times = unwritten.get(agentId) ?? {}
+  unwritten.delete(agentId)
+  return times
 }
 
 function describeCall(e: ToolCall): string {
@@ -814,19 +839,26 @@ function contextTokens(usage: TokenUsage): number {
 /**
  * One model call of an agent: its cost in input tokens adds up on its worker at once. A worker does a task in one long turn, so
  * a count at the end of the turn showed 0 tokens while it worked. With the window of the model of the agent, the call
- * also gives the context of the agent, and its answer gives the said of the worker. The main session and agents that are no worker count nothing.
+ * also gives the context of the agent, and its answer gives the said of the worker. The write also holds the tokens by
+ * kind and the time of the agent since its last write. The main session and agents that are no worker count nothing.
  */
 export async function countStep(io: Store & Clock, agentId: string | undefined, usage: TokenUsage | null | undefined, window?: number, answer?: string): Promise<void> {
   const tokens = costTokens(usage ?? undefined)
   if (agentId === undefined || !usage || !tokens) return
+  const times = takeTimes(agentId)
   const run = await readRun(io)
   const worker = run ? board.workerOf(run, agentId) : undefined
   if (!worker) return
   const now = await io.now()
   await writeRun(io, current => {
-    const counted = board.setSaid(board.addTokens(current, worker.id, tokens), worker.id, answer, now)
-    return window ? board.setContext(counted, worker.id, { used: contextTokens(usage), size: window }) : counted
+    const counted = board.addTimes(board.addUsage(board.addTokens(current, worker.id, tokens), worker.id, sumsOf(usage)), worker.id, times)
+    const spoken = board.setSaid(counted, worker.id, answer, now)
+    return window ? board.setContext(spoken, worker.id, { used: contextTokens(usage), size: window }) : spoken
   })
+}
+
+function sumsOf(usage: TokenUsage): TokenSums {
+  return { input: usage.input_tokens, cacheWrite: usage.cache_creation_input_tokens, cacheRead: usage.cache_read_input_tokens ?? 0, output: usage.output_tokens }
 }
 
 /**
@@ -855,7 +887,11 @@ export async function markWorker(io: Store & Clock, agentId: string | undefined,
   const worker = run ? board.workerOf(run, agentId) : undefined
   if (!run || !worker) return
   const now = await io.now()
-  await writeRun(io, current => board.setSaid(board.addTokens(board.setWorkerState(current, worker.id, state, now), worker.id, tokens), worker.id, words, now))
+  const times = takeTimes(agentId)
+  await writeRun(io, current => {
+    const marked = board.addTokens(board.setWorkerState(current, worker.id, state, now), worker.id, tokens)
+    return board.addTimes(board.setSaid(marked, worker.id, words, now), worker.id, times)
+  })
 }
 
 type Restart = { worker: Worker; step: string }

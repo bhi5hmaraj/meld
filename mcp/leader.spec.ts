@@ -77,6 +77,13 @@ test('the text of an ACP agent before its tool call becomes the said of its work
   expect(said).toBe('turn 1: You are a meld worker: one of several agents that make one result together, each in its own...')
 })
 
+test('a prompt of an ACP worker adds its tool time and its model time to its worker', async () => {
+  const one = await setup()
+  await spawnBound(one, 'Read the board')
+  await until(() => one.boards.read(BOARD).run?.workers[0]?.times?.model !== undefined)
+  expect(Object.keys(one.boards.read(BOARD).run?.workers[0]?.times ?? {}).sort()).toEqual(['model', 'tools'])
+})
+
 test('an idle ACP worker starts again in a fresh agent with the step of meld, until the nudges run out and the person hears it', async () => {
   const one = await setup()
   const first = await spawnBound(one, 'Read the board')

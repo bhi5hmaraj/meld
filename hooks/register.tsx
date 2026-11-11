@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentStatus, HookFailure, Register } from 'claude-code'
 
-import { compactWorker, controlRun, countStep, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll, vcsVerdict } from '../core/actions'
+import { compactWorker, controlRun, countStep, guardCall, markWorker, noteTime, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll, timeCall, vcsVerdict } from '../core/actions'
 import { CONTEXT_CAP } from '../core/board'
 import { cleanFolders } from '../core/clean'
 import type { Action, BoardRead, Boards, BoardSummary, Committed } from '../core/remote-store'
@@ -358,8 +358,15 @@ export const register: Register = on => {
     return { deny }
   })
 
+  /** The guard of each tool call. Each call of a worker, the board tools too, counts its time by class: the next write of the worker holds it. */
   on('tool.call', async ($, e, next) => {
-    if (String(e.tool).startsWith(TOOL_PREFIX)) return next(e)
+    const timed = async () => {
+      const started = await $.clock.now()
+      const reply = await next(e)
+      timeCall(e, (await $.clock.now()) - started)
+      return reply
+    }
+    if (String(e.tool).startsWith(TOOL_PREFIX)) return timed()
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
@@ -403,7 +410,7 @@ export const register: Register = on => {
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
     }
     const deny = await guardCall(io, e)
-    return deny ? { deny } : next(e)
+    return deny ? { deny } : timed()
   }).catch(($, e, next) => {
     // The guard lets the call through when it fails, so a broken board does not stop every tool of the session. The debug log keeps the reason.
     $.ui.log(failedText('the guard of tool calls', next.error), { to: 'debug' })
@@ -411,10 +418,12 @@ export const register: Register = on => {
   })
 
 
-  /** Each model call of a worker adds its cost in input tokens at once: a worker does a task in one long turn. */
+  /** Each model call of a worker adds its cost in input tokens and its time at once: a worker does a task in one long turn. */
   on('turn.step', async function* ($, e, next) {
+    const started = await $.clock.now()
     const response = yield* next(e)
     if (e.agentId === undefined) return response
+    noteTime(e.agentId, 'model', (await $.clock.now()) - started)
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),

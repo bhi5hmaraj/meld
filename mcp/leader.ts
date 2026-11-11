@@ -1,7 +1,9 @@
 import { join } from 'node:path'
 
-import { acpRefusal, markWorker, ownedByAcp, recordActivity, recordContext, restartIdleWorkers } from '../core/actions'
+import type { Activity } from '../types'
+import { acpRefusal, markWorker, noteTime, ownedByAcp, recordActivity, recordContext, restartIdleWorkers } from '../core/actions'
 import { workerOf } from '../core/board'
+import { activityOf } from '../core/metrics'
 import { WORKER_SYSTEM } from '../core/contract'
 import { ACP_AGENT_PREFIX, ACP_AGENTS, ACP_PREFIX } from '../core/options'
 import type { AgentState, Runner, SpawnArgs, Spawned } from '../core/ports'
@@ -24,8 +26,11 @@ export type RunnerOptions = {
   pollMs?: number
 }
 
-/** An agent of the runner; said keeps the text that the agent wrote since its last tool call or the end of its last prompt. */
-type Held = { agent: AcpAgent; board: string; started: boolean; queue: string[]; said: string }
+/**
+ * An agent of the runner. said keeps the text that the agent wrote since its last tool call or the end of its last prompt;
+ * tools holds the start and class of each tool call that has not completed, and toolMs the tool time of the prompt.
+ */
+type Held = { agent: AcpAgent; board: string; started: boolean; queue: string[]; said: string; tools: Map<string, { at: number; activity: Activity }>; toolMs: number }
 /** The board whose ACP workers this runner keeps going, for the session that owns it. */
 type Lead = { board: string; owner: string }
 /** A board whose restarts run now, and whether another prompt ended in the meantime. */
@@ -75,7 +80,7 @@ export class AcpRunner {
         await agent.stop()
         return { deny: 'meld mcp is closing' }
       }
-      this.held.set(agentId, { agent, board, started: false, queue: [], said: '' })
+      this.held.set(agentId, { agent, board, started: false, queue: [], said: '', tools: new Map(), toolMs: 0 })
       void this.firstPrompt(board, agentId, `${WORKER_SYSTEM}\n\n${args.prompt}`)
       return { agentId }
     } catch (error) {
@@ -152,7 +157,10 @@ export class AcpRunner {
     held.started = true
     const io = mcpIo(this.boards, held.board, this.runnerFor(held.board))
     await markWorker(io, agentId, 'working')
+    const started = Date.now()
+    held.toolMs = 0
     await held.agent.prompt(text).catch(() => undefined)
+    noteTime(agentId, 'model', Math.max(0, Date.now() - started - held.toolMs))
     await this.ended(agentId)
   }
 
@@ -216,8 +224,22 @@ export class AcpRunner {
     this.options.onUpdate?.(agentId, update)
     const held = this.held.get(agentId)
     if (held && update.kind === 'agent_message_chunk') held.said += update.text
+    if (held && update.toolCallId) this.timeTool(agentId, held, update.toolCallId, update)
     if (update.kind === 'tool_call') void recordActivity(mcpIo(this.boards, board, this.runnerFor(board)), agentId, update.text, held && takeSaid(held))
     if (update.usage) void recordContext(mcpIo(this.boards, board), agentId, update.usage)
+  }
+
+  /** A tool call counts from its first update to its completed or failed update, for the class of its title. */
+  private timeTool(agentId: string, held: Held, toolCallId: string, update: AcpUpdate): void {
+    const call = held.tools.get(toolCallId) ?? { at: Date.now(), activity: activityOf(update.text, update.text) }
+    if (update.status !== 'completed' && update.status !== 'failed') {
+      held.tools.set(toolCallId, call)
+      return
+    }
+    held.tools.delete(toolCallId)
+    const ms = Date.now() - call.at
+    held.toolMs += ms
+    noteTime(agentId, call.activity, ms)
   }
 
   /** The verdict of meld on what an agent asks; a refusal for a stopped worker or a run that ended also ends the prompt. */

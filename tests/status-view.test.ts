@@ -59,7 +59,7 @@ test('a status read gives the log entries since the last status read of the main
   const io = new FakeIo()
   io.current = planned()
   const first = (await status(io)).log as { text: string }[]
-  expect(first.map(entry => entry.text)).toEqual(io.current.log.map(entry => entry.text))
+  expect(first.map(entry => entry.text)).toEqual(['w1 starts', 'w2 starts', 'added #1 Theme tokens; #2 Dark pane; #3 Docs; #4 Theme guide', 'claimed #1', 'claimed #3', 'finished #3: Docs written'])
   io.current = runOf(addNote(io.current as Run, 'w1', 'The tokens are in theme.ts', undefined, NOW))
   expect(((await status(io)).log as { text: string }[]).map(entry => entry.text)).toEqual(['The tokens are in theme.ts'])
   expect((await status(io)).log).toEqual([])
@@ -88,8 +88,8 @@ test('the status view and the full board of the main session keep a start or a s
   io.current = { ...run, log: [...run.log, ...lane] }
   const full = JSON.parse((await serveTool(io, { tool: TOOL.board } as unknown as ToolCallInput)).result) as { log: Run['log'] }
   const statusLog = (await status(io)).log as Run['log']
-  expect(full.log.filter(entry => entry.kind === 'worker').map(entry => entry.text)).toEqual(['w1 starts again', 'stopped w2'])
-  expect(statusLog.filter(entry => entry.kind === 'worker').map(entry => entry.text)).toEqual(['w1 starts again', 'stopped w2'])
+  expect(full.log.filter(entry => entry.kind === 'worker').map(entry => entry.text)).toEqual(['w1 starts', 'w2 starts', 'w1 starts again', 'stopped w2'])
+  expect(statusLog.filter(entry => entry.kind === 'worker').map(entry => entry.text)).toEqual(['w1 starts', 'w2 starts', 'w1 starts again', 'stopped w2'])
 })
 
 test('a board read with no view gives the main session the full board', async () => {
