@@ -150,7 +150,7 @@ A thick border marks the parts of meld, and a dashed arrow a call of the board t
 1. **Workspaces:** meld makes one workspace for each agent from `HEAD`, under `/tmp/meld/<run>/`.
 2. **Plan:** the agents plan the request as small tasks on the board. The first plan wins.
 3. **Work:** each agent claims a task, commits in its workspace, and hands back with one line.
-4. **Share:** the agents share facts, fails and interfaces. Each board read gives an agent only the entries that are new for it.
+4. **Share:** the agents share facts, fails and interfaces. Each board read gives an agent only the entries that are new for it. The agents can search the board as files with `rg` or `jq`, and [docs/how-it-works.md](docs/how-it-works.md#short-replies-and-the-board-files) gives the details.
 5. **Integrate:** at each finished task, meld merges its commit into the integration line, with no agent. A conflict becomes a task `integrate #N`.
 6. **Finish:** when every task is done, one agent builds the line, runs the checks, and declares the final commit.
 
