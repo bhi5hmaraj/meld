@@ -69,9 +69,9 @@ function storyRun(): Run {
     { at: T0 + 38 * MIN, by: 'you', kind: 'worker', text: '', worker: 'w2', start: 'restart' },
   ] as Entry[]
   const run = runOf(tasks, log)
-  const [w1, w2] = run.workers
   const usage = { input: 1000, cacheWrite: 2000, cacheRead: 10_000, output: 500 }
-  const workers = [{ ...w1, usage, steps: 10, largestContext: 120_000, times: { model: 5 * MIN, tests: 2 * MIN } }, { ...w2, tokens: 3000 }]
+  const measured = { usage, steps: 10, largestContext: 120_000, times: { model: 5 * MIN, tests: 2 * MIN } }
+  const workers = run.workers.map(worker => (worker.id === 'w1' ? { ...worker, ...measured } : { ...worker, tokens: 3000 }))
   return { ...run, workers }
 }
 
@@ -88,12 +88,13 @@ function randomRun(seed: number): Run {
   let step = 0
   const workers = IDS.slice(0, 1 + Math.floor(roll(seed, step++) * IDS.length))
   const tasks: Task[] = [1, 2, 3, 4, 5].map(id => ({ id, title: TITLE, detail: '', state: 'open', version: 1, addedAt: T0, readyAt: T0 + Math.floor(roll(seed, step++) * 30 * MIN) }))
-  tasks[0] = { ...tasks[0], state: 'claimed', owner: workers[0], claimedAt: T0 + 3 * MIN }
+  const [first, ...rest] = tasks
+  const claimed: Task[] = first ? [{ ...first, state: 'claimed', owner: 'w1', claimedAt: T0 + 3 * MIN }, ...rest] : []
   const log: Entry[] = []
   let at = T0
   for (let index = 0; index < EVENTS; index++) {
     at += Math.floor(roll(seed, step++) * 3 * MIN)
-    const worker = workers[Math.floor(roll(seed, step++) * workers.length)]
+    const worker = workers[Math.floor(roll(seed, step++) * workers.length)] ?? 'w1'
     const task = 1 + Math.floor(roll(seed, step++) * tasks.length)
     const back = Math.floor(roll(seed, step++) * 20 * MIN)
     const kind = Math.floor(roll(seed, step++) * 8)
@@ -108,8 +109,8 @@ function randomRun(seed: number): Run {
     if (kind === 6) log.push({ id: 0, at, by: 'you', kind: 'worker', text: '', worker, start: 'restart' })
     if (kind === 7 && roll(seed, step++) < 0.2) log.push({ id: 0, at, by: 'you', kind: 'event', text: `stopped ${worker}` })
   }
-  const run = runOf(tasks, log)
-  const all = IDS.slice(0, workers.length).map((id, index) => ({ ...run.workers[0], id, agent: { type: index % 2 ? OTHER_AGENT : WORKER_AGENT } }))
+  const run = runOf(claimed, log)
+  const all = run.workers.slice(0, 1).flatMap(first => workers.map((id, index) => ({ ...first, id, agent: { type: index % 2 ? OTHER_AGENT : WORKER_AGENT } })))
   return { ...run, workers: all, endedAt: roll(seed, step++) < 0.5 ? at + MIN : undefined }
 }
 
@@ -159,7 +160,7 @@ test('a lane shows work, a merge, a wait for a ready task, idle time, a sleep, a
       { kind: 'idle', from: T0 + 30 * MIN, to: NOW },
     ],
   })
-  expect(w2.parts).toEqual([
+  expect(w2?.parts).toEqual([
     { kind: 'idle', from: T0, to: T0 + 10 * MIN },
     { kind: 'waiting', from: T0 + 10 * MIN, to: T0 + 14 * MIN },
     { kind: 'working', from: T0 + 14 * MIN, to: T0 + 20 * MIN, task: 2 },
@@ -175,7 +176,7 @@ test('a claim that the trimmed log lost comes from the task, and a stopped worke
   const tasks: Task[] = [{ id: 1, title: TITLE, detail: '', state: 'done', owner: 'w1', version: 3, addedAt: T0, readyAt: T0, claimedAt: T0 + MIN, doneAt: T0 + 5 * MIN, commit: COMMIT }]
   const log = [{ at: T0 + 8 * MIN, by: 'you', kind: 'event', text: 'stopped w2' }] as Entry[]
   const [w1, w2] = lanesOf(runOf(tasks, log), T0 + 10 * MIN)
-  expect(w1.parts).toEqual([
+  expect(w1?.parts).toEqual([
     { kind: 'waiting', from: T0, to: T0 + MIN },
     { kind: 'working', from: T0 + MIN, to: T0 + 5 * MIN, task: 1 },
     { kind: 'idle', from: T0 + 5 * MIN, to: T0 + 10 * MIN },
@@ -305,7 +306,7 @@ test('the shared context gives entries by kind, deliveries, the time to delivery
   const log = [
     { at: T0 + 4 * MIN, by: 'you', kind: 'delivered', text: '', worker: 'w2', context: 1 },
     { at: T0 + 5 * MIN, by: 'you', kind: 'delivered', text: '', worker: 'w2', context: 2 },
-  ] as Entry[]
+  ] as unknown as Entry[]
   expect(sharedContextOf(runOf(tasks, log, { context }), NOW)).toEqual({
     entries: { fact: 1, fail: 2, interface: 1 },
     perTask: 2,

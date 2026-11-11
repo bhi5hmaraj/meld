@@ -344,7 +344,7 @@ Rules for these records:
 
 - Keep sums, not one row for each tool call.
 - Write the new fields in the store commit that each step already makes. Add no extra writes.
-- The run shape becomes `run-5`.
+- The run shape stays `run-4`. Each new field is optional, so a run that an older meld stored keeps working. A new shape tag makes the engine hide the stored run from the new code.
 - Each metric is a pure function of the run and its events, in `core/metrics.ts`, with tests. The tests include the runs of section 1.2, from their archives.
 
 ### 5.2 What the metrics leave out

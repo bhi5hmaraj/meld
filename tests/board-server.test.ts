@@ -14,7 +14,7 @@ const IDS: WorkerId[] = ['w1', 'w2']
 const CHANNEL = '/tmp/meld/channels/1.sock'
 const WINDOW = 200_000
 const USAGE = { input_tokens: 1000, cache_creation_input_tokens: 2000, cache_read_input_tokens: 30_000, output_tokens: 500, model: 'claude-opus-5-5' } as TurnUsage
-const STORED = { shape: 'run-5' }
+const STORED = { shape: 'run-4' }
 /** The offer of the worker type, as the engine checks it before it resumes an agent of that type. */
 const WORKER_OFFER = { agent: 'meld:worker', description: 'A meld worker.', source: 'plugin', provider: { plugin: 'meld', tier: 'user' as const } }
 const TYPED = { origin: { kind: 'composer' as const }, presentation: { isFullscreen: false, columns: 80 } }
@@ -199,7 +199,7 @@ test('the timer keeps the copy of the run when the channel does not answer the b
 test('without meld mcp, a command keeps the run in the session state, as meld 0.8 does', async ($, on) => {
   const written: string[] = []
   answerTheEngine(on, undefined)
-  on('state.get', ($, e) => ({ value: e.key === 'run' ? { value: { shape: 'run-5', value: working() }, version: 1 } : { value: undefined, version: 0 } }))
+  on('state.get', ($, e) => ({ value: e.key === 'run' ? { value: { shape: 'run-4', value: working() }, version: 1 } : { value: undefined, version: 0 } }))
   on('state.set', ($, e) => {
     written.push(`${e.key} ${String((e.value as { value?: Run } | undefined)?.value?.state)}`)
     return { value: { isSet: true, version: 2 } }

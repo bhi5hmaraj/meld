@@ -118,7 +118,7 @@ test('/meld-report --runs gives one row for each archived run', async () => {
 
 test('a ready run shows the story, what each agent did, the lanes and the three numbers, the same on every surface', async ($, on) => {
   on('clock.now', () => ({ value: NOW }))
-  on('state.get', ($, e) => ({ value: e.key === 'run' ? { value: { shape: 'run-5', value: reportRun() }, version: 1 } : { value: undefined, version: 0 } }))
+  on('state.get', ($, e) => ({ value: e.key === 'run' ? { value: { shape: 'run-4', value: reportRun() }, version: 1 } : { value: undefined, version: 0 } }))
   for (const surface of ALL_SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
     expect(await ui.find({ type: 'Text', text: STORY }), surface).toBeDefined()
@@ -132,7 +132,7 @@ test('a ready run shows the story, what each agent did, the lanes and the three 
 
 test('a ready run leaves out the agent cards, the plan, the steer box and the long metric lines', async ($, on) => {
   on('clock.now', () => ({ value: NOW }))
-  on('state.get', ($, e) => ({ value: e.key === 'run' ? { value: { shape: 'run-5', value: reportRun() }, version: 1 } : { value: undefined, version: 0 } }))
+  on('state.get', ($, e) => ({ value: e.key === 'run' ? { value: { shape: 'run-4', value: reportRun() }, version: 1 } : { value: undefined, version: 0 } }))
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await ui.find({ key: 'agents' })).toBeUndefined()
   expect(await ui.find({ key: 'sec-progress' })).toBeUndefined()

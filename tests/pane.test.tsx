@@ -52,7 +52,7 @@ class FakeState {
 
   load(run: Run | null, facts: Facts | null, view?: object): FakeState {
     this.values.clear()
-    if (run) this.values.set('run', { value: { shape: 'run-5', value: run }, version: 1 })
+    if (run) this.values.set('run', { value: { shape: 'run-4', value: run }, version: 1 })
     if (facts) this.values.set('facts', { value: { shape: 'facts-1', value: facts }, version: 1 })
     if (view) this.values.set('view', { value: { shape: 'view-1', value: view }, version: 1 })
     return this
@@ -543,6 +543,13 @@ test('the warning of the header says that a run in the session state has no reco
   await ui.unmount()
 })
 
+/** The agent list of the engine while agent-2 ended: w2 is idle. */
+const AGENTS_OF_ENGINE = [
+  { id: 'agent-1', status: 'running' as const, description: 'meld w1', type: 'meld:worker' },
+  { id: 'agent-3', status: 'running' as const, description: 'meld w3', type: 'meld:worker' },
+  { id: 'agent-2', status: 'completed' as const, description: 'meld w2', type: 'meld:worker' },
+]
+
 test('Start on the chip of an idle agent starts the idle agents', async ($, on) => {
   const idle = setWorkerState(workingRun(3), 'w2', 'idle', NOW)
   const state = new FakeState().load(idle, null)
@@ -550,7 +557,7 @@ test('Start on the chip of an idle agent starts the idle agents', async ($, on) 
   on('clock.now', () => ({ value: NOW + 12 * 60_000 }))
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   on('state.set', ($, e) => ({ value: state.set(e) }))
-  on('agent.list', () => ({ value: ['agent-1', 'agent-3'].map(id => ({ id, status: 'running' })).concat([{ id: 'agent-2', status: 'completed' }]) }))
+  on('agent.list', () => ({ value: AGENTS_OF_ENGINE }))
   on('agent.spawn', ($, e) => {
     spawned.push(String(e.description))
     return { model: 'a-model', agentId: 'agent-9' }

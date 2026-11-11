@@ -41,7 +41,7 @@ Search is the one part that differs: SQLite uses FTS5, and Postgres uses `pg_trg
 | `context` | what was learned, in the partition of a party: fact, fail, interface, done | rows are only added, except for changes of trust, retractions and hard deletes |
 | `leases` | owners of runs, of claims and of worker slots | take and renew with compare-and-set |
 
-**One row per run, not a task table.** The rules work on the whole Run: needs, parents and the version of the task list. A task table needs a mapping layer that drifts from the plugin. With a JSON row, the shape migrations of the plugin (the `run-5` shape today) also upgrade the rows of the service.
+**One row per run, not a task table.** The rules work on the whole Run: needs, parents and the version of the task list. A task table needs a mapping layer that drifts from the plugin. With a JSON row, the shape migrations of the plugin (the `run-4` shape today) also upgrade the rows of the service.
 
 **Two logs.** meld 0.8.0 keeps an event log and the shared context in the Run, and trims both. The stores keep both complete. The event log feeds metrics, audit and run moves. The flow metrics planned for 0.10.0 become queries over the event log.
 

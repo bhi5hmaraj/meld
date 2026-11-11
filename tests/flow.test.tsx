@@ -31,7 +31,7 @@ function runOf<T>(change: Change<T>): Run {
 }
 
 function stored(run: Run, key: string) {
-  return key === 'run' ? { value: { shape: 'run-5', value: run }, version: 1 } : { value: undefined, version: 0 }
+  return key === 'run' ? { value: { shape: 'run-4', value: run }, version: 1 } : { value: undefined, version: 0 }
 }
 
 function started(ids: WorkerId[], at: number): Run {
