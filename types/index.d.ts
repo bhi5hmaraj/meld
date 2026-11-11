@@ -272,8 +272,9 @@ export type PaneView = {
   agents: number
   model: string
   vcs: VcsChoice
-  /** The tasks whose children the progress shows; absent in a view that meld 0.6.0 stored. */
+  /** The parents that the person opened, and the parents that the person closed: the choice of the person wins over the parents that open and close themselves. Absent in a view that meld 0.6.0 stored. */
   open?: number[]
+  closed?: number[]
   /** The header shows all of the request. */
   showRequest?: boolean
   /** The steer box of a ready run is open: the person asks for changes. */

@@ -25,7 +25,6 @@ const PROGRESS = { light: '#2a78d6', dark: '#3987e5' }
 export const LANE_WIDTH = 200
 export const LANE_HEIGHT = 20
 export const BAR_WIDTH = 240
-export const ROW_BAR_WIDTH = 64
 export const BAR_HEIGHT = 10
 const LANE_Y = 13
 const FIRST_X = 20
