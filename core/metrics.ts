@@ -73,14 +73,17 @@ function inside(span: Span, at: number): boolean {
   return span.from <= at && at < span.to
 }
 
+/** The spans between adjacent sorted cuts. */
+function gapsOf(cuts: readonly number[]): Span[] {
+  return cuts.slice(1).map((to, index) => ({ from: cuts[index] ?? to, to }))
+}
+
 /** The time in which the number of spans that cover it passes the test. ponytail: O(n^2) over the cuts, fine for a few thousand spans. */
 function msWhere(spans: readonly Span[], keep: (count: number) => boolean): number {
   const cuts = [...new Set(spans.flatMap(span => [span.from, span.to]))].sort((a, b) => a - b)
-  let ms = 0
-  for (let index = 0; index + 1 < cuts.length; index++) {
-    if (keep(spans.filter(span => inside(span, cuts[index])).length)) ms += cuts[index + 1] - cuts[index]
-  }
-  return ms
+  return gapsOf(cuts)
+    .filter(gap => keep(spans.filter(span => inside(span, gap.from)).length))
+    .reduce((sum, gap) => sum + gap.to - gap.from, 0)
 }
 
 function leavesOf(run: Run): Task[] {
@@ -180,11 +183,11 @@ export function lanesOf(run: Run, now: number, events: readonly Entry[] = run.lo
     const points = [from, to, ...[...facts.claims, ...merges, ...sleeps, ...ready].flatMap(span => [span.from, span.to]), ...records.map(entry => entry.at)]
     const cuts = [...new Set(points.filter(point => point >= from && point <= to))].sort((a, b) => a - b)
     const parts: LanePart[] = []
-    for (let index = 0; index + 1 < cuts.length; index++) {
-      const part = partAt(cuts[index], facts)
+    for (const gap of gapsOf(cuts)) {
+      const part = partAt(gap.from, facts)
       const last = parts.at(-1)
-      if (last && last.kind === part.kind && last.task === part.task && last.reason === part.reason) last.to = cuts[index + 1]
-      else parts.push({ kind: part.kind, from: cuts[index], to: cuts[index + 1], ...(part.task === undefined ? {} : { task: part.task }), ...(part.reason ? { reason: part.reason } : {}) })
+      if (last && last.kind === part.kind && last.task === part.task && last.reason === part.reason) last.to = gap.to
+      else parts.push({ kind: part.kind, ...gap, ...(part.task === undefined ? {} : { task: part.task }), ...(part.reason ? { reason: part.reason } : {}) })
     }
     return { worker: worker.id, from, to, parts }
   })
@@ -226,7 +229,7 @@ export function efficiencyOf(run: Run, now: number, events: readonly Entry[] = r
   const end = endOf(run, now)
   const lanes = lanesOf(run, now, events)
   const workers = run.workers.map((worker, index): WorkerEfficiency => {
-    const lane = lanes[index]
+    const lane = lanes[index] ?? { worker: worker.id, from: end, to: end, parts: [] }
     const usage = worker.usage
     const context = usage && worker.steps ? { meanContext: (usage.input + usage.cacheWrite + usage.cacheRead) / worker.steps } : {}
     const times: Times = {
@@ -381,7 +384,7 @@ export function collaborationOf(run: Run, now: number, events: readonly Entry[] 
   const claims = claimsOf(run, events, endOf(run, now))
   const splitParts = events.flatMap(entry => {
     const split = entry.kind === 'task' ? SPLIT.exec(entry.text) : null
-    return split ? [...split[2].matchAll(TASK_ID)].map(match => ({ by: entry.by, task: Number(match[1]) })) : []
+    return split ? [...(split[2] ?? '').matchAll(TASK_ID)].map(match => ({ by: entry.by, task: Number(match[1]) })) : []
   })
   const changers = new Map<string, Set<WorkerId>>()
   for (const entry of events.filter(one => one.kind === 'merge' && one.worker)) {
@@ -426,8 +429,8 @@ export type SharedContext = {
 function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b)
   const middle = Math.floor(sorted.length / 2)
-  if (!sorted.length) return 0
-  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2
+  const high = sorted[middle] ?? 0
+  return sorted.length % 2 ? high : ((sorted[middle - 1] ?? high) + high) / 2
 }
 
 /** Section 4.4: do the agents learn from each other? */
