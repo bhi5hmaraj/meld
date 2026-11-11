@@ -1,10 +1,10 @@
 import type { ElementTable, RenderSurface } from 'claude-code'
 
-import type { Activity, AgentSpec, ContextKind, Entry, Facts, LaneFacts, PaneView, ResultFacts, Run, RunState, Task, Worker, WorkerId, WorkerState } from '../types'
+import type { Activity, AgentSpec, ContextEntry, ContextKind, Entry, Facts, LaneFacts, PaneView, ResultFacts, Run, RunState, Task, Worker, WorkerId, WorkerState } from '../types'
 import { deliver, discard, LEADING_CD, stopAll, stopOne } from '../core/actions'
-import { CONTEXT_CAP, currentContext, NOT_STARTED, SPLIT_CALLS } from '../core/board'
-import { activityOf, sharedContextOf } from '../core/metrics'
-import type { Progress, SharedContext } from '../core/metrics'
+import { CONTEXT_CAP, currentContext, NOT_STARTED, saidOf, SPLIT_CALLS } from '../core/board'
+import { activityOf } from '../core/metrics'
+import type { Progress } from '../core/metrics'
 import { STEER_PRESETS } from '../core/contract'
 import { agentColor, BAR_HEIGHT, BAR_WIDTH, barCells, LANE_HEIGHT, LANE_WIDTH, laneAlt, laneGlyphs, laneSvg, partsBarSvg, STATUS } from './drawing'
 import { FLOW_CELLS, FLOW_HEIGHT, FLOW_LEGEND, FLOW_WIDTH, flowCells, flowSvg, partsIn, partWords } from './drawing'
@@ -38,10 +38,14 @@ const STATE_TONE: Record<RunState, string> = {
 const WORKER_TONE: Record<WorkerState, string> = { starting: 'warning', working: 'success', idle: 'inactive', stopped: 'error' }
 const KIND_SHAPE: Record<ContextKind, string> = { fact: '■', fail: '✕', interface: '◇' }
 const KIND_TONE: Record<ContextKind, string | undefined> = { fact: undefined, fail: 'error', interface: 'suggestion' }
-const KIND_ORDER: readonly ContextKind[] = ['fact', 'fail', 'interface']
-const CONTEXT_ROWS = 5
+const LEARNING_GROUPS: readonly { kind: ContextKind; heading: string; tone?: string }[] = [
+  { kind: 'fact', heading: 'Facts' },
+  { kind: 'fail', heading: 'Avoid', tone: 'error' },
+  { kind: 'interface', heading: 'Contracts' },
+]
+/** The words of the lines of Learnings: the block holds 100 words with its heading and the three group headings. */
+const LEARNING_WORDS = 96
 const CONTEXT_WORDS = 8
-const NAMED_WORKERS = 3
 const STUCK_MS = 300_000
 /** After this long with no text, the Now line of a card gives plain words from the tool calls of its agent. */
 const SAID_FRESH_MS = 60_000
@@ -113,10 +117,9 @@ export function paneTree(input: PaneInput) {
       {headerSection(input, run)}
       {refusedSection(input, run)}
       {agentsSection(input, run, facts)}
+      {learningsSection(input, run)}
       {progressSection(input, run)}
       {flowSection(input, run)}
-      {contextSection(input, run)}
-      {contextEntriesSection(input, run)}
       {checksSection(input, run)}
       {run.final && resultSection(input, run, facts?.result)}
       {LIVE.has(run.state) && steerSection(input, run)}
@@ -582,42 +585,32 @@ function tokenCount(tokens: number): string {
   return tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : String(Math.round(tokens))
 }
 
-/** The heading and the metrics of the shared context: whether the agents learn from each other. */
-function contextSection(input: PaneInput, run: Run) {
-  const { Box, Text } = input.table
-  if (!currentContext(run, 1).length) return undefined
-  return (
-    <Box key="sec-context" flexDirection="column" gap="xs">
-      <Text bold>Shared context</Text>
-      <Box key="context-metrics" flexDirection="row" gap="sm" flexWrap="wrap">
-        {contextMetrics(sharedContextOf(run, input.now)).map(metric => (
-          <Text key={metric} dimColor>
-            {metric}
-          </Text>
-        ))}
-      </Box>
-    </Box>
-  )
-}
+/** One line of Learnings: the first sentence of an entry, and who used it, heeded it or how many got it. */
+type Learning = { entry: ContextEntry; sentence: string; use?: string }
 
-/** The newest current entries, by kind: who shared each one, who got it and who used it. A block of its own, as five lines fill most of 100 words. */
-function contextEntriesSection(input: PaneInput, run: Run) {
+/** The current shared context as sentences under Facts, Avoid and Contracts: what the agents learn from each other. */
+function learningsSection(input: PaneInput, run: Run) {
   const { Box, Text } = input.table
-  const entries = currentContext(run, CONTEXT_ROWS).sort((one, other) => KIND_ORDER.indexOf(one.kind) - KIND_ORDER.indexOf(other.kind))
-  if (!entries.length) return undefined
+  const learnings = learningsOf(run)
+  if (!learnings.length) return undefined
   return (
-    <Box key="sec-context-entries" flexDirection="column" gap="xs">
-      {entries.map(entry => {
-        const users = usersOf(run, entry.id)
+    <Box key="sec-learnings" flexDirection="column" gap="xs">
+      <Text bold>Learnings</Text>
+      {LEARNING_GROUPS.map(group => {
+        const rows = learnings.filter(learning => learning.entry.kind === group.kind)
+        if (!rows.length) return undefined
         return (
-          <Box key={`context-${entry.id}`} flexDirection="row" gap="sm">
-            <Text color={KIND_TONE[entry.kind]}>{KIND_SHAPE[entry.kind]}</Text>
-            <Text color={agentColor(run.workers.findIndex(worker => worker.id === entry.by)).light}>{entry.by}</Text>
-            <Text dimColor wrap="truncate-end">
-              {cutWords(entry.text, CONTEXT_WORDS)}
+          <Box key={`learnings-${group.kind}`} flexDirection="column">
+            <Text bold color={group.tone}>
+              {group.heading}
             </Text>
-            <Text dimColor>{`got ${workersText(entry.seenBy)}`}</Text>
-            {users.length > 0 && <Text>{`used by ${workersText(users)}`}</Text>}
+            {rows.map(({ entry, sentence, use }) => (
+              <Box key={`learning-${entry.id}`} flexDirection="row" gap="sm">
+                <Text wrap="wrap">{sentence}</Text>
+                <Text color={agentColor(run.workers.findIndex(worker => worker.id === entry.by)).light}>{entry.by}</Text>
+                {use && <Text dimColor>{use}</Text>}
+              </Box>
+            ))}
           </Box>
         )
       })}
@@ -625,28 +618,23 @@ function contextEntriesSection(input: PaneInput, run: Run) {
   )
 }
 
-/** The workers whose finished tasks name the entry in used. */
-function usersOf(run: Run, id: number): WorkerId[] {
-  return [...new Set(run.tasks.flatMap(task => (task.state === 'done' && task.owner && task.used?.includes(id) ? [task.owner] : [])))]
-}
-
-/** A few workers by name; more as a count, so that a line stays short with eight agents. */
-function workersText(workers: readonly WorkerId[]): string {
-  if (!workers.length) return 'none'
-  return workers.length > NAMED_WORKERS ? `${workers.length} agents` : workers.join(' ')
-}
-
-/** The metrics of section 4.4 of the pane note, one short text each. */
-function contextMetrics(shared: SharedContext): string[] {
-  const { entries, all, delivered, deliveryMs, cited, received, failsHeeded, failsReceived, repeatedFails, perTask } = shared
-  return [
-    `${counted(all, 'entry', 'entries')}: ${counted(entries.fact, 'fact')}, ${counted(entries.fail, 'fail')}, ${counted(entries.interface, 'interface')}`,
-    ...(perTask ? [`${Number(perTask.toFixed(1))} for each done task`] : []),
-    `${delivered} of ${all} delivered${delivered ? `, median ${ago(deliveryMs)}` : ''}`,
-    `${cited} of ${counted(received, 'received entry', 'received entries')} cited`,
-    `${failsHeeded} of ${counted(failsReceived, 'fail')} heeded`,
-    `${counted(repeatedFails, 'fail')} repeated`,
-  ]
+/** The newest current entries whose words fit in the block. */
+function learningsOf(run: Run): Learning[] {
+  const learnings: Learning[] = []
+  let words = 0
+  for (const entry of currentContext(run, Infinity)) {
+    const users = [...new Set(run.tasks.flatMap(task => (task.state === 'done' && task.owner && task.used?.includes(entry.id) ? [task.owner] : [])))]
+    const use = users.length
+      ? `${entry.kind === 'fail' ? 'heeded' : 'used'} by ${users.join(', ')}`
+      : entry.seenBy.length
+        ? `got by ${entry.seenBy.length}`
+        : undefined
+    const learning = { entry, sentence: saidOf(entry.text) ?? entry.text, use }
+    words += wordCount(`${learning.sentence} ${entry.by} ${use ?? ''}`)
+    if (words > LEARNING_WORDS) break
+    learnings.push(learning)
+  }
+  return learnings
 }
 
 function counted(count: number, one: string, many = `${one}s`): string {
