@@ -6,7 +6,9 @@ This page gives the details that the [README](../README.md) leaves out. Two word
 
 Each agent starts as the hidden agent type `meld:worker`, in its own folder. With no `--model`, an agent uses the model of its agent type, and `meld:worker` uses the model of your session.
 
-A `meld:worker` can call the shell, the file tools and the board tools, and no other tool. It has no skills, no subagents, no web tools and no tools of your other MCP servers. This keeps its first request small: in one session it went from 35,000 to 10,500 tokens, and an agent reads that part again at each model call ([#6](https://github.com/bhi5hmaraj/meld/issues/6)). For an agent with all the tools of your session, give another type, for example `--agents general-purpose`.
+A `meld:worker` starts with a short list of tools: the shell, the file tools and a tool search. The board tools and the web tools load when the agent searches for them. This keeps its first request small: in one session it went from 35,000 to 8,400 tokens, and to 11,100 with the board tools loaded. An agent reads that part again at each model call ([#6](https://github.com/bhi5hmaraj/meld/issues/6)).
+
+A `meld:worker` has no Skill tool, as the list of all skills was a third of its first request. At a start, meld lists your skills in `~/.claude/skills`, and the rules of each agent name them. An agent reads the `SKILL.md` of the skill that fits its task. It has no subagents and no tools of your other MCP servers. For an agent with all the tools of your session, give another type, for example `--agents general-purpose`.
 
 - **Claude agents** run as subagents of your session.
 - **Codex** runs through ACP with `npx -y @agentclientprotocol/codex-acp`, which needs Node and an OpenAI login. `meld mcp` runs it, so it needs Bun.
@@ -204,7 +206,7 @@ meld has three `tool.check` hooks. Claude Code runs the `tool.check` hooks of al
 
 - **The board check** allows the calls of meld to `meld mcp`, and refuses the calls of agents, of the main session and of other plugins. Without it, the other plugin or the mode of your session decides each call. A call of meld can wait for your answer or fail, and a call of an agent is not refused.
 - **The Agent check** approves each start and restart of an agent in auto mode, while a run that you started is live. Without it, auto mode refuses these starts, and the pane shows the reason under the header.
-- **The worker check** allows two kinds of calls of an agent. The first is `git -C` and `jj -R` in its own folder, for the commands of the rules. The second is a read of the board files: one search command (`rg`, `grep`, `jq`, `sed -n`, `head`, `tail`, `cat`, `wc` or `ls`) or a read tool, on paths in the folder of the board files and on no other path. Without it, Claude Code asks you for each such call, and a run with no person cannot commit or search its board.
+- **The worker check** allows two kinds of calls of an agent. The first is `git -C` and `jj -R` in its own folder, for the commands of the rules. The second is a read of the board files or of a skill in `~/.claude/skills`. It is one search command (`rg`, `grep`, `jq`, `sed -n`, `head`, `tail`, `cat`, `wc` or `ls`) or a read tool. Its paths are in these two folders and in no other place. Without it, Claude Code asks you for each such call, and a run with no person cannot commit or search its board.
 
 The edit guard is a `tool.call` hook, and a skip in `tool.check` does not stop it.
 

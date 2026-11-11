@@ -160,12 +160,12 @@ export const register: Register = on => {
     decision: 'deny',
   }))
 
-  // A worker runs git -C or jj -R in its own folder, and searches the files of its board: see workerVerdict.
+  // A worker runs git -C or jj -R in its own folder, and reads the files of its board and the skills of the person: see workerVerdict.
   on('tool.check', { tool: CHECKED_TOOLS }, async ($, e, next) => {
     if (e.agentId !== undefined) sawCheck()
     const run = await read($, runRef)
-    const root = run ? viewRoot({ store: board.server ? 'file' : 'session' }, run) : undefined
-    return workerVerdict(await next(e), { agentId: e.agentId, tool: String(e.tool), input: e.input }, run, root)
+    const roots = run ? [viewRoot({ store: board.server ? 'file' : 'session' }, run), run.skills?.folder].flatMap(root => (root ? [root] : [])) : []
+    return workerVerdict(await next(e), { agentId: e.agentId, tool: String(e.tool), input: e.input }, run, roots)
   }).catch(($, e, next) => next(e))
 
   // A worker spawn is an Agent call that meld raises, and auto mode cannot link it to the person: see spawnVerdict.

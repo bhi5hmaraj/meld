@@ -68,10 +68,11 @@ export const BOARD_TOOLS = [
 ] as const
 
 /**
- * What an agent of the type meld:worker may call: the shell, the file tools and the board tools. Its first request is
- * then about a third of the size, as it carries no list of skills and no other tools.
+ * What an agent of the type meld:worker may call: the shell, the file tools, the board tools, and the tool search with
+ * the web tools, which load when the agent searches for them. Its first request is then about a quarter of the size: it
+ * carries no list of skills and no other tools. The rules tell the agent where the skills are as files (skillsRule).
  */
-export const WORKER_TOOLS = ['Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob', ...BOARD_TOOLS]
+export const WORKER_TOOLS = ['Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob', 'ToolSearch', 'WebFetch', 'WebSearch', ...BOARD_TOOLS]
 
 /** The instructions behind the steer buttons of the pane: each a fixed text, so a press needs no typing. */
 export const STEER_PRESETS = [
@@ -293,6 +294,14 @@ ${run.request}${asked}
 ${LAST_MESSAGE}`
 }
 
+/** The skills of the person as files, for an agent with no Skill tool: it reads the one that fits its task. */
+function skillsRule(run: Run): string {
+  if (!run.skills) return ''
+  return `
+Skills. The person has these skills: ${run.skills.names.join(', ')}. The file of a skill is ${run.skills.folder}/<name>/SKILL.md. Your folder can have more in .claude/skills. When you have no Skill tool and a skill fits your task, read its file with the Read tool before you start. Search for other tools with ToolSearch when you have it, for example the web tools.
+`
+}
+
 export function workerRules(run: Run, id: WorkerId): string {
   const you = workerIn(run, id)
   const line = vcsFor(run.vcs).lineName(run)
@@ -323,7 +332,7 @@ Share the machine. The other workers run on this machine too. A type check, a ty
 - Watch your own commands. A command that runs much slower than it should, or that makes the swap grow, starves the machine: stop it, and run it again when the machine has room.
 - Run the full checks once, before you finish a task. Between steps, run only the tests of your change.
 - Stop each process that you started, such as a dev server or a watcher, before you hand back. Give each wait a timeout, and never wait on a command that does not end, such as tail -f.
-
+${skillsRule(run)}
 ${run.vcs === 'jj' ? jjGuide(you, peers, line) : gitGuide(you, peers, line)}`
 }
 

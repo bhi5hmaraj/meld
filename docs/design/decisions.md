@@ -58,4 +58,4 @@ Status values:
 | 48 | The whole run does not go through an MCP result. The plugin reads its board over the channel of `meld mcp` now. Later it sends each board call to the board, as a hosted board needs. | Agreed | [architecture](architecture.md) |
 | 49 | An agent that is about to stop goes on in its turn when the board has a step for its worker. The restart of an idle agent of another worker still comes from a turn of the main session. | Agreed | [plan](plan.md) |
 | 50 | The end of each turn starts the idle workers that have work: a turn of an agent, or of the main session. No clock starts an agent: such an agent skips the hooks of meld. | Agreed | [plan](plan.md) |
-| 51 | A `meld:worker` can call the shell, the file tools and the board tools only. A run that needs skills, subagents or other MCP tools names another agent type. | Agreed | [plan](plan.md) |
+| 51 | A `meld:worker` starts with the shell, the file tools and a tool search. Its other tools load on a search, and it reads a skill as a file. It has no subagents: meld does not guard the calls of a subagent of an agent. | Agreed | [plan](plan.md) |

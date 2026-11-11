@@ -222,6 +222,8 @@ export type Run = {
   sessionSeen?: number
   /** Where the run lives: the session state only, or a board file. Absent in a run that meld 0.10.1 or older stored. */
   store?: 'session' | 'file'
+  /** The skills of the person on the machine of the host: their folder and their names. Absent when there is none. */
+  skills?: { folder: string; names: string[] }
   /** Set when the permission check of meld does not see the calls of the agents: a hook of another plugin answers first. */
   unchecked?: true
 }

@@ -126,7 +126,7 @@ async function startAlone(io: Io, cwd: string, options: StartOptions): Promise<C
   if ('error' in prepared) return { text: `meld could not make the workspaces: ${prepared.error}` }
   const workspaces = prepared.workspaces
   const workers = ids.map((wid, index) => ({ id: wid, agent: options.agents[index] ?? { type: 'meld:worker' }, path: workspaces[index]?.path ?? '', ref: workspaces[index]?.ref ?? '' }))
-  const run = board.startRun({ id, request, repo, base, vcs: kind, now, costAtStart: await io.cost(), store: io.store, workers })
+  const run = board.startRun({ id, request, repo, base, vcs: kind, now, costAtStart: await io.cost(), store: io.store, skills: await skillsOf(io, repo), workers })
   await io.write(() => run)
   await io.writeFacts(null)
   void io.openPane(false)
@@ -638,6 +638,22 @@ async function resumed(io: Store & Clock & Runner, run: Run, worker: Worker, ste
  * A deny reason for a tool call of a worker, or undefined; records the call as the worker's activity. A hand-back ends
  * the turn of the agent: its worker is idle at once, as meld does not see the end of a turn that a restart started.
  */
+/** The most skills that the rules of a worker name. */
+const SKILLS_NAMED = 40
+
+/**
+ * The skills of the person on this machine: their folder and their names, or undefined when there is none. meld lists
+ * them, as the host lets an agent read a file outside the folders of the session, and not list a folder there.
+ */
+async function skillsOf(io: CodeHost, cwd: string): Promise<Run['skills']> {
+  const home = (await command(io, cwd, ['printenv', 'HOME'])).out
+  if (!home) return undefined
+  const folder = `${home}/.claude/skills`
+  const files = (await command(io, cwd, ['find', '-L', folder, '-maxdepth', '2', '-name', 'SKILL.md'])).out.split('\n').filter(Boolean)
+  const names = files.map(file => file.split('/').at(-2) ?? '').filter(Boolean).sort().slice(0, SKILLS_NAMED)
+  return names.length ? { folder, names } : undefined
+}
+
 /** The tools of a worker whose calls the permission check of meld sees (see workerVerdict). */
 export const CHECKED_TOOLS = ['Bash', 'Read', 'Grep', 'Glob']
 
@@ -848,9 +864,10 @@ const VIEW_READERS: Readonly<Record<string, { flags: RegExp; word?: (word: strin
 }
 
 /**
- * The verdict on a read of the board files by a worker: one search command of Bash, or a read tool, on paths under the
- * root of the files and on no other path. The engine asks a person for a read outside the folders of the session, and
- * with no person the agents could not search the board. Every other verdict stands.
+ * The verdict on a read by a worker of the files that meld gives it: the files of its board, and the skills of the
+ * person. It is one search command of Bash, or a read tool, on paths under `roots` and on no other path. The engine asks
+ * a person for a read outside the folders of the session, and with no person the agents could not search the board.
+ * Every other verdict stands.
  */
 export function viewVerdict<V extends { decision: string }>(
   verdict: V,
@@ -858,30 +875,30 @@ export function viewVerdict<V extends { decision: string }>(
   tool: string,
   input: unknown,
   run: Run | null,
-  root: string | undefined,
+  roots: readonly string[],
 ): V | { decision: 'allow'; reason: string } {
-  const worker = verdict.decision === 'ask' && agentId && run && root && LIVE_STATES.has(run.state) ? board.workerOf(run, agentId) : undefined
-  return worker && root && readsView(tool, (input ?? {}) as Record<string, unknown>, root) ? { decision: 'allow', reason: VIEW_APPROVAL } : verdict
+  const worker = verdict.decision === 'ask' && agentId && run && roots.length && LIVE_STATES.has(run.state) ? board.workerOf(run, agentId) : undefined
+  return worker && readsView(tool, (input ?? {}) as Record<string, unknown>, roots) ? { decision: 'allow', reason: VIEW_APPROVAL } : verdict
 }
 
-function readsView(tool: string, input: Record<string, unknown>, root: string): boolean {
-  if (tool === 'Bash') return isViewRead(shellWords(String(input.command ?? '')), root)
+function readsView(tool: string, input: Record<string, unknown>, roots: readonly string[]): boolean {
+  if (tool === 'Bash') return isViewRead(shellWords(String(input.command ?? '')), roots)
   const path = input[READ_TOOL_PATHS[tool] ?? '']
-  return typeof path === 'string' && isUnder(path, root)
+  return typeof path === 'string' && isUnder(path, roots)
 }
 
-function isUnder(path: string, root: string): boolean {
-  return !path.split('/').includes('..') && (path === root || path.startsWith(`${root}/`))
+function isUnder(path: string, roots: readonly string[]): boolean {
+  return !path.split('/').includes('..') && roots.some(root => path === root || path.startsWith(`${root}/`))
 }
 
-function isViewRead(words: string[] | undefined, root: string): boolean {
+function isViewRead(words: string[] | undefined, roots: readonly string[]): boolean {
   const reader = words ? VIEW_READERS[words[0] ?? ''] : undefined
   if (!words || !reader) return false
   const given = words.slice(1)
   const flags = given.filter(word => word.startsWith('-'))
   const others = given.filter(word => !word.startsWith('-') && !/^\d+$/.test(word))
-  const paths = others.filter(word => isUnder(word, root))
-  const free = others.filter(word => !isUnder(word, root))
+  const paths = others.filter(word => isUnder(word, roots))
+  const free = others.filter(word => !isUnder(word, roots))
   if (!flags.every(flag => reader.flags.test(flag)) || (reader.needs && !flags.includes(reader.needs))) return false
   return paths.length > 0 && free.length <= (reader.word ? 1 : 0) && free.every(word => reader.word?.(word)) && others.indexOf(free[0] ?? '') <= 0
 }
@@ -894,11 +911,11 @@ export function workerVerdict<V extends { decision: string }>(
   verdict: V,
   call: { agentId?: string; tool: string; input: unknown },
   run: Run | null,
-  root: string | undefined,
+  roots: readonly string[],
 ): V | { decision: 'allow'; reason: string } {
   const command = call.tool === 'Bash' ? String(((call.input ?? {}) as { command?: unknown }).command ?? '') : undefined
   const own = command === undefined ? verdict : vcsVerdict(verdict, call.agentId, command, run)
-  return own.decision === 'ask' ? viewVerdict(verdict, call.agentId, call.tool, call.input, run, root) : own
+  return own.decision === 'ask' ? viewVerdict(verdict, call.agentId, call.tool, call.input, run, roots) : own
 }
 
 /** Characters that the shell reads as syntax outside quotes: operators, redirects, substitutions, escapes, globs and comments. */

@@ -496,11 +496,11 @@ test('without meld mcp, a start that starts no worker gives no warning about the
   expect(replied.text).not.toContain('This run has no board file')
 })
 
-test('the worker type compacts its agent at the context cap, and may call the file tools, the shell and the board tools only', async ($, on) => {
+test('the worker type compacts its agent at the context cap, and may call the shell, the file tools, the board tools, and the tool search with the web tools', async ($, on) => {
   const registered: { name: string; autoCompactWindow?: number; tools?: readonly string[] }[] = []
   answerTheEngine(on, new FakeMcp(), registered)
   await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
-  expect(registered).toEqual([{ name: 'worker', autoCompactWindow: CONTEXT_CAP, tools: ['Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob', ...BOARD_TOOLS] }])
+  expect(registered).toEqual([{ name: 'worker', autoCompactWindow: CONTEXT_CAP, tools: ['Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob', 'ToolSearch', 'WebFetch', 'WebSearch', ...BOARD_TOOLS] }])
 })
 
 test('a session that started before meld mcp ran connects at its first command, and its codex worker starts on the board', async ($, on) => {

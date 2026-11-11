@@ -64,6 +64,7 @@ export type StartInput = {
   now: number
   costAtStart?: number
   store?: 'session' | 'file'
+  skills?: Run['skills']
   workers: { id: WorkerId; path: string; ref: string; agent: AgentSpec }[]
 }
 
@@ -88,6 +89,7 @@ export function startRun(input: StartInput): Run {
     startedAt: input.now,
     costAtStart: input.costAtStart,
     store: input.store,
+    skills: input.skills,
     workers: input.workers.map(worker => newWorker(worker, input.now)),
     tasks: [],
     log: [],
