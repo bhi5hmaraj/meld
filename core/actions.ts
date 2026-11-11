@@ -121,7 +121,7 @@ async function startAlone(io: Io, cwd: string, options: StartOptions): Promise<C
   if ('error' in prepared) return { text: `meld could not make the workspaces: ${prepared.error}` }
   const workspaces = prepared.workspaces
   const workers = ids.map((wid, index) => ({ id: wid, agent: options.agents[index] ?? { type: 'meld:worker' }, path: workspaces[index]?.path ?? '', ref: workspaces[index]?.ref ?? '' }))
-  const run = board.startRun({ id, request, repo, base, vcs: kind, now, costAtStart: await io.cost(), workers })
+  const run = board.startRun({ id, request, repo, base, vcs: kind, now, costAtStart: await io.cost(), store: io.store, workers })
   await io.write(() => run)
   await io.writeFacts(null)
   void io.openPane(false)
@@ -649,6 +649,15 @@ export async function acpRefusal(io: Store, agentId: string, ask: { kind: string
   const worker = run ? board.workerOf(run, agentId) : undefined
   if (!run || !worker) return STOPPED_CALL
   return refusalOf(run, worker, ACP_EDIT_KINDS.has(ask.kind) ? ask.paths : [])
+}
+
+/** A gap between two ticks of a clock that ticks each second or more often: past it, the machine slept. */
+export const SLEEP_GAP_MS = 30_000
+
+/** Records a sleep of the machine when the clock jumped past SLEEP_GAP_MS between ticks `from` and `now` of a live run. */
+export async function recordSleep(io: Store, from: number, now: number): Promise<void> {
+  if (now - from <= SLEEP_GAP_MS) return
+  await io.write(run => (run && LIVE_STATES.has(run.state) ? board.machineSlept(run, from, now) : run))
 }
 
 /** A tool call of an ACP worker becomes the activity of its worker, and counts as a call, as a tool call of a subagent does. The words of the agent before it become its said. */

@@ -8,6 +8,7 @@ export const ARCHIVE = '/home/me/.meld/archive'
 /** The engine as the logic of meld sees it: the run in a memory store, commands that answer from tables, and every call recorded. */
 export class FakeIo extends MemoryStore implements Io, Files, RunRecords {
   repos = ['/repo', '/elsewhere']
+  store: 'session' | 'file' | undefined = undefined
   answers: Record<string, string> = {}
   /** Whole results by command, for a command that fails with an output, as git merge-tree does on a conflict. */
   outcomes: Record<string, ProcessResult> = {}
