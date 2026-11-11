@@ -69,7 +69,7 @@ const SUMMARY_WORDS = 24
 const REQUEST_BAR = { width: BAR_WIDTH, cells: 24 }
 const ROW_INDENT = 2
 const TITLE_WORDS = 8
-/** The words of the rows: the progress block holds 100 words with its heading, the bar and percent of the request, and the count of the rows left out. */
+/** The words of the rows: the plan block holds 100 words with its heading and the count of the rows left out. */
 const ROW_WORDS = 90
 /** A ready task that waits longer than this while a worker is idle shows in the warning colour. */
 const READY_WARN_MS = 300_000
@@ -395,7 +395,7 @@ function progressSection(input: PaneInput, run: Run) {
   const all = rowsOf(tree, topTasks(run.tasks), 0)
   const done = all.filter(row => row.depth === 0 && row.group === 'done' && !row.isOpen)
   const [first] = done
-  const fold = first && done.length > 1 && done.length < all.length ? `${taskName(first.task)}, and ${done.length - 1} more done` : undefined
+  const fold = first && done.length > 1 && all.some(row => row.group !== 'done') ?`${taskName(first.task)}, and ${done.length - 1} more done` : undefined
   const rows = fold ? all.filter(row => !done.includes(row)) : all
   const shown = rowsWithin(rows, ROW_WORDS - (fold ? wordCount(fold) : 0))
   return (
