@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.10.3
+
+These fixes close three issues of 10 and 11 November 2026. Runs in a session with no person checked the restarts, the size of a worker and its read of a skill live.
 
 - **No restart waits for your session.** The end of each turn of an agent now starts the idle agents that have work. Before, only a turn of your session did. A run of two agents did four tasks in a chain with one turn of the main session, the start. Each task had a new agent. ([#12](https://github.com/bhi5hmaraj/meld/issues/12))
 - **A smaller worker.** A `meld:worker` starts with the shell, the file tools and a tool search. The board tools and the web tools load when it searches for them. Its first request went from 35,000 to 8,400 tokens in one session, and to 11,100 with the board tools loaded. An agent reads that part again at each model call. ([#6](https://github.com/bhi5hmaraj/meld/issues/6))
