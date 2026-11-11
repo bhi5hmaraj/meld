@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 
 import type { Activity } from '../types'
-import { acpRefusal, markWorker, noteTime, ownedByAcp, recordActivity, recordContext, restartIdleWorkers } from '../core/actions'
+import { acpRefusal, markWorker, noteTime, ownedByAcp, recordActivity, recordContext, recordSleep, restartIdleWorkers } from '../core/actions'
 import { workerOf } from '../core/board'
 import { activityOf } from '../core/metrics'
 import { WORKER_SYSTEM } from '../core/contract'
@@ -50,6 +50,7 @@ export class AcpRunner {
   private readonly poll: ReturnType<typeof setInterval>
   private leading: Lead | undefined
   private closed = false
+  private lastBeat = Date.now()
 
   constructor(
     private readonly boards: SqliteBoards,
@@ -215,7 +216,11 @@ export class AcpRunner {
     }
   }
 
+  /** The beat is the clock of the sleep check: a gap between two beats is a sleep of the machine. */
   private async beat(): Promise<void> {
+    const from = this.lastBeat
+    this.lastBeat = Date.now()
+    if (this.leading) await recordSleep(mcpIo(this.boards, this.leading.board), from, this.lastBeat)
     await this.deliverMessages()
     if (this.leading) await this.restartIdle(this.leading.board)
   }

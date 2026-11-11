@@ -32,7 +32,7 @@ export const LEADING_CD = /^(?:\s*cd\s+\S+\s*(?:&&|;)\s*)+/
 type Args = Record<string, unknown>
 type Refused = { error: string; message: string }
 /** The arguments of a tool call with the full commit; for finish, the commits of the done tasks that the final commit holds. */
-type Checked = { args: Args; held?: ReadonlySet<string> }
+type Checked = { args: Args; held?: ReadonlySet<string>; taken?: number }
 /** The change of a tool call, with what its reply gives beside the value. */
 type Made = { run: Run; value: unknown; extra?: object } | Failure
 
@@ -122,7 +122,7 @@ async function startAlone(io: Io, cwd: string, options: StartOptions): Promise<C
   if ('error' in prepared) return { text: `meld could not make the workspaces: ${prepared.error}` }
   const workspaces = prepared.workspaces
   const workers = ids.map((wid, index) => ({ id: wid, agent: options.agents[index] ?? { type: 'meld:worker' }, path: workspaces[index]?.path ?? '', ref: workspaces[index]?.ref ?? '' }))
-  const run = board.startRun({ id, request, repo, base, vcs: kind, now, costAtStart: await io.cost(), workers })
+  const run = board.startRun({ id, request, repo, base, vcs: kind, now, costAtStart: await io.cost(), store: io.store, workers })
   await io.write(() => run)
   await io.writeFacts(null)
   void io.openPane(false)
@@ -275,7 +275,7 @@ export async function serveTool(io: Io, e: ToolCall, cwd = ''): Promise<ToolRepl
   let nudge: Task | undefined
   await io.write(run => {
     if (!run) return run
-    const done = answered(run, worker.id, 'error' in checked ? checked : mutate(run, worker.id, tool, checked.args, now, checked.held))
+    const done = answered(run, worker.id, 'error' in checked ? checked : mutate(run, worker.id, tool, now, checked))
     const passed = board.passContext(done.run, worker.id, now)
     answer = { ...done.answer, context: passed.context }
     const counted = countedCall(passed.run, worker.id, now)
@@ -364,7 +364,9 @@ async function withResolvedCommit(io: Store & CodeHost, tool: string, args: Args
     return { error: 'CONFLICT', message: `${found.commit.slice(0, 12)} has a conflict. Fix the conflict, commit, and finish with the new commit.` }
   }
   const resolved = { ...args, commit: found.commit }
-  return tool === TOOL.finish ? { args: resolved, held: await heldInFinal(io, run, found.commit) } : { args: resolved }
+  if (tool === TOOL.finish) return { args: resolved, held: await heldInFinal(io, run, found.commit) }
+  if (tool === TOOL.finishTask) return { args: resolved, taken: await vcs.taken(io, run, found.commit) }
+  return { args: resolved }
 }
 
 /** The commits of the done tasks that `final` holds, as the version control reads them. */
@@ -390,7 +392,7 @@ function wholeFinal(run: Run, declared: Change<Final>, held: ReadonlySet<string>
   return missing.length ? { error: 'MISSING_WORK', message: missingWorkText(run, declared.value.commit, missing) } : declared
 }
 
-function mutate(run: Run, by: WorkerId, tool: string, args: Args, now: number, held: ReadonlySet<string> = new Set()): Made {
+function mutate(run: Run, by: WorkerId, tool: string, now: number, { args, held = new Set(), taken }: Checked): Made {
   switch (tool) {
     case TOOL.addTasks:
       return board.addTasks(run, by, { seen: Number(args.seen), tasks: newTasks(args.tasks) }, now)
@@ -402,7 +404,7 @@ function mutate(run: Run, by: WorkerId, tool: string, args: Args, now: number, h
       return board.releaseTask(run, by, Number(args.task), Number(args.version), text(args.note), now)
     case TOOL.finishTask: {
       const shared = { interfaces: optionalText(args.interfaces), unfinished: optionalText(args.unfinished) }
-      return withHandBack(board.finishTask(run, by, Number(args.task), Number(args.version), text(args.commit), text(args.summary), now, shared), by)
+      return withHandBack(board.finishTask(run, by, Number(args.task), Number(args.version), text(args.commit), text(args.summary), now, shared, taken), by)
     }
     case TOOL.note:
       return board.addNote(run, by, text(args.text), args.commit === undefined ? undefined : text(args.commit), now)
@@ -648,6 +650,15 @@ export async function acpRefusal(io: Store, agentId: string, ask: { kind: string
   const worker = run ? board.workerOf(run, agentId) : undefined
   if (!run || !worker) return STOPPED_CALL
   return refusalOf(run, worker, ACP_EDIT_KINDS.has(ask.kind) ? ask.paths : [])
+}
+
+/** A gap between two ticks of a clock that ticks each second or more often: past it, the machine slept. */
+export const SLEEP_GAP_MS = 30_000
+
+/** Records a sleep of the machine when the clock jumped past SLEEP_GAP_MS between ticks `from` and `now` of a live run. */
+export async function recordSleep(io: Store, from: number, now: number): Promise<void> {
+  if (now - from <= SLEEP_GAP_MS) return
+  await io.write(run => (run && LIVE_STATES.has(run.state) ? board.machineSlept(run, from, now) : run))
 }
 
 /** A tool call of an ACP worker becomes the activity of its worker, and counts as a call, as a tool call of a subagent does. The words of the agent before it become its said. */
