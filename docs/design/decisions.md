@@ -57,3 +57,5 @@ Status values:
 | 47 | A board reply carries what changes and what is short. A long item goes by a ref, and one function makes the text of an item for the reply, for the read by ref and for the files. A ref is a name, not a path: each host says where its files are. | Agreed | [shared context](shared-context.md) |
 | 48 | The whole run does not go through an MCP result. The plugin reads its board over the channel of `meld mcp` now. Later it sends each board call to the board, as a hosted board needs. | Agreed | [architecture](architecture.md) |
 | 49 | An agent that is about to stop goes on in its turn when the board has a step for its worker. The restart of an idle agent of another worker still comes from a turn of the main session. | Agreed | [plan](plan.md) |
+| 50 | The end of each turn starts the idle workers that have work: a turn of an agent, or of the main session. No clock starts an agent: such an agent skips the hooks of meld. | Agreed | [plan](plan.md) |
+| 51 | A `meld:worker` can call the shell, the file tools and the board tools only. A run that needs skills, subagents or other MCP tools names another agent type. | Agreed | [plan](plan.md) |

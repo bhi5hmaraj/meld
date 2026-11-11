@@ -67,6 +67,12 @@ export const BOARD_TOOLS = [
   TOOL.finish,
 ] as const
 
+/**
+ * What an agent of the type meld:worker may call: the shell, the file tools and the board tools. Its first request is
+ * then about a third of the size, as it carries no list of skills and no other tools.
+ */
+export const WORKER_TOOLS = ['Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob', ...BOARD_TOOLS]
+
 /** The instructions behind the steer buttons of the pane: each a fixed text, so a press needs no typing. */
 export const STEER_PRESETS = [
   { key: 'tests', label: '+ Tests', text: 'Add tests for each change, and record each test run with check.' },

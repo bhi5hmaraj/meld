@@ -222,6 +222,8 @@ export type Run = {
   sessionSeen?: number
   /** Where the run lives: the session state only, or a board file. Absent in a run that meld 0.10.1 or older stored. */
   store?: 'session' | 'file'
+  /** Set when the permission check of meld does not see the calls of the agents: a hook of another plugin answers first. */
+  unchecked?: true
 }
 
 export type Failure = { error: ErrorCode; message: string; taskList?: number; tasks?: Task[] }

@@ -429,6 +429,12 @@ export function machineSlept(run: Run, from: number, now: number): Run {
   return withEntry(run, { at: now, by: 'you', kind: 'host', from, text: `the machine slept for ${Math.round((now - from) / 60_000)} min` })
 }
 
+/** The permission check of meld does not see the calls of the agents. The run says so once, in its log and in the pane. */
+export function markUnchecked(run: Run, now: number): Run {
+  if (run.unchecked) return run
+  return { ...withEntry(run, { at: now, by: 'you', kind: 'host', text: 'the permission check of meld does not run: a hook of another plugin answers first' }), unchecked: true }
+}
+
 /** The commit of #id does not merge into the line: meld adds a task "integrate #id" of size S, open for any worker. */
 export function addIntegrateTask(run: Run, id: number, detail: string, now: number): Change<Task> {
   const ended = endedFailure(run)

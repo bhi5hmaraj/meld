@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **No restart waits for your session.** The end of each turn of an agent now starts the idle agents that have work. Before, only a turn of your session did. A run of two agents did four tasks in a chain with one turn of the main session, the start. Each task had a new agent. ([#12](https://github.com/bhi5hmaraj/meld/issues/12))
+- **A smaller worker.** A `meld:worker` can call the shell, the file tools and the board tools, and no other tool. Its first request went from 35,000 to 10,500 tokens in one session, and an agent reads that part again at each model call. It has no skills, no subagents, no web tools and no tools of other MCP servers: give `--agents general-purpose` for an agent that has them. ([#6](https://github.com/bhi5hmaraj/meld/issues/6))
+- **A skipped permission check shows.** A hook of another plugin can answer before the permission check of meld. After three calls of agents that the check did not see, the pane and the log of the run say so. ([#9](https://github.com/bhi5hmaraj/meld/issues/9))
+- **The agent that stops takes the open task.** With as many starts for open tasks as an idle agent, the agent that is about to stop goes on with the task. meld starts no other agent for it.
+- **The stop of a run that makes no progress.** The steps at the stop of an agent count to the limit of three and not past it. So meld tells you once when a run finishes nothing.
+
 ## 0.10.2
 
 These fixes come from the runs of 10 and 11 November 2026. Two runs in a session with no person checked the board reads and the stop of an agent live.

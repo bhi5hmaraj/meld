@@ -3,6 +3,7 @@ import type { MockClock } from 'claude-code/testing'
 import type { McpToolResult, On, TurnUsage } from 'claude-code'
 
 import { addTasks, bindWorker, claimTask, CONTEXT_CAP, isFailure, setWorkerState, startRun } from '../core/board'
+import { BOARD_TOOLS } from '../core/contract'
 import type { RunRecord } from '../core/ports'
 import type { Change, Run, WorkerId } from '../types'
 import { HEAD } from './fake-io'
@@ -102,14 +103,14 @@ class FakeMcp {
 }
 
 /** What the engine answers for a session start; with a FakeMcp, meld mcp connects, and without one it does not start. */
-function answerTheEngine(on: On, mcp: FakeMcp | undefined, agents: { name: string; autoCompactWindow?: number }[] = [], isUp = () => true): MockClock {
+function answerTheEngine(on: On, mcp: FakeMcp | undefined, agents: { name: string; autoCompactWindow?: number; tools?: readonly string[] }[] = [], isUp = () => true): MockClock {
   const clock = mock.clock(on, { now: NOW })
   on('session.id', () => ({ value: SESSION }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('tool.register', ($, e) => ({ value: { tool: e.name } }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('agent.register', ($, e) => {
-    agents.push({ name: e.name, autoCompactWindow: e.autoCompactWindow })
+    agents.push({ name: e.name, autoCompactWindow: e.autoCompactWindow, tools: e.tools })
     return { value: { agent: e.name } }
   })
   on('mcp.connect', () => ({ value: mcp && isUp() ? { isConnected: true, server: SERVER } : { isConnected: false, reason: 'failed', message: 'bun: not found' } }))
@@ -437,6 +438,28 @@ test('at the end of a turn, the plugin carries out what workers of meld mcp left
   expect(toasts).toEqual(['meld: the result is ready.'])
 })
 
+test('at the end of a turn of a worker, the plugin starts the idle worker that has work, with no turn of the main session', async ($, on) => {
+  const mcp = new FakeMcp()
+  const sent: string[] = []
+  answerTheEngine(on, mcp)
+  on('state.get', () => ({ value: { value: undefined, version: 0 } }))
+  on('state.set', () => ({ value: { isSet: true, version: 1 } }))
+  on('agent.list', () => ({ value: [] }))
+  on('agent.offer', () => ({ isOffered: true }))
+  on('session.send', ($, e) => {
+    sent.push(`${e.to}: ${e.text}`)
+    return { isDelivered: true as const }
+  })
+  on('turn.complete', ($, e) => ({ text: e.answer }))
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  const planned = runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }] }, NOW))
+  const left = { ...setWorkerState(planned, 'w2', 'idle', NOW), workers: setWorkerState(planned, 'w2', 'idle', NOW).workers.map(worker => ({ ...worker, context: { used: 40_000, size: WINDOW }, offers: worker.id === 'w1' ? 1 : undefined })) }
+  mcp.boards[SESSION] = { run: left, version: 1, owner: SESSION, ownerAt: NOW }
+  await $.turn.complete({ answer: 'not me', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer', agentId: 'agent-1' })
+  expect(sent).toEqual(['agent-2: meld: These tasks are open: #1 Tokens. Claim one and do it. Read the board with mcp__meld__board, then go on.'])
+  expect(mcp.boards[SESSION]?.run?.workers.map(worker => worker.state)).toEqual(['idle', 'working'])
+})
+
 test('an agent of a worker that is about to stop goes on with the open task: the plugin blocks the stop with the step', async ($, on) => {
   const mcp = new FakeMcp()
   answerTheEngine(on, mcp)
@@ -473,11 +496,11 @@ test('without meld mcp, a start that starts no worker gives no warning about the
   expect(replied.text).not.toContain('This run has no board file')
 })
 
-test('the worker type compacts its agent at the context cap', async ($, on) => {
-  const registered: { name: string; autoCompactWindow?: number }[] = []
+test('the worker type compacts its agent at the context cap, and may call the file tools, the shell and the board tools only', async ($, on) => {
+  const registered: { name: string; autoCompactWindow?: number; tools?: readonly string[] }[] = []
   answerTheEngine(on, new FakeMcp(), registered)
   await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
-  expect(registered).toEqual([{ name: 'worker', autoCompactWindow: CONTEXT_CAP }])
+  expect(registered).toEqual([{ name: 'worker', autoCompactWindow: CONTEXT_CAP, tools: ['Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob', ...BOARD_TOOLS] }])
 })
 
 test('a session that started before meld mcp ran connects at its first command, and its codex worker starts on the board', async ($, on) => {

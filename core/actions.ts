@@ -638,6 +638,19 @@ async function resumed(io: Store & Clock & Runner, run: Run, worker: Worker, ste
  * A deny reason for a tool call of a worker, or undefined; records the call as the worker's activity. A hand-back ends
  * the turn of the agent: its worker is idle at once, as meld does not see the end of a turn that a restart started.
  */
+/** The tools of a worker whose calls the permission check of meld sees (see workerVerdict). */
+export const CHECKED_TOOLS = ['Bash', 'Read', 'Grep', 'Glob']
+
+/** This many calls of workers in a row with no permission check of meld: a hook of another plugin answers before it. */
+const UNCHECKED_LIMIT = 3
+
+let unchecked = 0
+
+/** The permission check of meld saw a call of a worker. */
+export function sawCheck(): void {
+  unchecked = 0
+}
+
 export async function guardCall(io: Store & Clock & Runner, e: ToolCall): Promise<string | undefined> {
   if (e.agentId === undefined) return undefined
   if (String(e.tool) === HANDBACK_TOOL) {
@@ -650,6 +663,10 @@ export async function guardCall(io: Store & Clock & Runner, e: ToolCall): Promis
   const path = editedPath(e)
   const refusal = refusalOf(run, worker, path ? [path] : [])
   if (refusal) return refusal
+  if (CHECKED_TOOLS.includes(String(e.tool)) && !run.unchecked && ++unchecked >= UNCHECKED_LIMIT) {
+    const now = await io.now()
+    await writeRunOf(io, run.id, current => board.markUnchecked(current, now))
+  }
   await recordCall(io, worker, describeCall(e))
   return undefined
 }
@@ -1004,8 +1021,9 @@ type Restart = { worker: Worker; step: string; offer?: true }
  * worker idle, the owners of unfinished tasks, then idle workers for open tasks, else the lead to plan, steer or integrate. Each beat that starts a worker counts; a finished task or a steer resets
  * the count, so after three beats that finish nothing meld stops and tells the person once. One beat runs at a time.
  *
- * Only hooks that no worker needs call it: an agent skips the hook that started it, and an agent that a clock or a
- * button closure starts skips every meld hook, the board and the edit guard included.
+ * The end of each turn calls it, the turn of a worker too, so a restart waits for no turn of the main session: every
+ * hook hears the end of the turn of an agent, also of an agent that this hook started. No clock calls it: an agent that
+ * a clock or a button closure starts skips every meld hook, the board and the edit guard included.
  *
  * Each worker has one host that starts it again, so no worker gets two agents: the main session starts the workers of
  * its engine, and meld mcp starts its ACP workers (`owns`).
@@ -1049,9 +1067,9 @@ export async function stepAtStop(io: Store & Clock, agentId: string): Promise<st
     if (!next) return undefined
     let goesOn = false
     await writeRunOf(io, run.id, current => {
-      const resumed = board.resumeWorker(board.countBeat(current, offeredIn([next])), worker.id, now)
-      goesOn = !board.isFailure(resumed)
-      return board.isFailure(resumed) ? current : resumed.run
+      const resumed = current.nudges < NUDGE_LIMIT ? board.resumeWorker(board.countBeat(current, offeredIn([next])), worker.id, now) : undefined
+      goesOn = resumed !== undefined && !board.isFailure(resumed)
+      return resumed === undefined || board.isFailure(resumed) ? current : resumed.run
     })
     return goesOn ? wakeText(next.step) : undefined
   } finally {
@@ -1088,8 +1106,8 @@ function everyWorker(): boolean {
  * Of the idle workers, those with the fewest offers go first (Worker.offers): a worker that meld started for the open
  * tasks, and that stopped with no claim, has left them to the others.
  *
- * `stopping` is the worker whose agent is about to stop (see stepAtStop). With no integrator yet, it leads: its agent
- * can go on at once, and the agent of another worker waits for a turn of the main session.
+ * `stopping` is the worker whose agent is about to stop (see stepAtStop). Its agent is there and can go on at once,
+ * so with as many offers as an idle worker it takes the open task, and with no integrator yet it leads.
  */
 function restartsFor(run: Run, stopping?: WorkerId): Restart[] {
   const live = run.workers.filter(worker => worker.state !== 'stopped')
@@ -1100,7 +1118,7 @@ function restartsFor(run: Run, stopping?: WorkerId): Restart[] {
   const pending = live.filter(worker => isPending(run, worker)).length
   const takers = idle
     .filter(worker => !claimsOf(run, worker).length)
-    .sort((one, other) => (one.offers ?? 0) - (other.offers ?? 0))
+    .sort((one, other) => (one.offers ?? 0) - (other.offers ?? 0) || Number(other.id === stopping) - Number(one.id === stopping))
     .slice(0, Math.max(0, open.length - pending))
   const restarts = [
     ...owners.map(worker => ({ worker, step: `Your task is not done: ${titles(claimsOf(run, worker))}. Go on with it, or release it with a note.` })),

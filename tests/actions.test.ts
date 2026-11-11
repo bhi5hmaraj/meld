@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
-import { compactWorker, costTokens, deliver, discard, guardCall, markWorker, recordSleep, refreshFacts, restartIdleWorkers, serveTool, SLEEP_GAP_MS, SPAWN_APPROVAL, spawnVerdict, startFromView, startRun, steerRun, stepAtStop, stopOne, VCS_APPROVAL, vcsVerdict, VIEW_APPROVAL, viewVerdict } from '../core/actions'
+import { compactWorker, costTokens, deliver, discard, guardCall, markWorker, recordSleep, refreshFacts, restartIdleWorkers, sawCheck, serveTool, SLEEP_GAP_MS, SPAWN_APPROVAL, spawnVerdict, startFromView, startRun, steerRun, stepAtStop, stopOne, VCS_APPROVAL, vcsVerdict, VIEW_APPROVAL, viewVerdict } from '../core/actions'
 import { addTasks, bindWorker, claimTask, CONTEXT_CAP, declareFinal, isFailure, setActivity, shareEntry, startRun as startBoard, steer, stopRun, stopWorker, takeIntegration } from '../core/board'
 import { COMPACT_KEEP } from '../core/contract'
 import { JJ_LANE_TEMPLATE, JJ_RESOLVE_TEMPLATE } from '../core/vcs'
@@ -678,6 +678,40 @@ test('with every task done and no integrator, the worker whose agent is about to
   await serveTool(io, call({ tool: 'mcp__meld__finish_task', task: 1, version: 2, commit: 'HEAD', summary: 'Tokens added', agentId: 'agent-2' }))
   await markWorker(io, 'agent-1', 'idle')
   expect(await stepAtStop(io, 'agent-2')).toContain('Integrate: call mcp__meld__integrate')
+})
+
+test('with as many offers as an idle worker, the worker whose agent is about to stop takes the open task: its agent is there', async () => {
+  const planned = runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }] }, NOW))
+  const io = ioWith({ ...planned, workers: planned.workers.map(worker => ({ ...worker, context: ROOM })) })
+  await markWorker(io, 'agent-1', 'idle')
+  expect(await stepAtStop(io, 'agent-2')).toContain('These tasks are open: #1 Tokens.')
+})
+
+test('a worker that left the open task stops, and the idle worker with fewer offers gets the task', async () => {
+  const planned = runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }] }, NOW))
+  const io = ioWith({ ...planned, workers: planned.workers.map(worker => ({ ...worker, context: ROOM, offers: worker.id === 'w2' ? 1 : undefined })) })
+  await markWorker(io, 'agent-1', 'idle')
+  expect(await stepAtStop(io, 'agent-2')).toBeUndefined()
+})
+
+test('after three calls of a worker that the permission check of meld did not see, the run says that the check does not run', async () => {
+  const io = ioWith(working())
+  sawCheck()
+  for (const command of ['ls', 'pwd']) await guardCall(io, call({ tool: 'Bash', command, agentId: 'agent-1' }))
+  expect(io.current?.unchecked).toBeUndefined()
+  await guardCall(io, call({ tool: 'Read', file_path: '/tmp/meld/r1/w1/a.ts', agentId: 'agent-2' }))
+  expect(io.current?.unchecked).toBe(true)
+  expect(io.current?.log.at(-1)).toMatchObject({ by: 'you', kind: 'host', text: 'the permission check of meld does not run: a hook of another plugin answers first' })
+})
+
+test('a permission check between the calls of the workers keeps the run as it is, and so does a call of a tool that meld does not check', async () => {
+  const io = ioWith(working())
+  sawCheck()
+  for (const command of ['ls', 'pwd']) await guardCall(io, call({ tool: 'Bash', command, agentId: 'agent-1' }))
+  sawCheck()
+  for (const command of ['ls', 'pwd']) await guardCall(io, call({ tool: 'Bash', command, agentId: 'agent-1' }))
+  for (const text of ['a', 'b', 'c']) await guardCall(io, call({ tool: 'mcp__meld__note', text, agentId: 'agent-1' }))
+  expect(io.current?.unchecked).toBeUndefined()
 })
 
 test('the agent of no worker stops as it likes', async () => {
