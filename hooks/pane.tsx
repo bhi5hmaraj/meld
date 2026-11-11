@@ -3,13 +3,13 @@ import type { ElementTable, RenderSurface } from 'claude-code'
 import type { AgentSpec, ContextKind, Entry, Facts, LaneFacts, PaneView, ResultFacts, Run, RunState, Task, Worker, WorkerId, WorkerState } from '../types'
 import { deliver, discard, LEADING_CD, stopAll, stopOne } from '../core/actions'
 import { currentContext, NOT_STARTED } from '../core/board'
-import { sharedContextOf } from '../core/metrics'
-import type { SharedContext } from '../core/metrics'
+import { efficiencyOf, progressOf, sharedContextOf } from '../core/metrics'
+import type { Progress, SharedContext } from '../core/metrics'
 import { STEER_PRESETS } from '../core/contract'
 import { agentColor, BAR_HEIGHT, BAR_WIDTH, barCells, LANE_HEIGHT, LANE_WIDTH, laneAlt, laneGlyphs, laneSvg, partsBarSvg, ROW_BAR_WIDTH, STATUS } from './drawing'
 import type { Io } from '../core/ports'
 import { agentsOf, formatStart, MAX_AGENTS, MODELS, WORKER_TYPE } from '../core/options'
-import { ownersOf, partsOf, percentLabel, percentOf, requestParts, requestPercent, topTasks } from '../core/progress'
+import { ownersOf, partsOf, percentLabel, percentOf, requestParts, topTasks } from '../core/progress'
 import type { Parts } from '../core/progress'
 import { childrenOf, waitsFor } from '../core/tasks'
 
@@ -52,7 +52,8 @@ const TITLE_WORDS = 8
 const BAR_RUNS = 3
 /** The words of the rows: the progress block holds 100 words with its heading, the bar and percent of the request, and the count of the rows left out. */
 const ROW_WORDS = 90
-const REQUEST_CHARS = 72
+/** The characters of the request that the header shows before a press: two lines. */
+const REQUEST_CHARS = 144
 const SKIPPED_ARGUMENT = /^(?:-|\d|\.$|[|&;<>]+$)/
 const AGENT_OPTIONS = Array.from({ length: MAX_AGENTS }, (_, index) => ({ value: String(index + 1), label: `${index + 1}` }))
 const MODEL_OPTIONS = [{ value: 'inherit', label: 'Same as this session' }, ...MODELS.map(model => ({ value: model, label: model }))]
@@ -101,10 +102,14 @@ export function paneTree(input: PaneInput) {
 
 function headerSection(input: PaneInput, run: Run) {
   const { Box, Text, Button } = input.table
-  const { io } = input
-  const calls = run.workers.reduce((sum, worker) => sum + (worker.calls ?? 0), 0)
+  const { io, now } = input
+  const units = run.workers.reduce((sum, worker) => sum + (worker.tokens ?? 0), 0)
   const spent = spentOf(input.sessionCost, run.costAtStart)
   const shared = sharedSpec(run)
+  const progress = progressOf(run, now)
+  const { done, working, ready, waiting } = progress
+  const counts = `${done} of ${done + working + ready + waiting} tasks done, ${working} working, ${ready} ready, ${waiting} waiting`
+  const request = run.request.replace(/\s+/g, ' ').trim()
   return (
     <Box key="sec-top" flexDirection="column" gap="xs">
       <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="md">
@@ -113,7 +118,7 @@ function headerSection(input: PaneInput, run: Run) {
             ● {STATE_WORD[run.state]}
           </Text>
           <Text dimColor>
-            {run.vcs} · {run.workers.length} agents{shared ? ` · ${shared}` : ''} · {ago(input.now - run.startedAt)} · {spent ?? callsOf(calls)}
+            {run.vcs} · {run.workers.length} agents{shared ? ` · ${shared}` : ''} · {ago(now - run.startedAt)} · {spent ?? `${compact(units)} cost units`}
           </Text>
         </Box>
         <Box flexDirection="row" gap="sm">
@@ -134,11 +139,53 @@ function headerSection(input: PaneInput, run: Run) {
           )}
         </Box>
       </Box>
-      <Text dimColor wrap="truncate-end">
-        {cut(run.request.split('\n')[0] ?? '', REQUEST_CHARS)}
-      </Text>
+      {request.length > REQUEST_CHARS ? (
+        <Button key="request" plain dimColor onPress={() => void input.setView(view => ({ ...view, showRequest: !view.showRequest }))}>
+          {input.view.showRequest ? request : cut(request, REQUEST_CHARS)}
+        </Button>
+      ) : (
+        <Text dimColor wrap="wrap">
+          {request}
+        </Text>
+      )}
+      {run.tasks.length > 0 && (
+        <Box flexDirection="row" gap="sm" alignItems="center" flexWrap="wrap">
+          <Box key="counts">
+            <Text>{counts}</Text>
+          </Box>
+          {partsBar(input, 'all', requestParts(run.tasks), REQUEST_BAR, counts)}
+        </Box>
+      )}
+      {warningOf(input, run, progress)}
     </Box>
   )
+}
+
+/** The most important warning of the run, one line: the machine slept, the run has no board file, or ready tasks wait while agents are idle. */
+function warningOf(input: PaneInput, run: Run, progress: Progress) {
+  const { Box, Text, Button } = input.table
+  const line = (text: string) => (
+    <Box key="warning">
+      <Text color="warning">{text}</Text>
+    </Box>
+  )
+  const asleepMs = efficiencyOf(run, input.now).asleepMs
+  if (asleepMs > 0) return line(`The machine slept for ${Math.round(asleepMs / 60_000)} minutes. Nothing ran in that time.`)
+  if (run.store === 'session') return line('This run lives in the session state. It has no record, and no other session can resume it.')
+  const idle = run.workers.filter(worker => worker.state === 'idle')
+  if (!progress.readyNoAgent.now || !idle.length) return null
+  const idleMs = input.now - Math.min(...idle.map(worker => worker.activityAt))
+  return (
+    <Button key="start-idle" plain color="warning" onPress={SERVED_BY_HOOK}>
+      {`${counted(progress.readyNoAgent.now, 'task')} ready, ${counted(idle.length, 'agent')} idle for ${Math.round(idleMs / 60_000)} min`}
+    </Button>
+  )
+}
+
+/** A count of tokens in a few characters: 182k, 1.2M. */
+function compact(count: number): string {
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`
+  return count >= 1_000 ? `${Math.round(count / 1_000)}k` : String(count)
 }
 
 /** Why agents did not start, once per reason and in full: a lane has room for a few words. */
@@ -224,7 +271,7 @@ function laneRow(input: PaneInput, run: Run, worker: Worker, index: number, lane
 /** One row of the progress. isOpen: the rows of its children show under it. */
 type Row = { task: Task; depth: number; isParent: boolean; isOpen: boolean; owners: WorkerId[]; waits?: number }
 
-/** The percent of the request, and one row for each top-level task, with the rows of its children when it is open. The rows stop before the block passes 100 words. */
+/** One row for each top-level task, with the rows of its children when it is open. The header counts the tasks of the request. The rows stop before the block passes 100 words. */
 function progressSection(input: PaneInput, run: Run) {
   const { Box, Text } = input.table
   if (!run.tasks.length) {
@@ -236,17 +283,10 @@ function progressSection(input: PaneInput, run: Run) {
   }
   const rows = rowsOf(run.tasks, topTasks(run.tasks), input.view.open ?? [], 0)
   const shown = rowsWithin(rows)
-  const percent = percentLabel(requestPercent(run.tasks))
   return (
     <Box key="sec-progress" flexDirection="column" gap="sm">
-      <Box key="progress-all" flexDirection="row" justifyContent="space-between" alignItems="center" gap="md">
+      <Box key="progress-all" flexDirection="row">
         <Text bold>Progress</Text>
-        <Box flexDirection="row" gap="sm" alignItems="center">
-          <Text bold tabular>
-            {percent}
-          </Text>
-          {partsBar(input, 'all', requestParts(run.tasks), REQUEST_BAR, `The request: ${percent} done`)}
-        </Box>
       </Box>
       <Box flexDirection="column" gap="xs">
         {shown.map(row => taskRow(input, run, row))}

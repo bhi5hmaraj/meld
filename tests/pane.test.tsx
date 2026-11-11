@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { addCheck, addTasks, bindWorker, boardFor, claimTask, declareFinal, finishTask, isFailure, refuseWorker, setActivity, shareEntry, splitTask, startRun, takeIntegration } from '../core/board'
+import { addCheck, addTasks, bindWorker, boardFor, claimTask, declareFinal, finishTask, isFailure, refuseWorker, setActivity, setWorkerState, shareEntry, splitTask, startRun, takeIntegration } from '../core/board'
 import { agentColor } from '../hooks/drawing'
 import type { Change, ContextKind, Facts, Run, Task, WorkerId } from '../types'
 import { STORED_BY_0_6_0, STORED_BY_0_7_0 } from './stored-runs'
@@ -347,6 +347,88 @@ test('the header says what the agents work on, in one line', async ($, on) => {
   }
 })
 
+test('the header counts the tasks in place of a percent: done of all, working, ready and waiting', async ($, on) => {
+  const state = new FakeState().load(workingRun(3), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  for (const surface of ALL_SURFACES) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(textsOf(await ui.find({ key: 'counts' }))).toEqual(['0 of 4 tasks done, 1 working, 3 ready, 0 waiting'])
+    expect(textsOf(await ui.find({ key: 'sec-top' })).some(text => /\d%/.test(text))).toBe(false)
+    await ui.unmount()
+  }
+})
+
+test('with no cost ledger, the header gives the cost units of the workers, and no call count', async ($, on) => {
+  const run = workingRun(2)
+  const counted = { ...run, workers: run.workers.map((worker, index) => ({ ...worker, calls: 27, tokens: index ? 1_050_000 : 182_000 })) }
+  const state = new FakeState().load(counted, null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const header = textsOf(await ui.find({ key: 'sec-top' })).join(' ')
+  expect(header).toContain('1.2M cost units')
+  expect(header).not.toContain('calls')
+  await ui.unmount()
+})
+
+test('a long request shows two lines in the header, and a press shows all of it', async ($, on) => {
+  const request = `Add a dark theme. ${'Keep the old pages as they are. '.repeat(10)}`.trim()
+  const state = new FakeState().load({ ...workingRun(2), request }, null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  on('state.set', ($, e) => ({ value: state.set(e) }))
+  const first = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(String((await first.find({ key: 'request' }))?.props.label)).toHaveLength(144)
+  await first.press({ key: 'request' })
+  await first.unmount()
+  const second = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await second.find({ key: 'request' }))?.props.label).toBe(request)
+  await second.unmount()
+})
+
+test('the warning of the header says first that the machine slept', async ($, on) => {
+  const run = { ...workingRun(2), store: 'session' as const }
+  const slept = { ...run, log: [...run.log, { id: 999, at: NOW + 189 * 60_000, by: 'you' as const, kind: 'host' as const, from: NOW + 30 * 60_000, text: 'the machine slept for 159 min' }] }
+  const state = new FakeState().load(slept, null)
+  on('clock.now', () => ({ value: NOW + 200 * 60_000 }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(textsOf(await ui.find({ key: 'warning' }))).toEqual(['The machine slept for 159 minutes. Nothing ran in that time.'])
+  await ui.unmount()
+})
+
+test('the warning of the header says that a run in the session state has no record', async ($, on) => {
+  const state = new FakeState().load({ ...workingRun(2), store: 'session' }, null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(textsOf(await ui.find({ key: 'warning' }))).toEqual(['This run lives in the session state. It has no record, and no other session can resume it.'])
+  await ui.unmount()
+})
+
+test('the warning of the header names ready tasks while agents are idle, and a press starts the idle agents', async ($, on) => {
+  const idle = setWorkerState(workingRun(3), 'w2', 'idle', NOW)
+  const state = new FakeState().load(idle, null)
+  const spawned: string[] = []
+  on('clock.now', () => ({ value: NOW + 12 * 60_000 }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  on('state.set', ($, e) => ({ value: state.set(e) }))
+  on('agent.list', () => ({ value: ['agent-1', 'agent-3'].map(id => ({ id, status: 'running' })).concat([{ id: 'agent-2', status: 'completed' }]) }))
+  on('agent.spawn', ($, e) => {
+    spawned.push(String(e.description))
+    return { model: 'a-model', agentId: 'agent-9' }
+  })
+  on('agent.offer', () => ({ isOffered: true }))
+  on('session.send', () => ({ isDelivered: true as const }))
+  on('ui.toast', () => ({ value: undefined }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ key: 'start-idle' }))?.props.label).toBe('3 tasks ready, 1 agent idle for 12 min')
+  await ui.press({ key: 'start-idle' })
+  expect(spawned).toEqual(['meld w2'])
+  await ui.unmount()
+})
+
 test('a lane shows a shell command as its name and its target, past flags and ranges', async ($, on) => {
   const run = workingRun(2)
   const busy = { ...run, workers: run.workers.map(worker => ({ ...worker, activity: 'Bash: cd /tmp/meld/r1/w2 && sed -n 80,189p hooks/contract.ts' })) }
@@ -484,13 +566,13 @@ test('a run that meld 0.5.3 stored, with no context, draws the pane with no Shar
   await ui.unmount()
 })
 
-test('the progress section shows a bar and a percent for the whole request on every surface', async ($, on) => {
+test('the progress section heads its rows with no percent of the request on every surface', async ($, on) => {
   const state = new FakeState().load(treeRun(), null)
   on('clock.now', () => ({ value: NOW }))
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   for (const surface of ALL_SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(textsOf(await ui.find({ key: 'progress-all' })).slice(0, 2)).toEqual(['Progress', '33%'])
+    expect(textsOf(await ui.find({ key: 'progress-all' }))).toEqual(['Progress'])
     await ui.unmount()
   }
 })
@@ -502,7 +584,7 @@ test('a graphic surface draws the bar of the request and of each row as a pictur
   for (const surface of GRAPHIC_SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
     const alts = (await ui.findAll({ type: 'Svg' })).map(svg => String(svg.props.alt)).filter(alt => !/^w\d+: /.test(alt))
-    expect(alts).toEqual(['The request: 33% done', '#1: 50% done', '#2: 0% done', '#3: 0% done'])
+    expect(alts).toEqual(['1 of 4 tasks done, 2 working, 0 ready, 1 waiting', '#1: 50% done', '#2: 0% done', '#3: 0% done'])
     await ui.unmount()
   }
 })
@@ -619,7 +701,7 @@ test('a run that meld 0.6.0 stored, with no task tree and a view with no open ro
   for (const surface of ALL_SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
     expect(rowKeys(await ui.findAll({ type: 'Box' }))).toEqual(['task-1', 'task-2', 'task-3'])
-    expect(textsOf(await ui.find({ key: 'progress-all' })).slice(0, 2)).toEqual(['Progress', '33%'])
+    expect(textsOf(await ui.find({ key: 'counts' }))).toEqual(['1 of 3 tasks done, 1 working, 1 ready, 0 waiting'])
     expect(await ui.find({ type: 'Text', text: /^waits for/ })).toBeUndefined()
     await ui.unmount()
   }
@@ -632,7 +714,7 @@ test('a run that meld 0.7.0 stored draws its task tree, its progress and its sha
   for (const surface of ALL_SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
     expect(rowKeys(await ui.findAll({ type: 'Box' }))).toEqual(['task-1', 'task-4', 'task-5', 'task-2', 'task-3'])
-    expect(textsOf(await ui.find({ key: 'progress-all' })).slice(0, 2)).toEqual(['Progress', '66%'])
+    expect(textsOf(await ui.find({ key: 'counts' }))).toEqual(['1 of 4 tasks done, 2 working, 0 ready, 1 waiting'])
     expect(await ui.find({ type: 'Text', text: 'waits for #1' })).toBeDefined()
     const lines = (await ui.findAll({ type: 'Box' })).filter(box => /^context-\d+$/.test(box.key ?? ''))
     expect(lines.map(line => line.key)).toEqual(['context-3', 'context-2'])
@@ -662,6 +744,6 @@ test('a parent row is at 100% when the workers finish its parts', async ($, on) 
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(textsOf(await ui.find({ key: 'task-1' })).slice(0, 2)).toEqual(['▸ #1 Theme tokens in theme.css', '100%'])
-  expect(textsOf(await ui.find({ key: 'progress-all' })).slice(0, 2)).toEqual(['Progress', '25%'])
+  expect(textsOf(await ui.find({ key: 'counts' }))).toEqual(['2 of 5 tasks done, 0 working, 3 ready, 0 waiting'])
   await ui.unmount()
 })
