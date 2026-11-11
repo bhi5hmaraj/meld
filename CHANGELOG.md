@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **A higher context cap.** A `meld:worker` compacts before 500k tokens, and an idle worker past 500k gets a fresh agent. With the cap of 150k, a worker compacted every few minutes, as it holds about 70k tokens just after a compaction.
+
 ## 0.10.1
 
 These fixes come from the issues of 10 November 2026. A run of two workers in a session with no person checked them live.

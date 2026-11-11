@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import type { TurnUsage } from 'claude-code'
 
 import { countStep, guardCall, ownedByAcp, restartIdleWorkers } from '../core/actions'
-import { addTasks, bindWorker, isFailure, restartWorker, setWorkerState, startRun } from '../core/board'
+import { addTasks, bindWorker, CONTEXT_CAP, isFailure, restartWorker, setWorkerState, startRun } from '../core/board'
 import type { Change, Run, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
 
@@ -114,17 +114,18 @@ test('the hand-back of a worker marks it idle at once, as meld may not see the e
   expect(io.current?.workers[0]?.state).toBe('idle')
 })
 
-const LARGE_WINDOW = 1_000_000
+/** Half of this window is over CONTEXT_CAP, so the cap alone decides. */
+const LARGE_WINDOW = 4 * CONTEXT_CAP
 
-test('an idle worker with 200k tokens in a window of 1M gets a fresh agent: the context cap comes before half of a large window', async () => {
-  const io = ioWith(idleWorker('meld:worker', 'agent-1', { used: 200_000, size: LARGE_WINDOW }))
+test('an idle worker past the context cap gets a fresh agent, though its context fills less than half of its window', async () => {
+  const io = ioWith(idleWorker('meld:worker', 'agent-1', { used: CONTEXT_CAP + 100_000, size: LARGE_WINDOW }))
   await restartIdleWorkers(io)
   expect(io.resumed).toEqual([])
   expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w1'])
 })
 
-test('an idle worker with 100k tokens in a window of 1M goes on in its own session', async () => {
-  const io = ioWith(idleWorker('meld:worker', 'agent-1', { used: 100_000, size: LARGE_WINDOW }))
+test('an idle worker under the context cap goes on in its own session', async () => {
+  const io = ioWith(idleWorker('meld:worker', 'agent-1', { used: CONTEXT_CAP - 100_000, size: LARGE_WINDOW }))
   await restartIdleWorkers(io)
   expect(io.resumed).toEqual([`agent-1: ${OPEN_STEP}`])
   expect(io.spawned).toEqual([])

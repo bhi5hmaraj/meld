@@ -185,9 +185,9 @@ A restart waits for the end of a turn of your session. In a session with no pers
 
 ### A short session, then a new agent
 
-After `finish_task`, the rules and the reply of `finish_task` tell the agent to hand back, and not to claim the next task. When there is work for an idle worker, meld gives the next step to the same agent, in its own session. It does so while the context of that agent fills less than half of the window of its model, and less than 150k tokens. So the agent keeps the code that it read. Else meld starts a new agent: an agent that does task after task reads its whole history again on each turn.
+After `finish_task`, the rules and the reply of `finish_task` tell the agent to hand back, and not to claim the next task. When there is work for an idle worker, meld gives the next step to the same agent, in its own session. It does so while the context of that agent fills less than half of the window of its model, and less than 500k tokens. So the agent keeps the code that it read. Else meld starts a new agent: an agent that does task after task reads its whole history again on each turn.
 
-An agent of the type `meld:worker` compacts its conversation before 150k tokens and goes on. Claude Code keeps room below that window, so the compaction comes near 120k tokens. The summary keeps its tasks, its commits and what is left. Its next board read gives its rules again.
+An agent of the type `meld:worker` compacts its conversation before 500k tokens and goes on. Claude Code keeps some room below that window, so the compaction comes a little earlier. The summary keeps its tasks, its commits and what is left. Its next board read gives its rules again.
 
 meld reads the context of a Claude agent from its last model call. An ACP agent, such as Codex, reports its context with `usage_update`. An ACP agent that reports none gets a new agent each time.
 
