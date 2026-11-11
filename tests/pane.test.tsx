@@ -1,8 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 
-import { addCheck, addTasks, bindWorker, boardFor, claimTask, declareFinal, finishTask, isFailure, refuseWorker, setActivity, shareEntry, splitTask, startRun, takeIntegration } from '../core/board'
+import { addCheck, addTasks, bindWorker, boardFor, claimTask, declareFinal, finishTask, isFailure, refuseWorker, setActivity, setWorkerState, shareEntry, splitTask, startRun, takeIntegration } from '../core/board'
 import { agentColor } from '../hooks/drawing'
-import type { Change, ContextKind, Facts, Run, Task, WorkerId } from '../types'
+import type { Change, ContextKind, Facts, Run, Task, Worker, WorkerId } from '../types'
 import { STORED_BY_0_6_0, STORED_BY_0_7_0 } from './stored-runs'
 
 const NOW = 1_800_000_000_000
@@ -314,15 +314,125 @@ test('no block of the pane holds more than 100 words, with eight agents or a rea
   }
 })
 
-test('an agent card counts its tool calls, not its tokens', async ($, on) => {
-  const run = workingRun(2)
-  const counted = { ...run, workers: run.workers.map((worker, index) => ({ ...worker, calls: 27, tokens: index === 1 ? 182_000 : 0 })) }
-  const state = new FakeState().load(counted, factsOf(counted))
+function withWorker(run: Run, id: WorkerId, fields: Partial<Worker>): Run {
+  return { ...run, workers: run.workers.map(worker => (worker.id === id ? { ...worker, ...fields } : worker)) }
+}
+
+test('an agent card names its task, its title and its time on the task, on every surface', async ($, on) => {
+  const state = new FakeState().load(workingRun(2), factsOf(workingRun(2)))
+  on('clock.now', () => ({ value: NOW + 12 * 60_000 }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  for (const surface of ALL_SURFACES) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(textsOf(await ui.find({ key: 'sec-card-w1' })).join(' '), surface).toContain('#1 Theme tokens in theme.css 12m')
+    await ui.unmount()
+  }
+})
+
+test('the Now line of a card is the last sentence of its agent', async ($, on) => {
+  const state = new FakeState().load(withWorker(workingRun(2), 'w1', { said: 'I add the tokens to theme.css.', saidAt: NOW }), null)
+  on('clock.now', () => ({ value: NOW + 10_000 }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: 'I add the tokens to theme.css.' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('after 60 s with no text, the Now line says in plain words what the agent does', async ($, on) => {
+  const words: [string, string][] = [
+    ['Bash: bun test mcp/', 'running tests'],
+    ['Bash: npx tsc -p .', 'building'],
+    ['Edit theme.css', 'editing theme.css'],
+    ['Read a.ts', 'reading code'],
+    ['Bash: rg toggle src', 'reading code'],
+    ['mcp__meld__board', 'using the board'],
+    ['Bash: tail -f out.log', 'waiting for its background work'],
+    ['Plan the change', 'in a step of the agent: Plan the change'],
+  ]
+  const run = workingRun(words.length)
+  const busy = { ...run, workers: run.workers.map((worker, index) => ({ ...worker, activity: words[index]?.[0] ?? '', said: 'Old words.', saidAt: NOW })) }
+  const state = new FakeState().load(busy, null)
+  on('clock.now', () => ({ value: NOW + 90_000 }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  for (const [index, [, said]] of words.entries()) expect(textsOf(await ui.find({ key: `sec-card-w${index + 1}` }))).toContain(said)
+  await ui.unmount()
+})
+
+test('the Did line shows the newest finished task of the worker, with its summary and short commit, and how many more', async ($, on) => {
+  const first = runOf(finishTask(workingRun(2), 'w1', 1, 2, FULL, 'Tokens in theme.css for light and dark.', NOW))
+  const run = runOf(finishTask(runOf(claimTask(first, 'w1', 2, 1, NOW)), 'w1', 2, 2, OTHER, 'A toggle in the header.', NOW + 1000))
+  const state = new FakeState().load(run, null)
+  on('clock.now', () => ({ value: NOW + 2000 }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const card = textsOf(await ui.find({ key: 'sec-card-w1' })).join(' ')
+  expect(card).toContain('#2 Toggle in the header A toggle in the header. eeeeeee and 1 more')
+  expect(card).not.toContain('Tokens in theme.css for light and dark.')
+  await ui.unmount()
+})
+
+test('the Learned line shows the newest entry that the worker shared', async ($, on) => {
+  const older = runOf(shareEntry(workingRun(2), 'w1', { kind: 'fail', text: 'A global stylesheet breaks the old pages.' }, NOW))
+  const state = new FakeState().load(runOf(shareEntry(older, 'w1', { kind: 'fact', text: 'The header has no room.' }, NOW)), null)
   on('clock.now', () => ({ value: NOW }))
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.findAll({ type: 'Text', text: '27 calls' })).toHaveLength(2)
-  expect(await ui.find({ type: 'Text', text: / tok$/ })).toBeUndefined()
+  const card = textsOf(await ui.find({ key: 'sec-card-w1' })).join(' ')
+  expect(card).toContain('The header has no room.')
+  expect(card).not.toContain('stylesheet')
+  await ui.unmount()
+})
+
+test('a card gives the context of the agent against the cap and the cost of the worker in tokens', async ($, on) => {
+  const run = withWorker(workingRun(2), 'w1', { context: { used: 40_000, size: 200_000 }, tokens: 1_234_567 })
+  const state = new FakeState().load(withWorker(run, 'w2', { agent: { type: 'acp:stub' }, tokens: 0 }), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(textsOf(await ui.find({ key: 'sec-card-w1' }))).toContain('context 40k of 150k cap, cost 1.2M tokens')
+  expect(textsOf(await ui.find({ key: 'sec-card-w2' }))).toContain('cost not reported')
+  await ui.unmount()
+})
+
+test('a card of a working agent shows no call count, no time since its last tool, and no command', async ($, on) => {
+  const state = new FakeState().load(withWorker(workingRun(2), 'w1', { calls: 27, activityAt: NOW + 20_000 }), null)
+  on('clock.now', () => ({ value: NOW + 30_000 }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const card = textsOf(await ui.find({ key: 'sec-card-w1' })).join(' ')
+  expect(card).toContain('#1 Theme tokens')
+  expect(card).not.toContain('calls')
+  expect(card).not.toContain('10s')
+  expect(card).not.toContain('pnpm')
+  await ui.unmount()
+})
+
+test('an idle worker with a ready task shows the warning Idle, task ready', async ($, on) => {
+  const state = new FakeState().load(setWorkerState(workingRun(2), 'w2', 'idle', NOW), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(textsOf(await ui.find({ key: 'sec-card-w2' }))).toContain('Idle, task ready')
+  await ui.unmount()
+})
+
+test('a context near the cap shows a warning that a fresh agent takes the next task', async ($, on) => {
+  const state = new FakeState().load(withWorker(workingRun(2), 'w1', { context: { used: 130_000, size: 1_000_000 } }), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(textsOf(await ui.find({ key: 'sec-card-w1' }))).toContain('Context near the cap: a fresh agent takes its next task')
+  await ui.unmount()
+})
+
+test('a task past 80% of its split calls shows the warning Long task, may split', async ($, on) => {
+  const run = workingRun(2)
+  const state = new FakeState().load({ ...run, tasks: run.tasks.map(one => (one.id === 1 ? { ...one, calls: 48 } : one)) }, null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(textsOf(await ui.find({ key: 'sec-card-w1' }))).toContain('Long task, may split')
   await ui.unmount()
 })
 
@@ -347,26 +457,24 @@ test('the header says what the agents work on, in one line', async ($, on) => {
   }
 })
 
-test('a lane shows a shell command as its name and its target, past flags and ranges', async ($, on) => {
-  const run = workingRun(2)
-  const busy = { ...run, workers: run.workers.map(worker => ({ ...worker, activity: 'Bash: cd /tmp/meld/r1/w2 && sed -n 80,189p hooks/contract.ts' })) }
-  const state = new FakeState().load(busy, null)
-  on('clock.now', () => ({ value: NOW }))
+test('a card of an agent with no word for 5 min warns, with its last command as its name and its target, past flags and ranges', async ($, on) => {
+  const state = new FakeState().load(withWorker(workingRun(2), 'w1', { activity: 'Bash: cd /tmp/meld/r1/w2 && sed -n 80,189p hooks/contract.ts' }), null)
+  on('clock.now', () => ({ value: NOW + 6 * 60_000 }))
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: 'sed contract.ts' })).toBeDefined()
+  expect(textsOf(await ui.find({ key: 'sec-card-w1' }))).toContain('No word for 6m, last: sed contract.ts')
   await ui.unmount()
 })
 
-test('each agent has a card: its lane and Stop on the first line, what it does on the second', async ($, on) => {
+test('each agent has a card: its task, its lane and Stop on the first line, what it does under it', async ($, on) => {
   const state = new FakeState().load(workingRun(2), factsOf(workingRun(2)))
   on('clock.now', () => ({ value: NOW }))
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  const [top, detail] = ((await ui.find({ key: 'lane-w1' }))?.children ?? []).map(child => JSON.stringify(child))
+  const [top, detail] = ((await ui.find({ key: 'sec-card-w1' }))?.children ?? []).map(child => JSON.stringify(child))
   expect(top).toContain('"Svg"')
   expect(top).toContain('stop-w1')
-  expect(detail).toContain('#1 ')
+  expect(top).toContain('#1 Theme tokens')
   expect(detail).not.toContain('stop-w1')
   await ui.unmount()
 })
@@ -437,7 +545,7 @@ test('a long shared entry is cut to one line', async ($, on) => {
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   const cut = `${'word '.repeat(12).trim()}…`
-  expect(await ui.findAll({ type: 'Text', text: cut })).toHaveLength(5)
+  expect(textsOf(await ui.find({ key: 'sec-context' })).filter(text => text === cut)).toHaveLength(5)
   expect((await ui.find({ type: 'Text', text: cut }))?.props).toMatchObject({ wrap: 'truncate-end' })
   await ui.unmount()
 })

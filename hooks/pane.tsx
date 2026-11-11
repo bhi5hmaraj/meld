@@ -1,15 +1,16 @@
 import type { ElementTable, RenderSurface } from 'claude-code'
 
-import type { AgentSpec, ContextKind, Entry, Facts, LaneFacts, PaneView, ResultFacts, Run, RunState, Task, Worker, WorkerId, WorkerState } from '../types'
+import type { Activity, AgentSpec, ContextKind, Entry, Facts, LaneFacts, PaneView, ResultFacts, Run, RunState, Task, Worker, WorkerId, WorkerState } from '../types'
 import { deliver, discard, LEADING_CD, stopAll, stopOne } from '../core/actions'
-import { currentContext, NOT_STARTED } from '../core/board'
+import { CONTEXT_CAP, currentContext, NOT_STARTED, SPLIT_CALLS } from '../core/board'
+import { activityOf } from '../core/metrics'
 import { STEER_PRESETS } from '../core/contract'
 import { agentColor, BAR_HEIGHT, BAR_WIDTH, barCells, LANE_HEIGHT, LANE_WIDTH, laneAlt, laneGlyphs, laneSvg, partsBarSvg, ROW_BAR_WIDTH, STATUS } from './drawing'
 import type { Io } from '../core/ports'
-import { agentsOf, formatStart, MAX_AGENTS, MODELS, WORKER_TYPE } from '../core/options'
+import { agentsOf, formatStart, isAcpSpec, MAX_AGENTS, MODELS, WORKER_TYPE } from '../core/options'
 import { ownersOf, partsOf, percentLabel, percentOf, requestParts, requestPercent, topTasks } from '../core/progress'
 import type { Parts } from '../core/progress'
-import { childrenOf, waitsFor } from '../core/tasks'
+import { childrenOf, claimable, waitsFor } from '../core/tasks'
 
 export const PANE = 'meld'
 export const DEFAULT_VIEW: PaneView = { showDiff: false, task: '', agents: 2, model: 'inherit', vcs: 'auto' }
@@ -34,8 +35,26 @@ const KIND_SHAPE: Record<ContextKind, string> = { fact: '■', fail: '✕', inte
 const KIND_TONE: Record<ContextKind, string | undefined> = { fact: undefined, fail: 'error', interface: 'suggestion' }
 const CONTEXT_ROWS = 5
 const CONTEXT_WORDS = 12
-const SLOW_MS = 120_000
 const STUCK_MS = 300_000
+/** After this long with no text, the Now line of a card gives plain words from the tool calls of its agent. */
+const SAID_FRESH_MS = 60_000
+const DID_WORDS = 16
+/** A card warns past these shares of CONTEXT_CAP and of the SPLIT_CALLS of its task. */
+const NEAR_CAP = 0.8
+const NEAR_SPLIT = 0.8
+const TICK = '✓'
+/** meld's own plain words for an agent that starts or goes on. */
+const MELD_ACTIVITIES = new Set(['started', 'started again', 'goes on', 'starting'])
+const READ_TOOLS = new Set(['Read', 'Glob', 'Grep'])
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
+const READ_COMMANDS = new Set(['cat', 'rg', 'grep', 'find', 'ls'])
+const CLASS_WORDS: Partial<Record<Activity, string>> = {
+  tests: 'running tests',
+  builds: 'building',
+  app: 'running the app',
+  background: 'waiting for its background work',
+  board: 'using the board',
+}
 const ACTIVITY_CHARS = 22
 const CHECK_CHIPS = 6
 const CARD_INDENT = 3
@@ -169,27 +188,38 @@ function agentsSection(input: PaneInput, run: Run, facts: Facts | null) {
   const { Box } = input.table
   const checks = run.log.filter(entry => entry.kind === 'check')
   return (
-    <Box key="sec-agents" flexDirection="column" gap="md">
-      {run.workers.map((worker, index) => laneRow(input, run, worker, index, laneOf(facts, worker), checks))}
+    <Box key="agents" flexDirection="column" gap="md">
+      {run.workers.map((worker, index) => agentCard(input, run, worker, index, laneOf(facts, worker), checks))}
     </Box>
   )
 }
 
-function laneRow(input: PaneInput, run: Run, worker: Worker, index: number, lane: LaneFacts, checks: Entry[]) {
+/**
+ * The card of an agent, a block of its own (section 3.2 of docs/design/pane-metrics-logs.md): its task and its lane, what it
+ * says or does now, what it finished and shared, its context and cost, and one warning.
+ */
+function agentCard(input: PaneInput, run: Run, worker: Worker, index: number, lane: LaneFacts, checks: Entry[]) {
   const { Box, Text, Button } = input.table
   const Svg = input.surface !== 'terminal' && 'Svg' in input.table ? input.table.Svg : undefined
   const { io, now } = input
   const marks = { lane, color: index, checks, final: run.final?.commit }
-  const age = now - worker.activityAt
-  const busy = LIVE.has(run.state) && worker.state === 'working'
-  const tone = busy && age > STUCK_MS ? 'error' : busy && age > SLOW_MS ? 'warning' : undefined
   const spec = sharedSpec(run) === undefined ? specLabel(worker.agent) : ''
+  const claim = claimOf(run, worker)
+  const [did, ...older] = doneBy(run, worker)
+  const learned = currentContext(run, run.context?.length).find(entry => entry.by === worker.id)
+  const said = nowLine(worker, now)
+  const warning = warningOf(run, worker, now)
   return (
-    <Box key={`lane-${worker.id}`} flexDirection="column" gap="xs">
+    <Box key={`sec-card-${worker.id}`} flexDirection="column" gap="xs">
       <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="md">
         <Box flexDirection="row" gap="sm" alignItems="center">
           <Text color={WORKER_TONE[worker.state]}>●</Text>
-          <Text bold>{worker.id}</Text>
+          <Text bold color={agentColor(index).light}>
+            {worker.id}
+          </Text>
+          {spec && <Text dimColor>{spec}</Text>}
+          <Text wrap="truncate-end">{taskLabel(run, worker, claim)}</Text>
+          {claim?.claimedAt !== undefined && <Text dimColor>{ago(now - claim.claimedAt)}</Text>}
           {isRefused(worker) ? null : Svg ? (
             <Svg source={laneSvg(marks)} alt={laneAlt(worker.id, lane)} width={LANE_WIDTH} height={LANE_HEIGHT} isInteractive />
           ) : (
@@ -202,18 +232,96 @@ function laneRow(input: PaneInput, run: Run, worker: Worker, index: number, lane
           </Button>
         )}
       </Box>
-      <Box flexDirection="row" gap="md" paddingLeft={CARD_INDENT}>
-        <Text dimColor wrap="truncate-end">
-          {activityOf(run, worker)}
-        </Text>
-        <Text color={tone} dimColor={!tone}>
-          {ago(age)}
-        </Text>
-        <Text dimColor>{callsOf(worker.calls ?? 0)}</Text>
-        {spec && <Text dimColor>{spec}</Text>}
-      </Box>
+      {!isRefused(worker) && (
+        <Box flexDirection="column" gap="xs" paddingLeft={CARD_INDENT}>
+          {said && <Text wrap="wrap">{said}</Text>}
+          {did && (
+            <Box flexDirection="row" gap="sm">
+              <Text color="success">{TICK}</Text>
+              <Text>{`#${did.id} ${cutWords(did.title, TITLE_WORDS)}`}</Text>
+              <Text dimColor wrap="truncate-end">
+                {cutWords(did.summary ?? '', DID_WORDS)}
+              </Text>
+              <Text dimColor>{(did.commit ?? '').slice(0, 7)}</Text>
+            </Box>
+          )}
+          {older.length > 0 && <Text dimColor>{`and ${older.length} more`}</Text>}
+          {learned && (
+            <Box flexDirection="row" gap="sm">
+              <Text color={KIND_TONE[learned.kind]}>{KIND_SHAPE[learned.kind]}</Text>
+              <Text dimColor wrap="truncate-end">
+                {cutWords(learned.text, CONTEXT_WORDS)}
+              </Text>
+            </Box>
+          )}
+          <Text dimColor>{costLine(worker)}</Text>
+          {warning && <Text color="warning">{warning}</Text>}
+        </Box>
+      )}
     </Box>
   )
+}
+
+function claimOf(run: Run, worker: Worker): Task | undefined {
+  return run.tasks.find(task => task.state === 'claimed' && task.owner === worker.id)
+}
+
+/** What the worker works on: its claimed task, the integration, or its state. */
+function taskLabel(run: Run, worker: Worker, claim: Task | undefined): string {
+  if (isRefused(worker)) return 'not started'
+  if (worker.state === 'stopped') return 'stopped'
+  if (claim) return `#${claim.id} ${cutWords(claim.title, TITLE_WORDS)}`
+  if (worker.state === 'idle') return 'idle'
+  return run.integrator === worker.id ? 'integrating' : 'no task'
+}
+
+/** The finished leaves of the worker, newest first. One shows on its card: two would pass the 100 words of the block. */
+function doneBy(run: Run, worker: Worker): Task[] {
+  return run.tasks.filter(task => task.state === 'done' && task.owner === worker.id && task.commit).sort((one, two) => (two.doneAt ?? 0) - (one.doneAt ?? 0) || two.id - one.id)
+}
+
+/** The last sentence of the agent; for a working agent that wrote no text for SAID_FRESH_MS, plain words from its last tool call. */
+function nowLine(worker: Worker, now: number): string | undefined {
+  const fresh = worker.said !== undefined && now - (worker.saidAt ?? 0) <= SAID_FRESH_MS
+  return worker.state === 'working' && !fresh ? plainWords(worker.activity) : worker.said
+}
+
+/** What a worker does, in plain words from the kind of its last tool call: a card shows no raw command. */
+function plainWords(activity: string): string {
+  if (MELD_ACTIVITIES.has(activity)) return activity
+  const command = /^Bash: (.*)$/.exec(activity)?.[1]
+  if (command !== undefined) {
+    const name = command.replace(LEADING_CD, '').split(/\s+/)[0] ?? ''
+    return READ_COMMANDS.has(name) ? 'reading code' : (CLASS_WORDS[activityOf('Bash', command)] ?? 'running a command')
+  }
+  const [tool = '', target] = activity.split(' ')
+  if (READ_TOOLS.has(tool)) return 'reading code'
+  if (EDIT_TOOLS.has(tool)) return target ? `editing ${target.split('/').pop()}` : 'editing'
+  return CLASS_WORDS[activityOf(tool, activity)] ?? `in a step of the agent: ${activity}`
+}
+
+/** The context of the agent against CONTEXT_CAP, and the cost of the worker in input tokens (costTokens). An ACP agent that reports no usage has no cost. */
+function costLine(worker: Worker): string {
+  const cost = worker.tokens || !isAcpSpec(worker.agent) ? `cost ${tokenCount(worker.tokens)} tokens` : 'cost not reported'
+  return worker.context ? `context ${tokenCount(worker.context.used)} of ${tokenCount(CONTEXT_CAP)} cap, ${cost}` : cost
+}
+
+function tokenCount(count: number): string {
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`
+  return count >= 1000 ? `${Math.round(count / 1000)}k` : String(count)
+}
+
+/** The one warning of a card, the most urgent first. A stuck agent shows its last command as a clue. */
+function warningOf(run: Run, worker: Worker, now: number): string | undefined {
+  if (!LIVE.has(run.state) || worker.state === 'stopped') return undefined
+  const claim = claimOf(run, worker)
+  const quiet = now - Math.max(worker.activityAt, worker.saidAt ?? 0)
+  if (worker.state === 'working' && quiet > STUCK_MS) return `No word for ${ago(quiet)}, last: ${shortActivity(worker.activity)}`
+  if (claim && worker.state === 'working' && plainWords(worker.activity) === CLASS_WORDS.background) return 'Waits for its own background work'
+  if (worker.state === 'idle' && claimable(run.tasks).length) return 'Idle, task ready'
+  if ((worker.context?.used ?? 0) >= NEAR_CAP * CONTEXT_CAP) return 'Context near the cap: a fresh agent takes its next task'
+  if (claim && (claim.calls ?? 0) >= NEAR_SPLIT * SPLIT_CALLS[claim.size ?? 'M']) return 'Long task, may split'
+  return undefined
 }
 
 /** One row of the progress. isOpen: the rows of its children show under it. */
@@ -493,15 +601,6 @@ async function act(io: Io, action: () => Promise<string>): Promise<void> {
 
 function laneOf(facts: Facts | null, worker: Worker): LaneFacts {
   return facts?.lanes.find(lane => lane.id === worker.id) ?? { id: worker.id, commits: [], edits: false }
-}
-
-/** What a worker does now, in a few words: its first claimed task, and its last tool with the first word of a command. */
-function activityOf(run: Run, worker: Worker): string {
-  if (isRefused(worker)) return 'not started'
-  if (worker.state === 'stopped') return cut(worker.activity, ACTIVITY_CHARS)
-  const claim = run.tasks.find(task => task.state === 'claimed' && task.owner === worker.id)
-  const doing = worker.state === 'idle' ? 'idle' : shortActivity(worker.activity)
-  return claim ? `#${claim.id} ${doing}` : doing
 }
 
 /** A shell command as its name and its target (past a leading cd, flags, numbers and redirections), a path as its last part; another tool as its name and target. */
