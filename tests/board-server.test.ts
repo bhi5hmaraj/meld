@@ -276,6 +276,48 @@ test('a model call of a subagent records the context of its worker, against the 
   expect(written.at(-1)?.workers[0]?.context).toEqual({ used: 33_000, size: WINDOW })
 })
 
+test('a subagent records the time of its tool calls and of its model calls by activity, in the write of its next model call', async ($, on) => {
+  const written: (Run | undefined)[] = []
+  const clock = answerTheEngine(on, undefined)
+  on('state.get', ($, e) => ({ value: e.key === 'run' ? { value: { ...STORED, value: working() }, version: 1 } : { value: undefined, version: 0 } }))
+  on('state.set', ($, e) => {
+    if (e.key === 'run') written.push((e.value as { value?: Run }).value)
+    return { value: { isSet: true, version: 2 } }
+  })
+  on('tool.call', { tool: 'Bash' }, async () => {
+    await clock.advance(500)
+    return { result: 'ok' }
+  })
+  on('turn.step', async function* ($, e) {
+    await clock.advance(300)
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage: USAGE }
+  })
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  await $.tool.call({ tool: 'Bash', command: 'bun test', agentId: 'agent-1' } as never)
+  const stream = $.turn.step({ turnId: 't1', index: 0, model: USAGE.model, messageCount: 3, agentId: 'agent-1' })
+  for await (const chunk of stream) void chunk
+  await stream.result
+  expect(written.at(-1)?.workers[0]?.times).toEqual({ tests: 500, model: 300 })
+})
+
+test('the answer of a model call of a subagent becomes the said of its worker', async ($, on) => {
+  const written: (Run | undefined)[] = []
+  answerTheEngine(on, undefined)
+  on('state.get', ($, e) => ({ value: e.key === 'run' ? { value: { ...STORED, value: working() }, version: 1 } : { value: undefined, version: 0 } }))
+  on('state.set', ($, e) => {
+    if (e.key === 'run') written.push((e.value as { value?: Run }).value)
+    return { value: { isSet: true, version: 2 } }
+  })
+  on('turn.step', async function* ($, e) {
+    return { turnId: e.turnId, index: e.index, answer: 'I claim #2. Then the tests.', toolUses: [], stopReason: 'end_turn' as const, usage: USAGE }
+  })
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  const stream = $.turn.step({ turnId: 't1', index: 0, model: USAGE.model, messageCount: 3, agentId: 'agent-1' })
+  for await (const chunk of stream) void chunk
+  await stream.result
+  expect(written.at(-1)?.workers[0]?.said).toBe('I claim #2.')
+})
+
 test('at the end of a turn, an idle worker with a small context gets the step in its own session, and no new agent', async ($, on) => {
   const engine = $
   const sent: string[] = []

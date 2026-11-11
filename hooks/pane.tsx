@@ -1,15 +1,21 @@
 import type { ElementTable, RenderSurface } from 'claude-code'
 
-import type { AgentSpec, ContextKind, Entry, Facts, LaneFacts, PaneView, ResultFacts, Run, RunState, Task, Worker, WorkerId, WorkerState } from '../types'
-import { deliver, discard, LEADING_CD, stopAll, stopOne } from '../core/actions'
-import { currentContext, NOT_STARTED } from '../core/board'
+import type { Activity, AgentSpec, ContextEntry, ContextKind, Facts, PaneView, ResultFacts, Run, RunState, Task, Worker, WorkerId } from '../types'
+import { deliver, discard, LEADING_CD, stopAll } from '../core/actions'
+import { ancestorsOf, currentContext, NOT_STARTED, saidOf } from '../core/board'
+import { activityOf } from '../core/metrics'
 import { STEER_PRESETS } from '../core/contract'
-import { agentColor, BAR_HEIGHT, BAR_WIDTH, barCells, LANE_HEIGHT, LANE_WIDTH, laneAlt, laneGlyphs, laneSvg, partsBarSvg, ROW_BAR_WIDTH, STATUS } from './drawing'
+import { agentColor, BAR_HEIGHT, BAR_WIDTH, barCells, partsBarSvg, STATUS } from './drawing'
+import { FLOW_HEIGHT, FLOW_WIDTH, flowSvg } from './drawing'
+import { efficiencyOf, lanesOf, progressOf } from '../core/metrics'
+import type { LanePart } from '../core/metrics'
+import { FLOW_CELLS, FLOW_LEGEND, flowAxis, flowCells, partsIn, partWords, reportOf, sleepsOf, tokenCount } from '../core/report'
+import type { TimeSpan } from '../core/report'
 import type { Io } from '../core/ports'
-import { agentsOf, formatStart, MAX_AGENTS, MODELS, WORKER_TYPE } from '../core/options'
-import { ownersOf, partsOf, percentLabel, percentOf, requestParts, requestPercent, topTasks } from '../core/progress'
+import { MAX_AGENTS, MODELS, WORKER_TYPE } from '../core/options'
+import { leavesOf, requestParts, topTasks } from '../core/progress'
 import type { Parts } from '../core/progress'
-import { childrenOf, waitsFor } from '../core/tasks'
+import { childrenOf, claimable, taskOf, waitsFor } from '../core/tasks'
 
 export const PANE = 'meld'
 export const DEFAULT_VIEW: PaneView = { showDiff: false, task: '', agents: 2, model: 'inherit', vcs: 'auto' }
@@ -29,27 +35,45 @@ const STATE_TONE: Record<RunState, string> = {
   delivered: 'inactive',
   stopped: 'error',
 }
-const WORKER_TONE: Record<WorkerState, string> = { starting: 'warning', working: 'success', idle: 'inactive', stopped: 'error' }
-const KIND_SHAPE: Record<ContextKind, string> = { fact: '■', fail: '✕', interface: '◇' }
-const KIND_TONE: Record<ContextKind, string | undefined> = { fact: undefined, fail: 'error', interface: 'suggestion' }
-const CONTEXT_ROWS = 5
-const CONTEXT_WORDS = 12
-const SLOW_MS = 120_000
-const STUCK_MS = 300_000
-const ACTIVITY_CHARS = 22
-const CHECK_CHIPS = 6
+const LEARNING_GROUPS: readonly { kind: ContextKind; heading: string; tone?: string }[] = [
+  { kind: 'fact', heading: 'Facts' },
+  { kind: 'fail', heading: 'Avoid', tone: 'error' },
+  { kind: 'interface', heading: 'Contracts' },
+]
+/** The words of the lines of Learnings: the block holds 100 words with its heading and the three group headings. */
+const LEARNING_WORDS = 96
+/** After this long with no text, the Now line of a card gives plain words from the tool calls of its agent. */
+const SAID_FRESH_MS = 60_000
+/** The finished tasks that a card names; four would pass the 100 words of the block with long titles. */
+const DONE_TITLES = 3
+const TICK = '✓'
+/** meld's own plain words for an agent that starts or goes on. */
+const MELD_ACTIVITIES = new Set(['started', 'started again', 'goes on', 'starting'])
+const READ_TOOLS = new Set(['Read', 'Glob', 'Grep'])
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
+const READ_COMMANDS = new Set(['cat', 'rg', 'grep', 'find', 'ls'])
+const CLASS_WORDS: Partial<Record<Activity, string>> = {
+  tests: 'running tests',
+  builds: 'building',
+  app: 'running the app',
+  background: 'waiting for its background work',
+  board: 'using the board',
+}
 const CARD_INDENT = 3
-const SUMMARY_WORDS = 24
 const REQUEST_BAR = { width: BAR_WIDTH, cells: 24 }
-const ROW_BAR = { width: ROW_BAR_WIDTH, cells: 8 }
 const ROW_INDENT = 2
 const TITLE_WORDS = 8
-/** A text bar has three runs at most: done, claimed and open. */
-const BAR_RUNS = 3
-/** The words of the rows: the progress block holds 100 words with its heading, the bar and percent of the request, and the count of the rows left out. */
+/** The words of the rows: the plan block holds 100 words with its heading and the count of the rows left out. */
 const ROW_WORDS = 90
-const REQUEST_CHARS = 72
-const SKIPPED_ARGUMENT = /^(?:-|\d|\.$|[|&;<>]+$)/
+/** The conversation block holds 100 words with its heading; a message shows its first 30. */
+const TALK_BLOCK_WORDS = 100
+const TALK_WORDS = 30
+/** The arrow from the author of a message to its readers. */
+const ARROW = String.fromCharCode(0x2192)
+/** A ready task that waits longer than this while a worker is idle shows in the warning colour. */
+const READY_WARN_MS = 300_000
+/** The characters of the request that the header shows before a press: two lines. */
+const REQUEST_CHARS = 144
 const AGENT_OPTIONS = Array.from({ length: MAX_AGENTS }, (_, index) => ({ value: String(index + 1), label: `${index + 1}` }))
 const MODEL_OPTIONS = [{ value: 'inherit', label: 'Same as this session' }, ...MODELS.map(model => ({ value: model, label: model }))]
 const VCS_OPTIONS = [
@@ -80,26 +104,29 @@ export function paneTree(input: PaneInput) {
   const run = input.run
   if (!run) return <Box flexDirection="column">{startSection(input)}</Box>
   const facts = input.facts?.run === run.id ? input.facts : null
+  const working = run.state === 'starting' || run.state === 'working'
   return (
     <Box flexDirection="column" gap="lg">
       {headerSection(input, run)}
       {refusedSection(input, run)}
-      {agentsSection(input, run, facts)}
-      {progressSection(input, run)}
-      {contextSection(input, run)}
-      {checksSection(input, run)}
-      {run.final && resultSection(input, run, facts?.result)}
-      {LIVE.has(run.state) && steerSection(input, run)}
+      {working
+        ? [agentsSection(input, run), conversationSection(input, run), learningsSection(input, run), progressSection(input, run)]
+        : reportSections(input, run, facts)}
+      {(working || (run.state === 'ready' && input.view.asking)) && steerSection(input, run)}
     </Box>
   )
 }
 
 function headerSection(input: PaneInput, run: Run) {
   const { Box, Text, Button } = input.table
-  const { io } = input
-  const calls = run.workers.reduce((sum, worker) => sum + (worker.calls ?? 0), 0)
+  const { io, now } = input
+  const units = run.workers.reduce((sum, worker) => sum + (worker.tokens ?? 0), 0)
   const spent = spentOf(input.sessionCost, run.costAtStart)
   const shared = sharedSpec(run)
+  const { done, working, ready, waiting } = progressOf(run, now)
+  const others = [`${working} working`, `${ready} ready`, `${waiting} waiting`].filter(part => !part.startsWith('0 '))
+  const counts = [`${done} of ${done + working + ready + waiting} tasks done`, ...others].join(', ')
+  const request = run.request.replace(/\s+/g, ' ').trim()
   return (
     <Box key="sec-top" flexDirection="column" gap="xs">
       <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="md">
@@ -108,7 +135,7 @@ function headerSection(input: PaneInput, run: Run) {
             ● {STATE_WORD[run.state]}
           </Text>
           <Text dimColor>
-            {run.vcs} · {run.workers.length} agents{shared ? ` · ${shared}` : ''} · {ago(input.now - run.startedAt)} · {spent ?? callsOf(calls)}
+            {run.workers.length} agents{shared ? ` · ${shared}` : ''} · {ago(now - run.startedAt)} · {spent ?? `${tokenCount(units)} cost units`}
           </Text>
         </Box>
         <Box flexDirection="row" gap="sm">
@@ -122,18 +149,40 @@ function headerSection(input: PaneInput, run: Run) {
               {run.state === 'delivered' ? 'Clear' : '✗ Discard'}
             </Button>
           )}
-          {run.state === 'ready' && (
-            <Button key="discard" dimColor onPress={() => void act(io, () => discard(io))}>
-              ✗ Discard
-            </Button>
-          )}
         </Box>
       </Box>
-      <Text dimColor wrap="truncate-end">
-        {cut(run.request.split('\n')[0] ?? '', REQUEST_CHARS)}
-      </Text>
+      {request.length > REQUEST_CHARS ? (
+        <Button key="request" plain dimColor onPress={() => void input.setView(view => ({ ...view, showRequest: !view.showRequest }))}>
+          {input.view.showRequest ? request : cut(request, REQUEST_CHARS)}
+        </Button>
+      ) : (
+        <Text dimColor wrap="wrap">
+          {request}
+        </Text>
+      )}
+      {run.tasks.length > 0 && (
+        <Box flexDirection="row" gap="sm" alignItems="center" flexWrap="wrap">
+          <Box key="counts">
+            <Text>{counts}</Text>
+          </Box>
+          {partsBar(input, 'all', requestParts(run.tasks), REQUEST_BAR, counts)}
+        </Box>
+      )}
+      {runWarning(input, run)}
     </Box>
   )
+}
+
+/** The most important warning of the run, one line: the machine slept, or the run has no board file. The card of an idle agent names a ready task. */
+function runWarning(input: PaneInput, run: Run) {
+  const asleepMs = efficiencyOf(run, input.now).asleepMs
+  const text = asleepMs > 0 ? `The machine slept for ${Math.round(asleepMs / 60_000)} minutes. Nothing ran in that time.` : run.store === 'session' ? 'This run lives in the session state. It has no record, and no other session can resume it.' : undefined
+  const { Box, Text } = input.table
+  return text ? (
+    <Box key="warning">
+      <Text color="warning">{text}</Text>
+    </Box>
+  ) : null
 }
 
 /** Why agents did not start, once per reason and in full: a lane has room for a few words. */
@@ -165,61 +214,117 @@ function firstSentence(text: string): string {
   return /^.*?\.(?=\s|$)/s.exec(text)?.[0] ?? text
 }
 
-function agentsSection(input: PaneInput, run: Run, facts: Facts | null) {
+/** One card for each agent. The idle agents pair in worker order with the ready tasks in board order. */
+function agentsSection(input: PaneInput, run: Run) {
   const { Box } = input.table
-  const checks = run.log.filter(entry => entry.kind === 'check')
+  const ready = LIVE.has(run.state) ? claimable(run.tasks) : []
+  const idle = run.workers.filter(worker => worker.state === 'idle')
   return (
-    <Box key="sec-agents" flexDirection="column" gap="md">
-      {run.workers.map((worker, index) => laneRow(input, run, worker, index, laneOf(facts, worker), checks))}
+    <Box key="agents" flexDirection="column" gap="md">
+      {run.workers.map((worker, index) => agentCard(input, run, worker, index, worker.state === 'idle' ? ready[idle.indexOf(worker)] : undefined))}
     </Box>
   )
 }
 
-function laneRow(input: PaneInput, run: Run, worker: Worker, index: number, lane: LaneFacts, checks: Entry[]) {
+/** The card of an agent, a block of its own: its task, what it does now in its own words, and the titles of the tasks it finished. */
+function agentCard(input: PaneInput, run: Run, worker: Worker, index: number, ready: Task | undefined) {
   const { Box, Text, Button } = input.table
-  const Svg = input.surface !== 'terminal' && 'Svg' in input.table ? input.table.Svg : undefined
-  const { io, now } = input
-  const marks = { lane, color: index, checks, final: run.final?.commit }
-  const age = now - worker.activityAt
-  const busy = LIVE.has(run.state) && worker.state === 'working'
-  const tone = busy && age > STUCK_MS ? 'error' : busy && age > SLOW_MS ? 'warning' : undefined
+  const { now } = input
   const spec = sharedSpec(run) === undefined ? specLabel(worker.agent) : ''
+  const claim = claimOf(run, worker)
+  const done = doneBy(run, worker)
+  const said = nowLine(worker, now)
   return (
-    <Box key={`lane-${worker.id}`} flexDirection="column" gap="xs">
-      <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="md">
+    <Box key={`sec-card-${worker.id}`} flexDirection="column" gap="xs">
+      <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="md" flexWrap="wrap">
         <Box flexDirection="row" gap="sm" alignItems="center">
-          <Text color={WORKER_TONE[worker.state]}>●</Text>
-          <Text bold>{worker.id}</Text>
-          {isRefused(worker) ? null : Svg ? (
-            <Svg source={laneSvg(marks)} alt={laneAlt(worker.id, lane)} width={LANE_WIDTH} height={LANE_HEIGHT} isInteractive />
-          ) : (
-            <Text color={agentColor(index).light}>{laneGlyphs(marks)}</Text>
-          )}
+          <Text bold color={agentColor(index).light}>
+            {worker.id}
+          </Text>
+          {spec && <Text dimColor>{spec}</Text>}
+          <Text bold={claim !== undefined} dimColor={claim === undefined} wrap="truncate-end">
+            {taskLabel(run, worker, claim)}
+          </Text>
+          {claim?.claimedAt !== undefined && <Text dimColor>{ago(now - claim.claimedAt)}</Text>}
         </Box>
-        {LIVE.has(run.state) && worker.state !== 'stopped' && (
-          <Button key={`stop-${worker.id}`} dimColor onPress={() => void act(io, () => stopOne(io, worker.id))}>
-            ■ Stop
-          </Button>
+        {ready && (
+          <Box flexDirection="row" gap="sm" alignItems="center">
+            <Text color="warning">{readyText(ready, now)}</Text>
+            <Button key={`start-${worker.id}`} onPress={SERVED_BY_HOOK}>
+              Start
+            </Button>
+          </Box>
         )}
       </Box>
-      <Box flexDirection="row" gap="md" paddingLeft={CARD_INDENT}>
-        <Text dimColor wrap="truncate-end">
-          {activityOf(run, worker)}
-        </Text>
-        <Text color={tone} dimColor={!tone}>
-          {ago(age)}
-        </Text>
-        <Text dimColor>{callsOf(worker.calls ?? 0)}</Text>
-        {spec && <Text dimColor>{spec}</Text>}
-      </Box>
+      {!isRefused(worker) && (
+        <Box flexDirection="column" gap="xs" paddingLeft={CARD_INDENT}>
+          {said && <Text wrap="wrap">{said}</Text>}
+          {done.length > 0 && <Text dimColor wrap="wrap">{finishedText(done)}</Text>}
+        </Box>
+      )}
     </Box>
   )
 }
 
-/** One row of the progress. isOpen: the rows of its children show under it. */
-type Row = { task: Task; depth: number; isParent: boolean; isOpen: boolean; owners: WorkerId[]; waits?: number }
+function readyText(task: Task, now: number): string {
+  return task.readyAt === undefined ? `#${task.id} is ready` : `#${task.id} is ready since ${Math.round((now - task.readyAt) / 60_000)} min`
+}
 
-/** The percent of the request, and one row for each top-level task, with the rows of its children when it is open. The rows stop before the block passes 100 words. */
+/** The titles of the finished tasks, newest first, with how many more past DONE_TITLES. */
+function finishedText(done: readonly Task[]): string {
+  const titles = done.slice(0, DONE_TITLES).map(task => `${TICK} ${cutWords(task.title, TITLE_WORDS)}`)
+  return [...titles, ...(done.length > DONE_TITLES ? [`${done.length - DONE_TITLES} more`] : [])].join(' · ')
+}
+
+function claimOf(run: Run, worker: Worker): Task | undefined {
+  return run.tasks.find(task => task.state === 'claimed' && task.owner === worker.id)
+}
+
+/** What the worker works on: its claimed task, the integration, or its state. */
+function taskLabel(run: Run, worker: Worker, claim: Task | undefined): string {
+  if (isRefused(worker)) return 'not started'
+  if (worker.state === 'stopped') return 'stopped'
+  if (claim) return `#${claim.id} ${cutWords(claim.title, TITLE_WORDS)}`
+  if (worker.state === 'idle') return 'idle'
+  return run.integrator === worker.id ? 'integrating' : 'no task'
+}
+
+/** The finished leaves of the worker, newest first. */
+function doneBy(run: Run, worker: Worker): Task[] {
+  return run.tasks.filter(task => task.state === 'done' && task.owner === worker.id && task.commit).sort((one, two) => (two.doneAt ?? 0) - (one.doneAt ?? 0) || two.id - one.id)
+}
+
+/** The last sentence of the agent; for a working agent that wrote no text for SAID_FRESH_MS, plain words from its last tool call. */
+function nowLine(worker: Worker, now: number): string | undefined {
+  const fresh = worker.said !== undefined && now - (worker.saidAt ?? 0) <= SAID_FRESH_MS
+  return worker.state === 'working' && !fresh ? plainWords(worker.activity) : worker.said
+}
+
+/** What a worker does, in plain words from the kind of its last tool call: a card shows no raw command. */
+function plainWords(activity: string): string {
+  if (MELD_ACTIVITIES.has(activity)) return activity
+  const command = /^Bash: (.*)$/.exec(activity)?.[1]
+  if (command !== undefined) {
+    const name = command.replace(LEADING_CD, '').split(/\s+/)[0] ?? ''
+    return READ_COMMANDS.has(name) ? 'reading code' : (CLASS_WORDS[activityOf('Bash', command)] ?? 'running a command')
+  }
+  const [tool = '', target] = activity.split(' ')
+  if (READ_TOOLS.has(tool)) return 'reading code'
+  if (EDIT_TOOLS.has(tool)) return target ? `editing ${target.split('/').pop()}` : 'editing'
+  return CLASS_WORDS[activityOf(tool, activity)] ?? `in a step of the agent: ${activity}`
+}
+
+/** The state of a row: a leaf by its own state, a parent by the leaves under it. Each level of the tree shows the groups in this order. */
+type RowGroup = 'claimed' | 'ready' | 'waiting' | 'done'
+const GROUP_ORDER: Record<RowGroup, number> = { claimed: 0, ready: 1, waiting: 2, done: 3 }
+/** The state of a leaf in words, or "N of M done" for a parent. */
+type Word = { text: string; color?: string }
+/** One row of the progress. isOpen: the rows of its children show under it. */
+type Row = { task: Task; depth: number; isParent: boolean; isOpen: boolean; group: RowGroup; word: Word }
+/** What each row of the tree reads: the run, its ready leaves, the choices of the person, and whether a worker is idle. */
+type Tree = { run: Run; ready: ReadonlySet<number>; view: PaneView; now: number; idle: boolean }
+
+/** One row for each top-level task, with the rows of its children when it is open. The header counts the tasks of the request. The rows stop before the block passes 100 words. */
 function progressSection(input: PaneInput, run: Run) {
   const { Box, Text } = input.table
   if (!run.tasks.length) {
@@ -229,52 +334,43 @@ function progressSection(input: PaneInput, run: Run) {
       </Box>
     )
   }
-  const rows = rowsOf(run.tasks, topTasks(run.tasks), input.view.open ?? [], 0)
-  const shown = rowsWithin(rows)
-  const percent = percentLabel(requestPercent(run.tasks))
+  const tree: Tree = { run, ready: new Set(claimable(run.tasks).map(task => task.id)), view: input.view, now: input.now, idle: run.workers.some(worker => worker.state === 'idle') }
+  const all = rowsOf(tree, topTasks(run.tasks), 0)
+  const done = all.filter(row => row.depth === 0 && row.group === 'done' && !row.isOpen)
+  const [first] = done
+  const fold = first && done.length > 1 && all.some(row => row.group !== 'done') ?`${taskName(first.task)}, and ${done.length - 1} more done` : undefined
+  const rows = fold ? all.filter(row => !done.includes(row)) : all
+  const shown = rowsWithin(rows, ROW_WORDS - (fold ? wordCount(fold) : 0))
   return (
     <Box key="sec-progress" flexDirection="column" gap="sm">
-      <Box key="progress-all" flexDirection="row" justifyContent="space-between" alignItems="center" gap="md">
-        <Text bold>Progress</Text>
-        <Box flexDirection="row" gap="sm" alignItems="center">
-          <Text bold tabular>
-            {percent}
-          </Text>
-          {partsBar(input, 'all', requestParts(run.tasks), REQUEST_BAR, `The request: ${percent} done`)}
-        </Box>
+      <Box key="progress-all" flexDirection="row">
+        <Text bold>Plan</Text>
       </Box>
       <Box flexDirection="column" gap="xs">
-        {shown.map(row => taskRow(input, run, row))}
+        {shown.map(row => taskRow(input, row))}
+        {fold && <Text dimColor>{fold}</Text>}
         {shown.length < rows.length && <Text dimColor>{`${rows.length - shown.length} more`}</Text>}
       </Box>
     </Box>
   )
 }
 
-/** The title on the left; the owners, the need, the percent and the bar on the right, so the bars line up. A press on a parent opens its children. */
-function taskRow(input: PaneInput, run: Run, row: Row) {
+/** The title on the left and the word on the right. A press on a parent opens or closes it. */
+function taskRow(input: PaneInput, row: Row) {
   const { Box, Text, Button } = input.table
-  const { task, waits } = row
-  const percent = percentLabel(percentOf(run.tasks, task))
+  const { task, word } = row
   return (
     <Box key={`task-${task.id}`} flexDirection="row" justifyContent="space-between" alignItems="center" gap="md" paddingLeft={row.depth * ROW_INDENT}>
       {row.isParent ? (
-        <Button key={`open-${task.id}`} plain onPress={() => void input.setView(view => ({ ...view, open: toggled(view.open, task.id) }))}>
+        <Button key={`open-${task.id}`} plain onPress={() => void input.setView(view => chosen(view, task.id, row.isOpen))}>
           {rowLabel(row)}
         </Button>
       ) : (
         <Text wrap="truncate-end">{rowLabel(row)}</Text>
       )}
-      <Box flexDirection="row" gap="sm" alignItems="center">
-        {row.owners.map(owner => (
-          <Text key={`dot-${task.id}-${owner}`} color={agentColor(run.workers.findIndex(worker => worker.id === owner)).light}>
-            ●
-          </Text>
-        ))}
-        {waits !== undefined && <Text color="warning">{waitText(waits)}</Text>}
-        <Text tabular>{percent}</Text>
-        {partsBar(input, String(task.id), partsOf(run.tasks, task), ROW_BAR, `#${task.id}: ${percent} done`)}
-      </Box>
+      <Text color={word.color} dimColor={!word.color}>
+        {word.text}
+      </Text>
     </Box>
   )
 }
@@ -294,86 +390,273 @@ function partsBar(input: PaneInput, id: string, parts: Parts, size: { width: num
   )
 }
 
-/** The rows in tree order: the rows of the children of an open task follow its row. */
-function rowsOf(tasks: readonly Task[], list: readonly Task[], open: readonly number[], depth: number): Row[] {
-  return list.flatMap(task => {
-    const children = childrenOf(tasks, task.id)
-    const isOpen = children.length > 0 && open.includes(task.id)
-    const row: Row = { task, depth, isParent: children.length > 0, isOpen, owners: ownersOf(tasks, task), waits: waitsFor(tasks, task) }
-    return isOpen ? [row, ...rowsOf(tasks, children, open, depth + 1)] : [row]
-  })
+/** The rows in tree order, each level in the order of GROUP_ORDER: the rows of the children of an open task follow its row. */
+function rowsOf(tree: Tree, list: readonly Task[], depth: number): Row[] {
+  const rows = list.map(task => rowOf(tree, task, depth)).sort((one, two) => GROUP_ORDER[one.group] - GROUP_ORDER[two.group])
+  return rows.flatMap(row => (row.isOpen ? [row, ...rowsOf(tree, childrenOf(tree.run.tasks, row.task.id), depth + 1)] : [row]))
 }
 
-/** The first rows whose words add up to ROW_WORDS at most. */
-function rowsWithin(rows: readonly Row[]): Row[] {
+/** A parent opens itself while a task under it is claimed or ready, and closes itself when they are all done; the choice of the person wins. */
+function rowOf(tree: Tree, task: Task, depth: number): Row {
+  const { run, view } = tree
+  const isParent = childrenOf(run.tasks, task.id).length > 0
+  const leaves = leavesOf(run.tasks, task)
+  const group = groupOf(tree, leaves)
+  const opens = view.open?.includes(task.id) || (!view.closed?.includes(task.id) && (group === 'claimed' || group === 'ready'))
+  if (!isParent) return { task, depth, isParent, isOpen: false, group, word: leafWord(tree, task) }
+  const done = leaves.filter(leaf => leaf.state === 'done').length
+  return { task, depth, isParent, isOpen: opens, group, word: { text: `${done} of ${leaves.length} done` } }
+}
+
+function groupOf(tree: Tree, leaves: readonly Task[]): RowGroup {
+  if (leaves.some(leaf => leaf.state === 'claimed')) return 'claimed'
+  if (leaves.some(leaf => tree.ready.has(leaf.id))) return 'ready'
+  return leaves.every(leaf => leaf.state === 'done') ? 'done' : 'waiting'
+}
+
+/** A leaf in words: its worker working, ready and for how long, the task it waits for, or done. The card of the worker gives its time on the task. */
+function leafWord(tree: Tree, task: Task): Word {
+  const { run, now } = tree
+  if (task.state === 'claimed') return { text: `${task.owner} working`, color: agentColor(run.workers.findIndex(worker => worker.id === task.owner)).light }
+  if (task.state === 'done') return { text: `${TICK} done`, color: 'success' }
+  if (tree.ready.has(task.id)) {
+    if (task.readyAt === undefined) return { text: 'ready' }
+    const waited = now - task.readyAt
+    return { text: `ready ${ago(waited)}`, color: waited > READY_WARN_MS && tree.idle ? 'warning' : undefined }
+  }
+  const need = waitsFor(run.tasks, task)
+  return { text: need === undefined ? 'waiting' : waitText(need), color: 'warning' }
+}
+
+/** The first rows whose words add up to `limit` at most. */
+function rowsWithin(rows: readonly Row[], limit: number): Row[] {
   const shown: Row[] = []
   let words = 0
   for (const row of rows) {
     words += rowWords(row)
-    if (words > ROW_WORDS) break
+    if (words > limit) break
     shown.push(row)
   }
   return shown
 }
 
-/** The words of a row as the limit of a block counts them, with a text bar on every surface. */
+/** The words of a row as the limit of a block counts them. */
 function rowWords(row: Row): number {
-  const waits = row.waits === undefined ? 0 : wordCount(waitText(row.waits))
-  return wordCount(rowLabel(row)) + 1 + BAR_RUNS + row.owners.length + waits
+  return wordCount(rowLabel(row)) + wordCount(row.word.text)
 }
 
 function rowLabel(row: Row): string {
   const mark = row.isParent ? (row.isOpen ? '▾' : '▸') : '·'
-  return `${mark} #${row.task.id} ${cutWords(row.task.title, TITLE_WORDS)}`
+  return `${mark} ${taskName(row.task)}`
+}
+
+function taskName(task: Task): string {
+  return `#${task.id} ${cutWords(task.title, TITLE_WORDS)}`
 }
 
 function waitText(id: number): string {
   return `waits for #${id}`
 }
 
-function toggled(open: readonly number[] | undefined, id: number): number[] {
-  const current = open ?? []
-  return current.includes(id) ? current.filter(one => one !== id) : [...current, id]
+/** The view after the person opens or closes a parent: the choice stays in view.open or view.closed until the run ends. */
+function chosen(view: PaneView, id: number, isOpen: boolean): PaneView {
+  const open = (view.open ?? []).filter(one => one !== id)
+  const closed = (view.closed ?? []).filter(one => one !== id)
+  return isOpen ? { ...view, open, closed: [...closed, id] } : { ...view, open: [...open, id], closed }
 }
 
-/** One line for each of the newest current entries. The cut is in words, so that five lines keep the block under 100 words. */
-function contextSection(input: PaneInput, run: Run) {
+/**
+ * One lane for each worker with time in the window, an axis of minutes, and on the terminal the legend of the cells; no
+ * rows when no worker has time in it. A graphic surface draws each lane as a picture with its parts in words; the terminal
+ * draws it as a row of cells.
+ */
+function laneRows(input: PaneInput, run: Run, window: TimeSpan) {
   const { Box, Text } = input.table
-  const entries = currentContext(run, CONTEXT_ROWS)
-  if (!entries.length) return undefined
+  const Svg = input.surface !== 'terminal' && 'Svg' in input.table ? input.table.Svg : undefined
+  const lanes = lanesOf(run, input.now).filter(lane => lane.to > lane.from && lane.to > window.from)
+  if (!lanes.length) return []
+  const sleeps = sleepsOf(run)
+  const rows = lanes.map(lane => {
+    const color = run.workers.findIndex(worker => worker.id === lane.worker)
+    const parts = partsIn(lane.parts, window)
+    return (
+      <Box key={`flow-${lane.worker}`} flexDirection="row" gap="sm" alignItems="center">
+        {Svg && <Text>{lane.worker}</Text>}
+        {Svg ? (
+          <Svg source={flowSvg(parts, sleeps, window, color)} alt={laneWords(lane.worker, parts)} width={FLOW_WIDTH} height={FLOW_HEIGHT} />
+        ) : (
+          <Text color={agentColor(color).light}>{`${lane.worker} ${flowCells(parts, sleeps, window, FLOW_CELLS)}`}</Text>
+        )}
+      </Box>
+    )
+  })
+  const axis = <Text key="flow-axis" dimColor>{`${' '.repeat((lanes[0]?.worker.length ?? 0) + 1)}${flowAxis(window, FLOW_CELLS)}`}</Text>
+  return Svg ? [...rows, axis] : [...rows, axis, <Text key="flow-legend" dimColor>{FLOW_LEGEND}</Text>]
+}
+
+function laneWords(id: WorkerId, parts: readonly LanePart[]): string {
+  return `${id}: ${parts.map(part => `${partWords(part)} ${ago(part.to - part.from)}`).join(', ')}`
+}
+
+/**
+ * The report of a ready, delivered or stopped run, in place of the main view: the final commit, the story, what each
+ * agent did, and the lanes of the whole run with three numbers.
+ */
+function reportSections(input: PaneInput, run: Run, facts: Facts | null) {
+  const { Box, Text } = input.table
+  const report = reportOf(run, input.now)
+  const labels = run.workers.map(worker => (sharedSpec(run) === undefined ? specLabel(worker.agent) : ''))
+  const row = (texts: string[]) => (
+    <Box flexDirection="row" gap="md" flexWrap="wrap">
+      {texts.map(text => (
+        <Text key={text} dimColor>
+          {text}
+        </Text>
+      ))}
+    </Box>
+  )
+  return [
+    run.final && resultSection(input, run, facts?.result),
+    <Box key="sec-story" flexDirection="column" gap="xs">
+      <Text bold>Story</Text>
+      <Text wrap="wrap">{report.story}</Text>
+    </Box>,
+    <Box key="agents-did" flexDirection="column" gap="sm">
+      <Text bold>What each agent did</Text>
+      {report.agents.map((agent, index) => (
+        <Box key={`sec-did-${agent.worker}`} flexDirection="column" gap="xs">
+          <Box flexDirection="row" gap="sm">
+            <Text bold color={agentColor(index).light}>
+              {agent.worker}
+            </Text>
+            {labels[index] && <Text dimColor>{labels[index]}</Text>}
+          </Box>
+          <Text wrap="wrap">{agent.did}</Text>
+          {row(agent.counts)}
+        </Box>
+      ))}
+    </Box>,
+    <Box key="sec-timeline" flexDirection="column" gap="xs">
+      <Text bold>Timeline</Text>
+      {laneRows(input, run, { from: run.startedAt, to: run.endedAt ?? input.now })}
+      {row(report.numbers)}
+    </Box>,
+  ]
+}
+
+/** A message of the conversation from one author to others, or a quiet line of meld when it has no author. */
+type Talk = { key: string; at: number; from?: string; to?: string; text: string }
+
+/** The notes, steers and handovers of the run, and the merges and conflicts of meld, oldest first. */
+function talksOf(run: Run): Talk[] {
+  const fromLog = run.log.flatMap((entry): Talk[] => {
+    const key = `talk-${entry.id}`
+    if (entry.kind === 'note') return [{ key, at: entry.at, from: entry.by, to: 'all', text: entry.text }]
+    if (entry.kind === 'steer') return [{ key, at: entry.at, from: 'you', to: 'all', text: entry.text }]
+    if (entry.kind === 'merge' && entry.task !== undefined) return [{ key, at: entry.at, text: `Merged #${entry.task} into the line.` }]
+    const finished = entry.kind === 'task' && entry.text.startsWith('finished ') ? taskOf(run.tasks, entry.task) : undefined
+    const handover = finished?.handover?.interfaces ?? finished?.handover?.unfinished
+    if (!finished || !handover) return []
+    const chain = ancestorsOf(run.tasks, finished.id)
+    const takers = run.tasks.filter(task => task.owner && task.owner !== entry.by && task.needs?.some(need => chain.includes(need))).map(task => task.owner)
+    return takers.length ? [{ key, at: entry.at, from: entry.by, to: [...new Set(takers)].join(', '), text: `Handover of #${finished.id}: ${handover}` }] : []
+  })
+  const conflicts = run.tasks.flatMap((task): Talk[] =>
+    task.integrates === undefined
+      ? []
+      : [{ key: `talk-task-${task.id}`, at: task.addedAt ?? 0, text: `#${task.integrates} conflicted. ${task.owner ? `${task.owner} integrates it as #${task.id}` : `#${task.id} integrates it`}.` }],
+  )
+  return [...fromLog, ...conflicts].sort((one, other) => one.at - other.at)
+}
+
+/** The newest messages and lines that fit the block, oldest first, each with the hour and minute of its entry. */
+function conversationSection(input: PaneInput, run: Run) {
+  const { Box, Text } = input.table
+  const shown: Talk[] = []
+  let words = 1
+  for (const talk of talksOf(run).reverse()) {
+    words += 1 + (talk.from ? 3 + wordCount(cutWords(talk.text, TALK_WORDS)) : wordCount(talk.text))
+    if (words > TALK_BLOCK_WORDS) break
+    shown.unshift(talk)
+  }
+  if (!shown.length) return undefined
   return (
-    <Box key="sec-context" flexDirection="column" gap="xs">
-      <Text bold>Shared context</Text>
-      {entries.map(entry => (
-        <Box key={`context-${entry.id}`} flexDirection="row" gap="sm">
-          <Text color={KIND_TONE[entry.kind]}>{KIND_SHAPE[entry.kind]}</Text>
-          <Text color={agentColor(run.workers.findIndex(worker => worker.id === entry.by)).light}>{entry.by}</Text>
-          <Text dimColor wrap="truncate-end">
-            {cutWords(entry.text, CONTEXT_WORDS)}
-          </Text>
-          <Text dimColor>{entry.seenBy.length} read</Text>
+    <Box key="sec-conversation" flexDirection="column" gap="xs">
+      <Text bold>Conversation</Text>
+      {shown.map(talk => (
+        <Box key={talk.key} flexDirection="row" gap="sm">
+          <Text dimColor>{clock(talk.at)}</Text>
+          {talk.from ? (
+            <Box flexDirection="column">
+              <Text color={talk.from === 'you' ? 'suggestion' : agentColor(run.workers.findIndex(worker => worker.id === talk.from)).light}>{`${talk.from} ${ARROW} ${talk.to}`}</Text>
+              <Text wrap="wrap">{cutWords(talk.text, TALK_WORDS)}</Text>
+            </Box>
+          ) : (
+            <Text dimColor wrap="wrap">
+              {talk.text}
+            </Text>
+          )}
         </Box>
       ))}
     </Box>
   )
 }
 
-function checksSection(input: PaneInput, run: Run) {
+function clock(at: number): string {
+  const time = new Date(at)
+  return `${String(time.getHours()).padStart(2, '0')}:${String(time.getMinutes()).padStart(2, '0')}`
+}
+
+/** One line of Learnings: the first sentence of an entry, and who used it, heeded it or how many got it. */
+type Learning = { entry: ContextEntry; sentence: string; use?: string }
+
+/** The current shared context as sentences under Facts, Avoid and Contracts: what the agents learn from each other. */
+function learningsSection(input: PaneInput, run: Run) {
   const { Box, Text } = input.table
-  const latest = latestChecks(run).slice(-CHECK_CHIPS)
-  if (!latest.length) return undefined
+  const learnings = learningsOf(run)
+  if (!learnings.length) return undefined
   return (
-    <Box key="sec-checks" flexDirection="row" gap="lg" flexWrap="wrap">
-      {latest.map(check => (
-        <Box key={`check-${check.id}`} flexDirection="row" gap="sm">
-          <Text color={check.passed ? 'success' : 'error'} bold>
-            {check.passed ? '✓' : '✗'} {cut(check.text, 28)}
-          </Text>
-          <Text dimColor>{(check.commit ?? '').slice(0, 7)}</Text>
-        </Box>
-      ))}
+    <Box key="sec-learnings" flexDirection="column" gap="xs">
+      <Text bold>Learnings</Text>
+      {LEARNING_GROUPS.map(group => {
+        const rows = learnings.filter(learning => learning.entry.kind === group.kind)
+        if (!rows.length) return undefined
+        return (
+          <Box key={`learnings-${group.kind}`} flexDirection="column">
+            <Text bold color={group.tone}>
+              {group.heading}
+            </Text>
+            {rows.map(({ entry, sentence, use }) => (
+              <Box key={`learning-${entry.id}`} flexDirection="row" gap="sm">
+                <Text wrap="wrap">{sentence}</Text>
+                <Text color={agentColor(run.workers.findIndex(worker => worker.id === entry.by)).light}>{entry.by}</Text>
+                {use && <Text dimColor>{use}</Text>}
+              </Box>
+            ))}
+          </Box>
+        )
+      })}
     </Box>
   )
+}
+
+/** The newest current entries whose words fit in the block. */
+function learningsOf(run: Run): Learning[] {
+  const learnings: Learning[] = []
+  let words = 0
+  for (const entry of currentContext(run, Infinity)) {
+    const users = [...new Set(run.tasks.flatMap(task => (task.state === 'done' && task.owner && task.used?.includes(entry.id) ? [task.owner] : [])))]
+    const use = users.length
+      ? `${entry.kind === 'fail' ? 'heeded' : 'used'} by ${users.join(', ')}`
+      : entry.seenBy.length
+        ? `got by ${entry.seenBy.length}`
+        : undefined
+    const learning = { entry, sentence: saidOf(entry.text) ?? entry.text, use }
+    words += wordCount(`${learning.sentence} ${entry.by} ${use ?? ''}`)
+    if (words > LEARNING_WORDS) break
+    learnings.push(learning)
+  }
+  return learnings
 }
 
 function resultSection(input: PaneInput, run: Run, result: ResultFacts | undefined) {
@@ -385,26 +668,31 @@ function resultSection(input: PaneInput, run: Run, result: ResultFacts | undefin
   return (
     <Box key="sec-result" flexDirection="column" gap="md" borderStyle="round" borderColor="suggestion" paddingX="md" paddingY="sm">
       <Box flexDirection="row" gap="md" flexWrap="wrap" alignItems="center">
-        <Text bold>★ {final.commit.slice(0, 7)}</Text>
+        <Text bold>Final commit {final.commit.slice(0, 7)}</Text>
         {result ? <Text>{result.fileCount} files</Text> : <Text dimColor>reading the change</Text>}
-        {result && <Text color="success">+{result.added}</Text>}
-        {result && <Text color="error">−{result.removed}</Text>}
         <Text color={verdict.tone}>
           {verdict.icon} {verdict.word}
         </Text>
       </Box>
-      <Text dimColor wrap="wrap">
-        {final.by}: {cutWords(final.summary, SUMMARY_WORDS)}
-      </Text>
       <Box flexDirection="row" gap="sm" flexWrap="wrap">
         {run.state === 'ready' && (
           <Button key="deliver" variant="primary" hotkey="d" onPress={() => void act(io, () => deliver(io))}>
-            ✓ Deliver into your branch
+            Deliver
           </Button>
         )}
         {result && result.files.length > 0 && (
           <Button key="diff" hotkey="v" onPress={() => void setView(current => ({ ...current, showDiff: !current.showDiff }))}>
             {view.showDiff ? 'Hide diff' : 'Show diff'}
+          </Button>
+        )}
+        {run.state === 'ready' && (
+          <Button key="ask" onPress={() => void setView(current => ({ ...current, asking: !current.asking }))}>
+            Ask for changes
+          </Button>
+        )}
+        {run.state === 'ready' && (
+          <Button key="discard" onPress={() => void act(io, () => discard(io))}>
+            Discard
           </Button>
         )}
       </Box>
@@ -491,32 +779,6 @@ async function act(io: Io, action: () => Promise<string>): Promise<void> {
   io.toast(`meld: ${await action()}`)
 }
 
-function laneOf(facts: Facts | null, worker: Worker): LaneFacts {
-  return facts?.lanes.find(lane => lane.id === worker.id) ?? { id: worker.id, commits: [], edits: false }
-}
-
-/** What a worker does now, in a few words: its first claimed task, and its last tool with the first word of a command. */
-function activityOf(run: Run, worker: Worker): string {
-  if (isRefused(worker)) return 'not started'
-  if (worker.state === 'stopped') return cut(worker.activity, ACTIVITY_CHARS)
-  const claim = run.tasks.find(task => task.state === 'claimed' && task.owner === worker.id)
-  const doing = worker.state === 'idle' ? 'idle' : shortActivity(worker.activity)
-  return claim ? `#${claim.id} ${doing}` : doing
-}
-
-/** A shell command as its name and its target (past a leading cd, flags, numbers and redirections), a path as its last part; another tool as its name and target. */
-function shortActivity(activity: string): string {
-  const command = /^Bash: (.*)$/.exec(activity)?.[1]
-  if (command === undefined) return cut(activity, ACTIVITY_CHARS)
-  const [name = 'Bash', ...rest] = command.replace(LEADING_CD, '').split(/\s+/).filter(Boolean)
-  const target = rest.find(word => !SKIPPED_ARGUMENT.test(word))
-  return cut(target ? `${name} ${target.split('/').filter(Boolean).pop() ?? target}` : name, ACTIVITY_CHARS)
-}
-
-function callsOf(calls: number): string {
-  return `${calls} ${calls === 1 ? 'call' : 'calls'}`
-}
-
 /** The dollars the session spent since the run started, when the host keeps a cost ledger and the run noted its start. */
 function spentOf(sessionCost: number | undefined, costAtStart: number | undefined): string | undefined {
   if (sessionCost === undefined || costAtStart === undefined) return undefined
@@ -532,12 +794,6 @@ function sharedSpec(run: Run): string | undefined {
 function specLabel(agent: AgentSpec): string {
   if (agent.type === WORKER_TYPE) return agent.model ?? ''
   return agent.model ? `${agent.type} ${agent.model}` : agent.type
-}
-
-function latestChecks(run: Run): Entry[] {
-  const byCommand = new Map<string, Entry>()
-  for (const entry of run.log) if (entry.kind === 'check') byCommand.set(entry.text, entry)
-  return [...byCommand.values()].sort((one, two) => one.id - two.id)
 }
 
 function verdictOf(run: Run, commit: string): { icon: string; word: string; tone: string } {

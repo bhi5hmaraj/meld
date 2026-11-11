@@ -15,17 +15,29 @@ An agent of another type has the tools of that type. Give a type that has the me
 
 ## The pane
 
-meld reads the commits and the diff from version control every 3 seconds.
+meld reads the commits and the diff from version control every 3 seconds. The pane makes no model call: each line comes from the board, the records of meld and version control. The terminal shows the same facts as the graphic surfaces, in characters. No block of the pane holds more than 100 words.
 
-- **Header:** the state, the version control, the agents, the time since the start, and the dollars that your session spent since the run started. **Stop all** stops the run.
-- **Lanes:** the real commits of each agent since the base, oldest first. A diamond is a merge, a star the final commit, a cross a conflict, and a dashed ring the edits that the agent did not commit. A green check or a red cross above a commit shows a check that passed or failed on it.
-- **Activity:** under each lane, the claimed task, the last action, the time since that action, and the tool calls. The time turns yellow after 2 minutes with no tool call, and red after 5 minutes. **Stop** stops one agent and opens its tasks for the other agents.
-- **Progress:** the percent of the request, and one row for each task. A row shows the percent of the task, a bar of its done, claimed and open parts, and a dot for each agent on it. `waits for #N` shows while a task that it needs is not done. A press on a row with parts opens the parts.
-- **Shared context:** the five newest entries that the agents shared, and the number of agents that read each. A square is a fact, a cross a fail, and a hollow diamond an interface.
-- **Checks:** the last result of each check command, with its commit.
+While the agents work, the pane shows, from the top:
+
+- **Header:** the state, the agents, the time since the start, and the dollars that your session spent since the run started, or cost units where the host keeps no ledger. The request in two lines: a press shows all of it. One line of counts, such as `9 of 14 tasks done, 3 working, 1 ready`, and one bar of the done, working and open tasks. One warning when it matters: the machine slept during the run, or the run has no board file. **Stop all** stops the run.
+- **Agents:** a card for each agent: its task and the time on it, the last sentence of the agent, and the titles of the tasks it finished. After 60 seconds with no text, plain words from its tool calls take the place of the sentence, such as `running tests`. An idle agent with a ready task shows one chip, such as `#20 is ready since 6 min`, with **Start**.
+- **Conversation:** the notes of the agents and your steers, to all; the handover of a finished task to the agents whose tasks need it; and the merges and conflicts of meld as quiet lines. Oldest first, each with its hour and minute, the newest that fit in the block.
+- **Learnings:** the shared context as sentences under Facts, Avoid (the fails) and Contracts (the interfaces). Each line names the agent that shared it, and the agents that used or heeded it, from the `used` field of their `finish_task`, or else how many agents got it.
+- **Plan:** the tasks as a tree. A leaf shows a word: `w2 working`, `ready 3m`, `waits for #N`, or done. A ready task that waits more than 5 minutes while an agent is idle shows in the warning colour. A parent shows `N of M done`. It opens itself while a task under it is claimed or ready, and closes when all are done. A press opens or closes it, and your choice stays.
 - **Steer:** an instruction in your words, and four presets: **+ Tests**, **Smaller**, **Fix checks** and **Integrate now**.
 
-What you type in the chat goes to Claude, not to the agents. To steer the agents, use the pane or `/meld-steer`, or ask Claude to steer them. The mobile app has no text field, so send `/meld-steer` and the instruction. The terminal draws the lanes and the bars in characters.
+The cards show no call counts, no time since the last tool call and no commands, and the plan shows no percent. The counts and the words of the tasks tell the progress.
+
+When the run is ready, delivered or stopped, the report takes the place of the agents, the conversation, the learnings and the plan:
+
+- **Final commit:** its short id, its files and its checks, with **Deliver**, **Show diff**, **Ask for changes** and **Discard**.
+- **Story:** a few sentences that meld fills from fixed templates and the metrics: the agents, the tasks and the time, the learnings shared and used, the fails that kept the others from the same dead end, the time one agent worked alone, and your steers.
+- **What each agent did:** the titles of its finished tasks, and its counts of tasks, shared learnings and used learnings.
+- **Timeline:** one lane for each agent over the whole run, with its parts: working on a task, merging, waiting on meld, idle, and asleep when the machine slept. An axis gives the minutes. Under the lanes: the agents at work on average, the share of the time one agent worked alone, and the cost per finished task.
+
+`/meld-report` gives the report as text, with the metrics of section 4 of [the pane note](design/pane-metrics-logs.md): time, progress, cost, how the agents worked together, the shared context, the workload, and one line for each agent. `/meld-report <run>` gives the report of an archived run, and `/meld-report --runs` a table of the newest archived runs. The archive record of a run keeps its report.
+
+What you type in the chat goes to Claude, not to the agents. To steer the agents, use the pane or `/meld-steer`, or ask Claude to steer them. The mobile app has no text field, so send `/meld-steer` and the instruction.
 
 ## Control a run without the pane
 
@@ -101,9 +113,9 @@ An agent splits a large task with `split`: it keeps the first part, and the othe
 
 Each task keeps the time when it was added, when it became ready, when it was claimed and when it was done. It counts the times that it returned to open: a release, or a stop of its agent.
 
-### Percent
+### Progress
 
-meld computes the percent from the task states, and no agent reports a percent. A task is at 0 until an agent finishes it, and at 100 after that. A parent is the mean of its parts, with the sizes S 1, M 3 and L 8 as weights. Each percent is cut to the whole number below it, so 100% means that all the work is done.
+meld counts the progress from the task states, and no agent reports it. The counts of the header count the tasks with no parts: done, working, ready and waiting. The bar weighs each task by its size, S 1, M 3 and L 8, and a parent by the mean of its parts. A parent in the plan counts its done parts.
 
 ### Nudge
 
@@ -117,7 +129,7 @@ As in DeLM, the agents keep a shared context of typed entries. `share` takes a `
 - **A fail** is an approach that did not work, with the reason.
 - **An interface** is a contract between tasks: a name and its shape.
 
-`finish_task` takes optional `interfaces` and `unfinished` text, which meld adds as an interface and a fact. The task keeps the two texts as its handover.
+`finish_task` takes optional `interfaces` and `unfinished` text, which meld adds as an interface and a fact. The task keeps the two texts as its handover. Its optional `used` gives the ids of the entries that helped the task. meld keeps the ids that name an entry of the run, once each. The Learnings of the pane name the agents that used each entry.
 
 The first board reply to a new agent carries the 20 newest current entries. Each later reply carries only the current entries that are new since the last reply to that agent, and not the entries of the agent. Each entry shows `seenBy`: the agents that got it. A reply that carries the same 20 entries each time makes every turn longer: in a run of 22 tasks and 5 agents, each turn read about 280,000 tokens again.
 
@@ -164,7 +176,7 @@ For git, the commands are status, diff, log, show, add, commit, rev-parse, ls-fi
 meld has three `tool.check` hooks. Claude Code runs the `tool.check` hooks of all plugins in a chain. A hook can give a verdict and not call the next hook. When a hook of another plugin does this, the check of meld does not run:
 
 - **The board check** allows the calls of meld to `meld mcp`, and refuses the calls of agents, of the main session and of other plugins. Without it, the other plugin or the mode of your session decides each call. A call of meld can wait for your answer or fail, and a call of an agent is not refused.
-- **The Agent check** approves each start and restart of an agent in auto mode, while a run that you started is live. Without it, auto mode refuses these starts, and meld shows the reason in the lane of the agent.
+- **The Agent check** approves each start and restart of an agent in auto mode, while a run that you started is live. Without it, auto mode refuses these starts, and the pane shows the reason under the header.
 - **The version control check** allows `git -C` and `jj -R` in the own folder of an agent, for the commands of the rules. Without it, Claude Code asks you for each such call, and a run with no person cannot commit.
 
 The edit guard is a `tool.call` hook, and a skip in `tool.check` does not stop it.
@@ -185,9 +197,9 @@ A restart waits for the end of a turn of your session. In a session with no pers
 
 ### A short session, then a new agent
 
-After `finish_task`, the rules and the reply of `finish_task` tell the agent to hand back, and not to claim the next task. When there is work for an idle worker, meld gives the next step to the same agent, in its own session. It does so while the context of that agent fills less than half of the window of its model, and less than 150k tokens. So the agent keeps the code that it read. Else meld starts a new agent: an agent that does task after task reads its whole history again on each turn.
+After `finish_task`, the rules and the reply of `finish_task` tell the agent to hand back, and not to claim the next task. When there is work for an idle worker, meld gives the next step to the same agent, in its own session. It does so while the context of that agent fills less than half of the window of its model, and less than 500k tokens. So the agent keeps the code that it read. Else meld starts a new agent: an agent that does task after task reads its whole history again on each turn.
 
-An agent of the type `meld:worker` compacts its conversation before 150k tokens and goes on. Claude Code keeps room below that window, so the compaction comes near 120k tokens. The summary keeps its tasks, its commits and what is left. Its next board read gives its rules again.
+An agent of the type `meld:worker` compacts its conversation before 500k tokens and goes on. Claude Code keeps some room below that window, so the compaction comes a little earlier. The summary keeps its tasks, its commits and what is left. Its next board read gives its rules again.
 
 meld reads the context of a Claude agent from its last model call. An ACP agent, such as Codex, reports its context with `usage_update`. An ACP agent that reports none gets a new agent each time.
 
@@ -201,7 +213,7 @@ After each hand-back, Claude Code also sends a task notification to your session
 
 ### Refused starts and auto mode
 
-If Claude Code refuses to start an agent, meld stops that agent and shows the reason in its lane. The other agents continue. When no agent starts, the run stops.
+If Claude Code refuses to start an agent, meld stops that agent, and the pane shows the reason under the header, once for each reason. The other agents continue. When no agent starts, the run stops.
 
 In auto mode, a classifier decides each Agent call, and it allows a call that it can link to your request. It cannot link a start that a plugin makes, so that start fails. A plugin may approve an action, so meld approves each start and restart of an agent while a run that you started is live. Each action of an agent goes through the mode of your session, and a deny from your rules or your organization stands.
 

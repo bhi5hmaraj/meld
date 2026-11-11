@@ -82,6 +82,7 @@ Options come before the request, in any order:
 | `/meld-stop` | Stops every agent. The workspaces stay. |
 | `/meld-deliver` | Merges the final commit into your branch. |
 | `/meld-discard` | Removes the run and its workspaces. |
+| `/meld-report [id \| --runs]` | Gives the report of the run, of an archived run, or a table of the archived runs. |
 | `/meld-resume [board]` | Lists or takes the runs of other sessions. Needs Bun. |
 | `/meld-clean [id ...]` | Lists or removes the folders that other runs left in `/tmp/meld/`. |
 
@@ -89,13 +90,16 @@ Claude has a tool for each command, so it can drive a run where no pane shows, f
 
 ## The pane
 
-- **Header:** the state, the agents, the time and the dollars of the run. **Stop all** stops the run.
-- **Lanes:** the commits of each agent since the base, with merges, conflicts, uncommitted edits and check results.
-- **Activity:** the task, the last action and its age for each agent. **Stop** stops one agent.
-- **Progress:** the percent of the request and of each task.
-- **Shared context:** the newest facts, fails and interfaces that the agents shared.
-- **Checks:** the last result of each check command, with its commit.
+While the agents work, the pane shows, from the top:
+
+- **Header:** the state, the agents, the time and the dollars of the run, the request, a count of the tasks such as `9 of 14 tasks done, 3 working, 1 ready`, and one bar. **Stop all** stops the run.
+- **Agents:** a card for each agent with its task, what it does now in its own words, and the titles of the tasks it finished. An idle agent with a ready task shows **Start**.
+- **Conversation:** the notes of the agents, the handovers from one agent to another, your steers, and the merges and conflicts of meld, oldest first.
+- **Learnings:** the facts, the fails to avoid and the contracts that the agents shared, with who shared each one and who used it.
+- **Plan:** the tasks as a tree, with a word on each: who works on it, how long it is ready, `waits for #N`, or done.
 - **Steer:** an instruction in your words, or a preset: **+ Tests**, **Smaller**, **Fix checks** or **Integrate now**.
+
+The pane makes no model call. Each line comes from the board and from version control, and the terminal shows the same facts in characters.
 
 ## Deliver
 
@@ -106,12 +110,21 @@ When every task is in the integration line, one agent runs the final build and t
   <img alt="A run that is ready to deliver: all tasks at 100 percent, three checks passed on the final commit, and the Deliver button" src="docs/images/ready-light.png" width="568">
 </picture>
 
+The report then takes the place of the agents, the conversation, the learnings and the plan:
+
+- **Final commit:** its files and its checks.
+- **Story:** what the run did, in a few sentences that meld fills from its metrics.
+- **What each agent did:** the titles of its finished tasks, and how many learnings it shared and used.
+- **Timeline:** one lane for each agent over the whole run, and three numbers: the agents at work on average, the share of the time one agent worked alone, and the cost per task.
+
+The final commit has four buttons:
+
 - **Deliver** (`d`) merges the final commit into your branch as one merge commit, and removes the workspaces. Your checkout must be clean.
 - **Show diff** (`v`) opens the diff.
-- **Ask for changes** gives the agents an instruction to change the result.
+- **Ask for changes** opens the steer box: your instruction goes to the agents, and they change the result.
 - **Discard** removes the workspaces with no merge.
 
-Before meld removes a run, it writes the record of the run to `~/.meld/archive/<run>.json`. A stopped run keeps its workspaces until you deliver or discard it.
+Before meld removes a run, it writes the record of the run and its report to `~/.meld/archive/<run>.json`. `/meld-report` gives the report as text. A stopped run keeps its workspaces until you deliver or discard it.
 
 ## Lead a run from Cursor
 

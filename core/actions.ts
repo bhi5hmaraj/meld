@@ -1,11 +1,13 @@
-import type { AgentContext, BoardView, Change, Facts, Failure, Final, NewTask, PaneView, Run, Task, TaskSize, VcsKind, Worker, WorkerId, WorkerState } from '../types'
+import type { Activity, ActivityTimes, AgentContext, BoardView, Change, Facts, Failure, Final, NewTask, PaneView, Run, Task, TaskSize, TokenSums, VcsKind, Worker, WorkerId, WorkerState } from '../types'
 import * as board from './board'
+import { activityOf } from './metrics'
 import { COMPACT_KEEP, CONTROL_TOOLS, HAND_BACK, integrateDetail, integrateStep, missingWorkText, splitNudge, STATUS_VIEW, TOOL, wakeText, workerPrompt, workerRules } from './contract'
 import type { Control } from './contract'
 import { command, GIT_MIN, gitVersion, headCommit, isDirty, isOldGit, repoRoot } from './git'
 import type { Archive, Clock, CodeHost, CommandReply, FactsStore, Io, Runner, Spawned, Store, Surface, TokenUsage, ToolCall, ToolReply } from './ports'
 import { agentSpecOf, agentsOf, isAcpSpec, MAX_AGENTS, parseStart, WORKER_TYPE } from './options'
 import type { StartOptions } from './options'
+import { endOf, reportText } from './report'
 import { claimable } from './tasks'
 import { detectVcs, heldWork, runHome, vcsFor } from './vcs'
 import type { Prepared } from './vcs'
@@ -31,7 +33,7 @@ export const LEADING_CD = /^(?:\s*cd\s+\S+\s*(?:&&|;)\s*)+/
 type Args = Record<string, unknown>
 type Refused = { error: string; message: string }
 /** The arguments of a tool call with the full commit; for finish, the commits of the done tasks that the final commit holds. */
-type Checked = { args: Args; held?: ReadonlySet<string> }
+type Checked = { args: Args; held?: ReadonlySet<string>; taken?: number }
 /** The change of a tool call, with what its reply gives beside the value. */
 type Made = { run: Run; value: unknown; extra?: object } | Failure
 
@@ -121,7 +123,7 @@ async function startAlone(io: Io, cwd: string, options: StartOptions): Promise<C
   if ('error' in prepared) return { text: `meld could not make the workspaces: ${prepared.error}` }
   const workspaces = prepared.workspaces
   const workers = ids.map((wid, index) => ({ id: wid, agent: options.agents[index] ?? { type: 'meld:worker' }, path: workspaces[index]?.path ?? '', ref: workspaces[index]?.ref ?? '' }))
-  const run = board.startRun({ id, request, repo, base, vcs: kind, now, costAtStart: await io.cost(), workers })
+  const run = board.startRun({ id, request, repo, base, vcs: kind, now, costAtStart: await io.cost(), store: io.store, workers })
   await io.write(() => run)
   await io.writeFacts(null)
   void io.openPane(false)
@@ -274,8 +276,8 @@ export async function serveTool(io: Io, e: ToolCall, cwd = ''): Promise<ToolRepl
   let nudge: Task | undefined
   await io.write(run => {
     if (!run) return run
-    const done = answered(run, worker.id, 'error' in checked ? checked : mutate(run, worker.id, tool, checked.args, now, checked.held))
-    const passed = board.passContext(done.run, worker.id)
+    const done = answered(run, worker.id, 'error' in checked ? checked : mutate(run, worker.id, tool, now, checked))
+    const passed = board.passContext(done.run, worker.id, now)
     answer = { ...done.answer, context: passed.context }
     const counted = countedCall(passed.run, worker.id, now)
     nudge = counted.task
@@ -304,10 +306,11 @@ async function mergeTask(io: Store & CodeHost & Clock & Runner, by: WorkerId, id
   const run = await readRun(io)
   const task = run && ACTIVE_RUN.has(run.state) ? board.unmergedTasks(run).find(one => one.id === id) : undefined
   if (!run || !task) return
+  const from = await io.now()
   const merged = await vcsFor(run.vcs).mergeIntoLine(io, run, task.commit ?? '', `meld: integrate #${task.id} ${task.title}`)
   const now = await io.now()
   await writeRunOf(io, run.id, current => {
-    if (merged.state === 'merged') return board.lineMerged(current, task.id, merged.head, now)
+    if (merged.state === 'merged') return board.lineMerged(current, task.id, merged.head, now, { from, worker: by, files: merged.files })
     return runOf(board.addIntegrateTask(current, task.id, integrateDetail(current, task, merged), now), current)
   })
   if (merged.state === 'merged') return
@@ -362,7 +365,9 @@ async function withResolvedCommit(io: Store & CodeHost, tool: string, args: Args
     return { error: 'CONFLICT', message: `${found.commit.slice(0, 12)} has a conflict. Fix the conflict, commit, and finish with the new commit.` }
   }
   const resolved = { ...args, commit: found.commit }
-  return tool === TOOL.finish ? { args: resolved, held: await heldInFinal(io, run, found.commit) } : { args: resolved }
+  if (tool === TOOL.finish) return { args: resolved, held: await heldInFinal(io, run, found.commit) }
+  if (tool === TOOL.finishTask) return { args: resolved, taken: await vcs.taken(io, run, found.commit) }
+  return { args: resolved }
 }
 
 /** The commits of the done tasks that `final` holds, as the version control reads them. */
@@ -388,7 +393,7 @@ function wholeFinal(run: Run, declared: Change<Final>, held: ReadonlySet<string>
   return missing.length ? { error: 'MISSING_WORK', message: missingWorkText(run, declared.value.commit, missing) } : declared
 }
 
-function mutate(run: Run, by: WorkerId, tool: string, args: Args, now: number, held: ReadonlySet<string> = new Set()): Made {
+function mutate(run: Run, by: WorkerId, tool: string, now: number, { args, held = new Set(), taken }: Checked): Made {
   switch (tool) {
     case TOOL.addTasks:
       return board.addTasks(run, by, { seen: Number(args.seen), tasks: newTasks(args.tasks) }, now)
@@ -400,7 +405,7 @@ function mutate(run: Run, by: WorkerId, tool: string, args: Args, now: number, h
       return board.releaseTask(run, by, Number(args.task), Number(args.version), text(args.note), now)
     case TOOL.finishTask: {
       const shared = { interfaces: optionalText(args.interfaces), unfinished: optionalText(args.unfinished) }
-      return withHandBack(board.finishTask(run, by, Number(args.task), Number(args.version), text(args.commit), text(args.summary), now, shared), by)
+      return withHandBack(board.finishTask(run, by, Number(args.task), Number(args.version), text(args.commit), text(args.summary), now, shared, { taken, used: Array.isArray(args.used) ? args.used : [] }), by)
     }
     case TOOL.note:
       return board.addNote(run, by, text(args.text), args.commit === undefined ? undefined : text(args.commit), now)
@@ -484,7 +489,7 @@ async function readBoard(io: Store & Runner, id: WorkerId, now: number): Promise
   let nudge: Task | undefined
   await io.write(run => {
     if (!run) return run
-    const seen = board.boardFor(run, id)
+    const seen = board.boardFor(run, id, now)
     const briefed = seen.run.workers.find(worker => worker.id === id)?.briefed ?? true
     view = briefed ? seen.view : { ...seen.view, rules: workerRules(seen.run, id) }
     const counted = countedCall(briefed ? seen.run : board.markBriefed(seen.run, id), id, now)
@@ -517,7 +522,7 @@ async function statusView(io: Store & Clock): Promise<unknown> {
         claims: claimsOf(run, worker).map(task => task.id),
         secondsSinceCall: Math.round((now - worker.activityAt) / 1000),
       })),
-      log: run.log.filter(entry => entry.id > seen).map(({ id, at, by, kind, text, commit, passed }) => ({ id, at, by, kind, text, commit, passed })),
+      log: run.log.filter(entry => entry.id > seen && !board.isQuiet(entry)).map(({ id, at, by, kind, text, commit, passed }) => ({ id, at, by, kind, text, commit, passed })),
     }
     return { ...run, sessionSeen: run.log.at(-1)?.id ?? seen }
   })
@@ -549,7 +554,7 @@ async function overview(io: Store): Promise<unknown> {
     integrator: run.integrator,
     nudges: run.nudges,
     final: run.final,
-    log: run.log.slice(-10),
+    log: run.log.filter(entry => !board.isQuiet(entry)).slice(-10),
   }
 }
 
@@ -648,11 +653,20 @@ export async function acpRefusal(io: Store, agentId: string, ask: { kind: string
   return refusalOf(run, worker, ACP_EDIT_KINDS.has(ask.kind) ? ask.paths : [])
 }
 
-/** A tool call of an ACP worker becomes the activity of its worker, and counts as a call, as a tool call of a subagent does. */
-export async function recordActivity(io: Store & Clock & Runner, agentId: string, activity: string): Promise<void> {
+/** A gap between two ticks of a clock that ticks each second or more often: past it, the machine slept. */
+export const SLEEP_GAP_MS = 30_000
+
+/** Records a sleep of the machine when the clock jumped past SLEEP_GAP_MS between ticks `from` and `now` of a live run. */
+export async function recordSleep(io: Store, from: number, now: number): Promise<void> {
+  if (now - from <= SLEEP_GAP_MS) return
+  await io.write(run => (run && LIVE_STATES.has(run.state) ? board.machineSlept(run, from, now) : run))
+}
+
+/** A tool call of an ACP worker becomes the activity of its worker, and counts as a call, as a tool call of a subagent does. The words of the agent before it become its said. */
+export async function recordActivity(io: Store & Clock & Runner, agentId: string, activity: string, words?: string): Promise<void> {
   const run = await readRun(io)
   const worker = run ? board.workerOf(run, agentId) : undefined
-  if (worker) await recordCall(io, worker, activity)
+  if (worker) await recordCall(io, worker, activity, words)
 }
 
 /** A worker that meld mcp runs through ACP: only meld mcp starts it again. */
@@ -674,11 +688,13 @@ function refusalOf(run: Run, worker: Worker, edited: readonly string[]): string 
 }
 
 /** Records a call as the activity of the worker and counts it; a worker with many calls on one task gets a nudge to split it. */
-async function recordCall(io: Store & Clock & Runner, worker: Worker, activity: string): Promise<void> {
+async function recordCall(io: Store & Clock & Runner, worker: Worker, activity: string, words?: string): Promise<void> {
   const now = await io.now()
+  const times = worker.agentId === undefined ? {} : takeTimes(worker.agentId)
   let nudge: Task | undefined
   await writeRun(io, current => {
-    const counted = countedCall(board.setActivity(current, worker.id, activity, now), worker.id, now)
+    const spoken = board.setSaid(board.setActivity(current, worker.id, activity, now), worker.id, words, now)
+    const counted = countedCall(board.addTimes(spoken, worker.id, times), worker.id, now)
     nudge = counted.task
     return counted.run
   })
@@ -698,6 +714,28 @@ function isInside(path: string, root: string): boolean {
 
 function moved(path: string, repo: string, root: string): string {
   return path.startsWith(`${repo}/`) ? `${root}${path.slice(repo.length)}` : `a path under ${root}`
+}
+
+/** The time of the tool calls and model calls of each agent that no write of its worker holds yet. */
+const unwritten = new Map<string, ActivityTimes>()
+
+/** Keeps the time of an activity of an agent for the next write of its worker: each write adds no store commit of its own. */
+export function noteTime(agentId: string, activity: Activity, ms: number): void {
+  const times = unwritten.get(agentId) ?? {}
+  unwritten.set(agentId, { ...times, [activity]: (times[activity] ?? 0) + ms })
+}
+
+/** A tool call of an agent took ms: its time counts for the class of the call. */
+export function timeCall(e: ToolCall, ms: number): void {
+  if (e.agentId === undefined) return
+  const args = e as unknown as Args
+  noteTime(e.agentId, activityOf(String(e.tool), text(args.command), text(args.description)), ms)
+}
+
+function takeTimes(agentId: string): ActivityTimes {
+  const times = unwritten.get(agentId) ?? {}
+  unwritten.delete(agentId)
+  return times
 }
 
 function describeCall(e: ToolCall): string {
@@ -813,18 +851,26 @@ function contextTokens(usage: TokenUsage): number {
 /**
  * One model call of an agent: its cost in input tokens adds up on its worker at once. A worker does a task in one long turn, so
  * a count at the end of the turn showed 0 tokens while it worked. With the window of the model of the agent, the call
- * also gives the context of the agent. The main session and agents that are no worker count nothing.
+ * also gives the context of the agent, and its answer gives the said of the worker. The write also holds the tokens by
+ * kind and the time of the agent since its last write. The main session and agents that are no worker count nothing.
  */
-export async function countStep(io: Store, agentId: string | undefined, usage: TokenUsage | null | undefined, window?: number): Promise<void> {
+export async function countStep(io: Store & Clock, agentId: string | undefined, usage: TokenUsage | null | undefined, window?: number, answer?: string): Promise<void> {
   const tokens = costTokens(usage ?? undefined)
   if (agentId === undefined || !usage || !tokens) return
+  const times = takeTimes(agentId)
   const run = await readRun(io)
   const worker = run ? board.workerOf(run, agentId) : undefined
   if (!worker) return
+  const now = await io.now()
   await writeRun(io, current => {
-    const counted = board.addTokens(current, worker.id, tokens)
-    return window ? board.setContext(counted, worker.id, { used: contextTokens(usage), size: window }) : counted
+    const counted = board.addTimes(board.addUsage(board.addTokens(current, worker.id, tokens), worker.id, sumsOf(usage)), worker.id, times)
+    const spoken = board.setSaid(counted, worker.id, answer, now)
+    return window ? board.setContext(spoken, worker.id, { used: contextTokens(usage), size: window }) : spoken
   })
+}
+
+function sumsOf(usage: TokenUsage): TokenSums {
+  return { input: usage.input_tokens, cacheWrite: usage.cache_creation_input_tokens, cacheRead: usage.cache_read_input_tokens ?? 0, output: usage.output_tokens }
 }
 
 /**
@@ -846,14 +892,18 @@ export async function recordContext(io: Store, agentId: string, context: AgentCo
   if (worker) await writeRun(io, current => board.setContext(current, worker.id, context))
 }
 
-/** A worker's turn ended: it is idle. Its tokens added up at each model call (countStep). The clock of meld starts workers again (see restartIdleWorkers). */
-export async function markWorker(io: Store & Clock, agentId: string | undefined, state: WorkerState, tokens = 0): Promise<void> {
+/** A worker's turn ended: it is idle. Its tokens added up at each model call (countStep), and the last words of its agent become its said. The clock of meld starts workers again (see restartIdleWorkers). */
+export async function markWorker(io: Store & Clock, agentId: string | undefined, state: WorkerState, tokens = 0, words?: string): Promise<void> {
   if (agentId === undefined) return
   const run = await readRun(io)
   const worker = run ? board.workerOf(run, agentId) : undefined
   if (!run || !worker) return
   const now = await io.now()
-  await writeRun(io, current => board.addTokens(board.setWorkerState(current, worker.id, state, now), worker.id, tokens))
+  const times = takeTimes(agentId)
+  await writeRun(io, current => {
+    const marked = board.addTokens(board.setWorkerState(current, worker.id, state, now), worker.id, tokens)
+    return board.addTimes(board.setSaid(marked, worker.id, words, now), worker.id, times)
+  })
 }
 
 type Restart = { worker: Worker; step: string }
@@ -1174,12 +1224,12 @@ async function dropRun(io: Store & FactsStore & CodeHost & Archive, run: Run): P
 
 /**
  * Writes the record of the run to <archive folder>/<run id>.json, open to its user only: the run, the board (request,
- * steers, tasks), the events and the context entries. The folder is 0700 before the file is there, so no other user
+ * steers, tasks), the events, the context entries and the report, for the person to share. The folder is 0700 before the file is there, so no other user
  * reads the file before its chmod. Gives the reason when it could not write the record.
  */
 async function archiveRun(io: CodeHost & Archive, run: Run): Promise<string | undefined> {
   const { request, tasks, log, context, ...rest } = run
-  const record = { run: rest, board: { request, steers: board.steersOf(run), tasks }, events: log, context: context ?? [] }
+  const record = { run: rest, board: { request, steers: board.steersOf(run), tasks }, events: log, context: context ?? [], report: reportText(run, endOf(run)) }
   try {
     const folder = await io.archiveFolder()
     const path = `${folder}/${run.id}.json`

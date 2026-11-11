@@ -1,8 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
-import { compactWorker, costTokens, deliver, discard, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, SPAWN_APPROVAL, spawnVerdict, startFromView, startRun, steerRun, stopOne, VCS_APPROVAL, vcsVerdict } from '../core/actions'
-import { addTasks, bindWorker, claimTask, CONTEXT_CAP, declareFinal, isFailure, setActivity, startRun as startBoard, steer, stopRun, stopWorker, takeIntegration } from '../core/board'
+import { compactWorker, costTokens, deliver, discard, guardCall, markWorker, recordSleep, refreshFacts, restartIdleWorkers, serveTool, SLEEP_GAP_MS, SPAWN_APPROVAL, spawnVerdict, startFromView, startRun, steerRun, stopOne, VCS_APPROVAL, vcsVerdict } from '../core/actions'
+import { addTasks, bindWorker, claimTask, CONTEXT_CAP, declareFinal, isFailure, setActivity, shareEntry, startRun as startBoard, steer, stopRun, stopWorker, takeIntegration } from '../core/board'
 import { COMPACT_KEEP } from '../core/contract'
 import { JJ_LANE_TEMPLATE, JJ_RESOLVE_TEMPLATE } from '../core/vcs'
 import type { AgentSpec, Change, Run, VcsKind, WorkerId } from '../types'
@@ -150,6 +150,31 @@ test('a run notes what the session has cost at its start', async () => {
   io.usd = 1.25
   await startRun(io, '/repo', { request: 'Add a dark theme', agents: TWO, vcs: 'auto' })
   expect(io.current?.costAtStart).toBe(1.25)
+})
+
+test('a run names the store that keeps it', async () => {
+  const io = ioWith(null)
+  io.store = 'file'
+  await startRun(io, '/repo', { request: 'Add a dark theme', agents: TWO, vcs: 'auto' })
+  expect(io.current?.store).toBe('file')
+})
+
+test('a gap in the clock past SLEEP_GAP_MS during a live run logs that the machine slept, from the last tick to now', async () => {
+  const io = ioWith(working())
+  await recordSleep(io, NOW, NOW + 12 * 60_000)
+  expect(io.current?.log.filter(entry => entry.kind === 'host')).toMatchObject([{ by: 'you', from: NOW, at: NOW + 12 * 60_000, text: 'the machine slept for 12 min' }])
+})
+
+test('a gap in the clock up to SLEEP_GAP_MS logs no sleep', async () => {
+  const io = ioWith(working())
+  await recordSleep(io, NOW, NOW + SLEEP_GAP_MS)
+  expect(io.current?.log.some(entry => entry.kind === 'host')).toBe(false)
+})
+
+test('a sleep while the run is stopped logs nothing', async () => {
+  const io = ioWith(stopRun(working(), NOW))
+  await recordSleep(io, NOW, NOW + 12 * 60_000)
+  expect(io.current?.log.some(entry => entry.kind === 'host')).toBe(false)
 })
 
 test('a model call costs its input, its cache reads at 0.1, its cache writes at 1.25 and its output at 5', () => {
@@ -506,6 +531,15 @@ test('finish_task shows its interfaces and the work it left in the context, with
       { kind: 'interface', by: 'w1', text: '#1: tokens(): Record<string, string>', commit: FULL },
     ],
   })
+})
+
+test('finish_task keeps in used the ids of the shared entries that helped, once each, and drops ids that name no entry', async () => {
+  const planned = runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }] }, NOW))
+  const shared = runOf(shareEntry(planned, 'w2', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW))
+  const io = ioWith(runOf(claimTask(shared, 'w1', 1, 1, NOW)))
+  io.answers['git rev-parse --verify --quiet HEAD^{commit}'] = FULL
+  await serveTool(io, call({ tool: 'mcp__meld__finish_task', task: 1, version: 2, commit: 'HEAD', summary: 'Tokens', used: [1, 1, 9, 'x'], agentId: 'agent-1' }))
+  expect(io.current?.tasks[0]?.used).toEqual([1])
 })
 
 test('a final commit that does not exist is refused', async () => {

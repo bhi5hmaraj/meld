@@ -95,40 +95,40 @@ Section 5 gives the records that remove these limits.
 
 ## 3. The pane
 
-The pane has a header and three parts:
+The pane has two views:
 
-- **Now:** one card for each agent, and the tree of tasks.
-- **Flow:** one lane for each worker over time, and the main metrics.
-- **Report:** when the run is ready, delivered or stopped, the report replaces Flow.
+- **Main view**, while the run starts or works, in this order: the header (3.1), the agents (3.2), the conversation (3.3), the learnings (3.4), the plan (3.5), and the steer box (3.6).
+- **Report** (3.7), when the run is ready, delivered or stopped. It replaces the main view.
+
+The main view tells what happens now, in words. The numbers, the Flow lanes and a recap of each agent are in the report only. The metric functions of section 4 serve both views.
 
 ### 3.1 Header
 
-- The state, the version control, the number of agents, the time since the start, and the cost. The cost includes cache reads, and the usage that ACP workers report.
+- The state, the number of agents, the time since the start, and the cost. The cost is in dollars where the host keeps a cost ledger, else in cost units. It includes cache reads, and the usage that ACP workers report. The header has no call count.
 - The request in two lines. A press shows all of it.
-- One line of counts in place of a percent: `2 of 13 tasks done, 3 working, 1 ready, 7 waiting`.
+- One line of counts in place of a percent: `9 of 14 tasks done, 3 working, 1 ready, 1 waiting`. A count of zero is left out.
 - One bar with three parts: done, working, and open. The counts name the parts.
-- A warning line, in this order of importance:
+- A warning line, only when a warning holds, the most important first:
   1. The machine slept during the run: `The machine slept for 159 minutes. Nothing ran in that time.`
   2. The run has no board file: `This run lives in the session state. It has no record, and no other session can resume it.`
   3. The newest error of the run log, with its message, for example `board call failed: <message>`. A press runs `/meld-log`.
-  4. Ready tasks with idle workers: `2 tasks ready, 2 agents idle for 12 min`. A press starts the idle workers.
-  5. The newest warning of the run log.
+  4. The newest warning of the run log.
 
-### 3.2 Agent cards
+A ready task with an idle agent shows on the card of that agent (3.2), not in the header.
 
-Each card has these lines:
+### 3.2 Agents
+
+One card for each agent, with three lines:
 
 | Line | Content | Source |
 |---|---|---|
-| Title | The colour of the agent, the worker id, the agent, the id and title of its task, and the time on the task | The board |
-| Now | The last sentence of the agent, at most 20 words | A Claude worker: the `answer` of its last `turn.step`, which the hook already receives. An ACP worker: the text of its `agent_message_chunk` updates in the current prompt, or the `plan` entry in progress. |
-| Did | The finished tasks of the worker, newest first: a tick, the id, the title, the summary cut to 16 words, and the short commit. Two lines at most, then "and N more". | `finish_task` |
-| Learned | The newest entry that the worker shared, with its kind mark | The shared context |
-| Context and cost | The context of the agent against the cap, and the cost of the worker so far, for example `context 240k of 150k cap, $4.10` | `countStep` and the usage of each model call |
+| Title | The colour of the agent, the worker id, the agent, the id and title of its task, and the time on the task. An agent with no task says `no task now`. | The board |
+| Now | What the agent does now, in its own words: its last sentence, at most 20 words | A worker that the host runs: the `answer` of its last `turn.step`, which the hook already receives. An ACP worker: the text of its `agent_message_chunk` updates in the current prompt, or the `plan` entry in progress. |
+| Did | The titles of the tasks it finished, newest first, each with a tick. One line, then `and N more`. | `finish_task` |
 
 When the agent wrote no text for 60 s, the Now line shows plain words from the kind of its tool calls:
 
-| Words | Claude tools | ACP tool kind | Commands |
+| Words | Host tools | ACP tool kind | Commands |
 |---|---|---|---|
 | reading code | Read, Glob, Grep | read, search | `cat`, `rg`, `grep`, `find`, `ls` |
 | editing `<file>` | Edit, Write, MultiEdit, NotebookEdit | edit, delete, move | |
@@ -140,58 +140,87 @@ When the agent wrote no text for 60 s, the Now line shows plain words from the k
 | waiting for approval | | an open permission ask | |
 | in a step of the agent: `<title>` | any other tool | think, other | |
 
-A card shows a warning in place of the counts of today:
+A card has two buttons: **Transcript**, where the host can open the transcript of the agent (`$.ui.view({ agentId })`), and **Stop**.
 
-- **Long task, may split:** the task passed 80% of its `SPLIT_CALLS`.
-- **Context near the cap:** the context is near the cap of issue #6. The card says when the agent compacted last, and when meld will start a fresh agent.
-- **No word for 5 min:** no text and no tool call in `STUCK_MS`. The card then also shows the last command, as a clue.
-- **Waits for its own background work:** the worker holds a task, and its last call waits on a command that does not end, such as `tail -f`.
-- **Waits for approval:** an ACP permission ask is open for more than 10 s.
-- **Idle, task ready:** the worker is idle while a task is ready.
+An idle agent with a ready task gets one chip, `#20 is ready since 6 min`, with a **Start** button. The chip is the only warning a card shows.
 
-Each card has two buttons: **Open transcript**, for a Claude worker (`$.ui.view({ agentId })`), and **Stop**.
+A card shows no context, cost, counts, commands or shares. The context and the cost of each worker are in the report. The last command of an agent goes to the run log.
 
-These items go from the card: the call count, the seconds since the last tool, and the last command. The last command goes to the run log. It shows on the card only for a stuck worker.
+### 3.3 Conversation
 
-### 3.3 Tasks
+A feed of what the agents and the person say to each other, oldest first. Each line has its time, `HH:MM`:
 
-- The tasks show as a tree.
+- **Notes** of the agents: `w2 -> all`, and the text of the note.
+- **Handovers** from one agent to another: when a task finishes and the task of another worker needs it, `w3 -> w1`, and the unfinished work of the handover, else its summary.
+- **Steers** of the person: `you -> all`, in a box of the colour of the person.
+- **Merges and conflicts** of meld, as quiet lines: `Merged #13 into the line.`, `#14 conflicted with #12. w2 integrates it as #18.`
+
+The feed shows the newest lines that fit in 100 words. The source is the log of the run: note, steer, merge and task entries, and the handovers of finished tasks.
+
+### 3.4 Learnings
+
+The current shared context as sentences, in three groups:
+
+- **Facts:** the fact entries.
+- **Avoid:** the fail entries.
+- **Contracts:** the interface entries.
+
+Each line shows the first sentence of the entry, at most 20 words, the worker that shared it, and one of:
+
+- `used by w2, w3`: the workers whose `finish_task` named it in `used`.
+- `heeded by w1`, for a fail that a `finish_task` named in `used`.
+- `got by 2`: the number of agents that a board reply carried it to, when no finish named it.
+
+The newest entries come first in each group. The block shows the newest entries that fit in 100 words.
+
+- "got" replaces "read" of earlier versions: a reply carries each new entry to every agent, so it shows delivery, not use. "used by" and "heeded by" are the claims of the agents.
+- The worker rules ask each finish for the ids of the entries that helped, in `used`. meld keeps the ids that name an entry of the run, once each.
+- The main view has no metrics line. The metrics of section 4.4 are in the report.
+
+### 3.5 Plan
+
+- The tasks show as a tree, under the heading Plan.
 - A parent opens itself when a task under it is claimed or ready.
 - A parent closes itself when all of its tasks are done.
 - The person can open and close a parent. The choice of the person stays until the run ends.
-- A leaf shows a word, not a bar:
-  - the worker id and `working`, with its time
-  - `ready`, with the time since it became ready
+- A leaf shows a word, not a bar or a percent:
+  - the worker id and `working`, in the colour of the worker
+  - `ready`, with the time since it became ready, for example `ready 6m`
   - `waits for #N`
-  - a tick and the short commit
-- A ready task that waits more than 5 minutes while a worker is idle shows in the warning colour.
-- A parent shows `N of M done` and a small bar.
+  - a tick and `done`
+- A ready task that waits more than 5 minutes while an agent is idle shows in the warning colour.
+- A parent shows `N of M done`.
 - In each level, the order is: claimed, ready, waiting, done. So a plan with no parents shows in the same order.
-- The word limit of the block counts the live rows first. When the block is full, the done rows fold into one line, `N done`.
+- The word limit of the block counts the live rows first. While a task is live, the done top-level rows fold into one line: `#1 Metrics, and 3 more done`.
 
-### 3.4 Flow
+### 3.6 Steer box
 
-- One lane for each worker. It shows the whole run, or the last 30 minutes of a longer run.
-- A lane has four kinds of parts:
-  - **working** on task #N.
-  - **merging** task #N into the integration line.
-  - **waiting on meld:** the worker is idle while a task is ready for it, a restart is pending, or an approval is pending.
-  - **idle:** no task is ready.
-  - **asleep:** the machine slept. A band across all lanes shows it.
-- A graphic surface draws the lanes as SVG. The terminal draws one row of cells for each worker, with one shape for each kind.
-- Under the lanes, the pane shows four metrics from section 4: busy share, ready with no agent, task time, and cost per finished task.
+One box, `Steer all agents`, and a row of presets: `+ Tests`, `Smaller`, `Fix checks`, `Integrate now`. A steer goes to every agent, and the conversation shows it. In a ready run, **Ask for changes** opens the box.
 
-On a machine that sleeps, the lanes show the sleep across all workers.
+### 3.7 Report
 
-### 3.5 Report
+When the run is ready, delivered or stopped, the report replaces the main view. meld also writes the report to the archive of the run (section 6.6), so the person can share it, and `/meld-report` prints it. The workspaces folder is not a place for it: Deliver and Discard remove that folder.
 
-When the run is ready, delivered or stopped, the report replaces Flow. meld also writes the report to the archive of the run (section 6.6), so the person can share it. The workspaces folder is not a place for it: Deliver and Discard remove that folder.
+The report has these parts:
 
-The report starts with a story of the run in five sentences. meld fills a fixed template with the metrics of section 4. No model writes it. An example from `mw3antkq04bh`:
+1. **Header**, as in 3.1.
+2. **Final commit:** the short commit, the number of files, and the checks, for example `7e1a0c3 - 24 files - all 3 checks pass`. Four buttons: **Deliver**, **Show diff**, **Ask for changes**, and **Discard**.
+3. **Story:** the run in at most five sentences. meld fills a fixed template with the metrics of section 4. No model writes it. An example from the picture:
 
-> Three agents finished 9 tasks in 41 minutes. For 23 of those minutes, only one agent worked. w1 (Claude) did 56% of the work. 23 of 28 entries reached another agent. 5 of 25 checks failed, and the person did not steer.
+   > Three agents finished 22 tasks in 1 hour 48 minutes. They shared 33 learnings, and used 7 of them in later tasks. Two fails stopped the others from the same dead end. For 14 minutes only one agent worked. You steered once.
 
-Under the story, the report gives the lanes of the whole run, and the metrics of section 4 for the run and for each worker.
+4. **What each agent did:** one card for each agent, with the worker id, the agent and a **Transcript** button; the titles of its finished tasks in one sentence; and three counts: `8 tasks`, `shared 12 learnings`, `used 3`.
+5. **Timeline:** the Flow lanes of the whole run, with a time axis under them.
+   - One lane for each worker, with five kinds of parts:
+     - **working** on task #N.
+     - **merging** task #N into the integration line.
+     - **waiting on meld:** the worker is idle while a task is ready for it, a restart is pending, or an approval is pending.
+     - **idle:** no task is ready.
+     - **asleep:** the machine slept. A band across all lanes shows it.
+   - A graphic surface draws the lanes as SVG, with the parts in words for a screen reader. The terminal draws one row of cells for each worker, with one shape for each kind.
+   - Under the lanes, three numbers from section 4.1: the agents at work on average (parallelism), the share of the time that one agent worked alone, and the cost per finished task.
+
+The text of `/meld-report` and of the archive adds the metrics of section 4 for the run and for each worker.
 
 ## 4. System metrics
 
@@ -315,7 +344,7 @@ Rules for these records:
 
 - Keep sums, not one row for each tool call.
 - Write the new fields in the store commit that each step already makes. Add no extra writes.
-- The run shape becomes `run-5`.
+- The run shape stays `run-4`. Each new field is optional, so a run that an older meld stored keeps working. A new shape tag makes the engine hide the stored run from the new code.
 - Each metric is a pure function of the run and its events, in `core/metrics.ts`, with tests. The tests include the runs of section 1.2, from their archives.
 
 ### 5.2 What the metrics leave out
@@ -415,7 +444,7 @@ The archive is one folder, `~/.meld/archive/<run>/`:
 |---|---|
 | `run.json` | The run record, the last board (request, steers, tasks, summaries and handovers), all events, and the context entries with their receivers. The two archives that the person made by hand have this shape. `run.json` adds a shape tag and the version of meld, so a later meld can read it. |
 | `metrics.json` | The metrics of section 4 for the run and for each worker |
-| `report.md` | The report of section 3.5 |
+| `report.md` | The report of section 3.7 |
 | `log.jsonl` | The run log, kept 30 days |
 
 - meld writes each file to a part file first, and then gives it its name, as for the backups.

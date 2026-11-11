@@ -70,6 +70,28 @@ test('a finish_task merges the commit of its own task alone, so a backlog of don
   expect(io.current?.line).toEqual({ head: FULL, tasks: [1] })
 })
 
+test('a merge logs a merge entry with its task, worker, start, end, files and commit', async () => {
+  const io = ioWith(planned())
+  let clock = NOW
+  io.now = async () => clock
+  io.during[`git update-ref ${GIT_LINE} ${FULL} `] = run => {
+    clock = NOW + 4_000
+    return run
+  }
+  io.answers[`git diff --name-only --no-renames ${HEAD} ${FULL}`] = 'src/theme.ts\n'
+  await serveTool(io, call(FINISH_1))
+  expect(io.current?.log.find(entry => entry.kind === 'merge')).toMatchObject({
+    by: 'you',
+    text: 'merged #1 into the integration line',
+    task: 1,
+    worker: 'w1',
+    from: NOW,
+    at: NOW + 4_000,
+    files: ['src/theme.ts'],
+    commit: FULL,
+  })
+})
+
 test('the done tasks that the line lacks wait for the integrator, who starts from the line and merges their commits', async () => {
   const io = ioWith(backlog())
   await serveTool(io, call(FINISH_1))
@@ -86,6 +108,22 @@ test('a finish_task that meld refuses merges nothing, though done tasks wait for
   expect(JSON.parse(String(replied.result))).toMatchObject({ error: 'STALE_VERSION' })
   expect(merges(io)).toEqual([])
   expect(io.current?.line).toBeUndefined()
+})
+
+test('a finish_task keeps the commits that its commit took from other lanes', async () => {
+  const io = ioWith(backlog())
+  io.answers[`git rev-list --count --no-merges ${HEAD}..${FULL}`] = '5'
+  io.answers[`git rev-list --count --no-merges --first-parent ${HEAD}..${FULL}`] = '3'
+  await serveTool(io, call(FINISH_1))
+  expect(io.current?.tasks.find(task => task.id === 1)?.taken).toBe(2)
+})
+
+test('a finish_task whose taken commits git cannot count keeps no count', async () => {
+  const io = ioWith(backlog())
+  io.answers[`git rev-list --count --no-merges ${HEAD}..${FULL}`] = '5'
+  io.failing.push(`git rev-list --count --no-merges --first-parent ${HEAD}..${FULL}`)
+  await serveTool(io, call(FINISH_1))
+  expect(io.current?.tasks.find(task => task.id === 1)).not.toHaveProperty('taken')
 })
 
 test('two finish_task calls at once merge one at a time, each the commit of its own task', async () => {
