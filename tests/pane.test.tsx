@@ -408,25 +408,47 @@ test('a run that ended with no tasks says so, with no agents planning', async ($
   await ui.unmount()
 })
 
-test('the shared context shows the five newest current entries, newest first', async ($, on) => {
+/** sharedRun, where w1 finishes #1 and names entry 7 in used. */
+function citedRun(): Run {
+  return runOf(finishTask(sharedRun(workingRun(3)), 'w1', 1, 2, FULL, 'Tokens', NOW, {}, { used: [7] }))
+}
+
+test('the shared context shows the five newest current entries by kind, facts, fails, then interfaces, newest first in each kind', async ($, on) => {
   const state = new FakeState().load(sharedRun(workingRun(3)), null)
   on('clock.now', () => ({ value: NOW }))
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  const lines = (await ui.findAll({ type: 'Box' })).filter(box => box.key?.startsWith('context-'))
-  expect(lines.map(line => line.key)).toEqual(['context-7', 'context-5', 'context-4', 'context-3', 'context-2'])
+  const lines = (await ui.findAll({ type: 'Box' })).filter(box => /^context-\d+$/.test(box.key ?? ''))
+  expect(lines.map(line => line.key)).toEqual(['context-5', 'context-4', 'context-2', 'context-7', 'context-3'])
   await ui.unmount()
 })
 
-test('a line of the shared context shows the shape of the kind, the worker, the text and the number of workers that read it', async ($, on) => {
-  const state = new FakeState().load(sharedRun(workingRun(3)), null)
+test('a line of the shared context shows the shape of the kind, who shared it, the text, who got it and who used it', async ($, on) => {
+  const state = new FakeState().load(citedRun(), null)
   on('clock.now', () => ({ value: NOW }))
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   for (const surface of ALL_SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(partsOf(await ui.find({ key: 'context-7' }))).toEqual(['◇', 'w3', CORRECTION, '2 read'])
-    expect(partsOf(await ui.find({ key: 'context-5' }))).toEqual(['■', 'w2', 'The docs build reads docs/theme.md.', '1 read'])
-    expect(partsOf(await ui.find({ key: 'context-2' }))).toEqual(['✕', 'w2', 'A global stylesheet breaks the old pages, as they set colours inline.', '1 read'])
+    expect(partsOf(await ui.find({ key: 'context-7' }))).toEqual(['◇', 'w3', 'useTheme(): Theme gives the stored theme, light or…', 'got w1 w2', 'used by w1'])
+    expect(partsOf(await ui.find({ key: 'context-2' }))).toEqual(['✕', 'w2', 'A global stylesheet breaks the old pages, as…', 'got w1'])
+    await ui.unmount()
+  }
+})
+
+test('the shared context shows the metrics of the shared context on every surface', async ($, on) => {
+  const state = new FakeState().load(citedRun(), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  for (const surface of ALL_SURFACES) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(partsOf(await ui.find({ key: 'context-metrics' }))).toEqual([
+      '7 entries: 3 facts, 1 fail, 3 interfaces',
+      '7 for each done task',
+      '6 of 7 delivered, median 0s',
+      '1 of 8 received entries cited',
+      '1 of 1 fail heeded',
+      '0 fails repeated',
+    ])
     await ui.unmount()
   }
 })
@@ -436,7 +458,7 @@ test('a long shared entry is cut to one line', async ($, on) => {
   on('clock.now', () => ({ value: NOW }))
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  const cut = `${'word '.repeat(12).trim()}…`
+  const cut = `${'word '.repeat(8).trim()}…`
   expect(await ui.findAll({ type: 'Text', text: cut })).toHaveLength(5)
   expect((await ui.find({ type: 'Text', text: cut }))?.props).toMatchObject({ wrap: 'truncate-end' })
   await ui.unmount()
@@ -612,7 +634,7 @@ test('a run that meld 0.7.0 stored draws its task tree, its progress and its sha
     expect(rowKeys(await ui.findAll({ type: 'Box' }))).toEqual(['task-1', 'task-4', 'task-5', 'task-2', 'task-3'])
     expect(textsOf(await ui.find({ key: 'progress-all' })).slice(0, 2)).toEqual(['Progress', '66%'])
     expect(await ui.find({ type: 'Text', text: 'waits for #1' })).toBeDefined()
-    const lines = (await ui.findAll({ type: 'Box' })).filter(box => box.key?.startsWith('context-'))
+    const lines = (await ui.findAll({ type: 'Box' })).filter(box => /^context-\d+$/.test(box.key ?? ''))
     expect(lines.map(line => line.key)).toEqual(['context-3', 'context-2'])
     const blocks = (await ui.findAll({ type: 'Box' })).filter(box => box.key?.startsWith('sec-'))
     for (const block of blocks) expect(wordsOf(block), `${block.key} on ${surface}`).toBeLessThanOrEqual(WORD_LIMIT)

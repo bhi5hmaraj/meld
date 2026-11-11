@@ -404,7 +404,7 @@ function mutate(run: Run, by: WorkerId, tool: string, now: number, { args, held 
       return board.releaseTask(run, by, Number(args.task), Number(args.version), text(args.note), now)
     case TOOL.finishTask: {
       const shared = { interfaces: optionalText(args.interfaces), unfinished: optionalText(args.unfinished) }
-      return withHandBack(board.finishTask(run, by, Number(args.task), Number(args.version), text(args.commit), text(args.summary), now, shared, taken), by)
+      return withHandBack(board.finishTask(run, by, Number(args.task), Number(args.version), text(args.commit), text(args.summary), now, shared, { taken, used: Array.isArray(args.used) ? args.used : [] }), by)
     }
     case TOOL.note:
       return board.addNote(run, by, text(args.text), args.commit === undefined ? undefined : text(args.commit), now)

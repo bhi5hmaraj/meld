@@ -99,6 +99,7 @@ The pane has a header and three parts:
 
 - **Now:** one card for each agent, and the tree of tasks.
 - **Flow:** one lane for each worker over time, and the main metrics.
+- **Shared context:** the newest entries by kind, who shared, got and used each one, and the metrics of section 4.4.
 - **Report:** when the run is ready, delivered or stopped, the report replaces Flow.
 
 ### 3.1 Header
@@ -192,6 +193,14 @@ The report starts with a story of the run in five sentences. meld fills a fixed 
 > Three agents finished 9 tasks in 41 minutes. For 23 of those minutes, only one agent worked. w1 (Claude) did 56% of the work. 23 of 28 entries reached another agent. 5 of 25 checks failed, and the person did not steer.
 
 Under the story, the report gives the lanes of the whole run, and the metrics of section 4 for the run and for each worker.
+
+### 3.6 Shared context
+
+- One line of metrics from section 4.4, for example `7 entries: 3 facts, 1 fail, 3 interfaces`, `7 for each done task`, `6 of 7 delivered, median 0s`, `1 of 8 received entries cited`, `1 of 1 fail heeded`, `0 fails repeated`.
+- The five newest current entries, facts first, then fails, then interfaces, newest first in each kind. Each line shows the mark of its kind, the worker that shared it, its text cut to 8 words, `got` and the workers that a board reply carried it to, and `used by` and the workers whose `finish_task` named it in `used`.
+- More than three workers show as a count, such as `got 7 agents`, so that a line stays short with eight agents.
+- "got" replaces "read" of today: a reply carries each new entry to every agent, so it shows delivery, not use. "used by" is the claim of the agent.
+- The worker rules ask each finish for the ids of the entries that helped, in `used`. meld keeps the ids that name an entry of the run, once each.
 
 ## 4. System metrics
 

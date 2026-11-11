@@ -359,7 +359,7 @@ export function finishTask(
   summary: string,
   now: number,
   handover: Handover = {},
-  taken?: number,
+  { taken, used = [] }: { taken?: number; used?: unknown[] } = {},
 ): Change<Task> {
   const found = checkTask(run, by, id, version)
   if (isTaskFailure(found)) return found
@@ -375,7 +375,20 @@ export function finishTask(
     ...(unfinished ? [{ at: now, kind: 'fact' as const, by, text: `#${id} unfinished: ${unfinished}`, commit, files: [] }] : []),
   ].reduce(withContext, run)
   const kept: Handover = { ...(interfaces ? { interfaces } : {}), ...(unfinished ? { unfinished } : {}) }
-  const done: Task = { ...checked, state: 'done', commit, summary, ...(interfaces || unfinished ? { handover: kept } : {}), ...(taken === undefined ? {} : { taken }), version: checked.version + 1, doneAt: now }
+  const cited = contextOf(run)
+    .map(entry => entry.id)
+    .filter(entryId => used.includes(entryId))
+  const done: Task = {
+    ...checked,
+    state: 'done',
+    commit,
+    summary,
+    ...(interfaces || unfinished ? { handover: kept } : {}),
+    ...(taken === undefined ? {} : { taken }),
+    ...(cited.length ? { used: cited } : {}),
+    version: checked.version + 1,
+    doneAt: now,
+  }
   return updateTask({ ...handed, nudges: 0 }, done, by, now, `finished #${id}: ${summary}`, commit)
 }
 
