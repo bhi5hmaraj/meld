@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
-import { addTasks, addUsage, bindWorker, claimTask, finishTask, isFailure, machineSlept, setWorkerState, startRun } from '../core/board'
-import { FLOW_SHAPE } from '../hooks/drawing'
+import { addTasks, addUsage, bindWorker, claimTask, finishTask, isFailure, machineSlept, setWorkerState, startRun, stopRun } from '../core/board'
+import { FLOW_SHAPE } from '../core/report'
 import type { Change, Run, WorkerId } from '../types'
 
 const NOW = 1_800_000_000_000
@@ -16,13 +16,12 @@ const PANE = {
   requestId: 'meld',
   props: { title: 'meld', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
 } as const
-const ALL_SURFACES = ['terminal', 'desktop', 'vscode', 'mobile'] as const
 const { working, waiting, idle, asleep } = FLOW_SHAPE
 const W1_CELLS = `w1 ${working.repeat(15)}${idle.repeat(3)}${asleep.repeat(6)}${idle.repeat(6)}`
 const W2_CELLS = `w2 ${waiting.repeat(6)}${working.repeat(12)}${asleep.repeat(6)}${working.repeat(6)}`
 const W1_ALT = 'w1: working on #1 15m, idle 3m, asleep 6m, idle 6m'
 const W2_ALT = 'w2: waiting on meld 6m, working on #2 12m, asleep 6m, working on #2 6m'
-const METRICS = 'busy 55%; ready with no agent 6m; task time 15m; 1.0M tokens per finished task'
+const AXIS = `   0m${' '.repeat(8)}10m${' '.repeat(7)}20m${' '.repeat(4)}30m`
 
 type SvgNode = { type: string; props: { alt: string; source: string } }
 
@@ -42,26 +41,27 @@ function started(ids: WorkerId[], at: number): Run {
   return runOf(addTasks(bound, 'w1', { seen: 0, tasks: [{ title: 'Theme tokens' }, { title: 'Dark toggle' }] }, at))
 }
 
-/** 30 minutes: w1 does #1 in 15, w2 waits 6 for the ready #2 and then does it, and the machine sleeps from minute 18 to 24. */
+/** 30 minutes: w1 does #1 in 15, w2 waits 6 for the ready #2 and then does it, the machine sleeps from minute 18 to 24, and the person stops the run. */
 function flowRun(): Run {
   const sixth = START + 6 * MINUTE
   const fifteenth = START + 15 * MINUTE
   const w1Claims = runOf(claimTask(started(['w1', 'w2'], START), 'w1', 1, 1, START))
   const w2Claims = runOf(claimTask(setWorkerState(setWorkerState(w1Claims, 'w2', 'idle', START), 'w2', 'working', sixth), 'w2', 2, 1, sixth))
   const w1Done = setWorkerState(runOf(finishTask(w2Claims, 'w1', 1, 2, FULL, 'Tokens', fifteenth)), 'w1', 'idle', fifteenth)
-  return addUsage(machineSlept(w1Done, START + 18 * MINUTE, START + 24 * MINUTE), 'w1', USAGE)
+  return stopRun(addUsage(machineSlept(w1Done, START + 18 * MINUTE, START + 24 * MINUTE), 'w1', USAGE), NOW)
 }
 
-test('the terminal draws one row of cells for each worker in Flow, one shape for each kind of part', async ($, on) => {
+test('the terminal draws one row of cells for each worker in the report, one shape for each kind of part, over an axis of minutes', async ($, on) => {
   on('clock.now', () => ({ value: NOW }))
   on('state.get', ($, e) => ({ value: stored(flowRun(), e.key) }))
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ key: 'flow-w1' }))?.text).toBe(W1_CELLS)
   expect((await ui.find({ key: 'flow-w2' }))?.text).toBe(W2_CELLS)
+  expect(await ui.find({ type: 'Text', text: AXIS })).toBeDefined()
   await ui.unmount()
 })
 
-test('a graphic surface draws each lane of Flow as a picture, with its parts in words', async ($, on) => {
+test('a graphic surface draws each lane of the report as a picture, with its parts in words', async ($, on) => {
   on('clock.now', () => ({ value: NOW }))
   on('state.get', ($, e) => ({ value: stored(flowRun(), e.key) }))
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
@@ -74,24 +74,10 @@ test('a graphic surface draws each lane of Flow as a picture, with its parts in 
   await ui.unmount()
 })
 
-test('Flow gives busy share, ready with no agent, task time and cost per finished task, the same on every surface', async ($, on) => {
+test('a working run shows no lanes: they live in the report', async ($, on) => {
   on('clock.now', () => ({ value: NOW }))
-  on('state.get', ($, e) => ({ value: stored(flowRun(), e.key) }))
-  for (const surface of ALL_SURFACES) {
-    const ui = await $.ui.mount({ ...PANE, surface })
-    expect(await ui.find({ type: 'Text', text: METRICS }), surface).toBeDefined()
-    await ui.unmount()
-  }
-})
-
-test('Flow shows the last 30 minutes of a longer run, where w1 waits for the ready #2', async ($, on) => {
-  const early = NOW - 60 * MINUTE
-  const fortieth = early + 40 * MINUTE
-  const run = setWorkerState(runOf(finishTask(runOf(claimTask(started(['w1'], early), 'w1', 1, 1, early)), 'w1', 1, 2, FULL, 'Tokens', fortieth)), 'w1', 'idle', fortieth)
-  on('clock.now', () => ({ value: NOW }))
-  on('state.get', ($, e) => ({ value: stored(run, e.key) }))
+  on('state.get', ($, e) => ({ value: stored(runOf(claimTask(started(['w1'], START), 'w1', 1, 1, START)), e.key) }))
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect((await ui.find({ key: 'flow-w1' }))?.text).toBe(`w1 ${working.repeat(10)}${waiting.repeat(20)}`)
-  expect(await ui.find({ type: 'Text', text: 'last 30m' })).toBeDefined()
+  expect(await ui.find({ key: 'flow-w1' })).toBeUndefined()
   await ui.unmount()
 })

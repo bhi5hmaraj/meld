@@ -219,6 +219,20 @@ test('Show diff opens the real diff of the result', async ($, on) => {
   await second.unmount()
 })
 
+test('Ask for changes on a ready run opens the steer box', async ($, on) => {
+  const state = new FakeState().load(readyRun(), factsOf(readyRun()))
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  on('state.set', ($, e) => ({ value: state.set(e) }))
+  const first = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await first.find({ key: 'steer' })).toBeUndefined()
+  await first.press({ key: 'ask' })
+  await first.unmount()
+  const second = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await second.find({ key: 'steer' }))?.props.label).toBe('Ask for changes')
+  await second.unmount()
+})
+
 test('a preset button steers every live agent', async ($, on) => {
   const state = new FakeState().load(workingRun(3), null)
   const sent: string[] = []
@@ -582,7 +596,7 @@ test('agents that did not start show the first sentence of the refusal once', as
 })
 
 test('the lane of an agent that did not start says only that', async ($, on) => {
-  const state = new FakeState().load(refusedRun(), null)
+  const state = new FakeState().load({ ...refusedRun(), state: 'working' }, null)
   on('clock.now', () => ({ value: NOW }))
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })

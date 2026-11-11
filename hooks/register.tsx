@@ -5,6 +5,7 @@ import { compactWorker, controlRun, countStep, guardCall, markWorker, noteTime, 
 import { CONTEXT_CAP } from '../core/board'
 import { cleanFolders } from '../core/clean'
 import type { Action, BoardRead, Boards, BoardSummary, Committed } from '../core/remote-store'
+import { reportCommand } from '../core/report'
 import { resumeRun } from '../core/resume'
 import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL, TOOL_PREFIX, TOOL_SPECS, WORKER_SYSTEM } from '../core/contract'
 import type { AgentState, FactsStore, Files, Io, RunRecord, RunRecords, Spawned, Store } from '../core/ports'
@@ -139,6 +140,7 @@ export const register: Register = on => {
     await $.command.register({ name: 'meld-discard', description: 'Stop the meld run and remove its workspaces', immediate: true })
     await $.command.register({ name: 'meld-add', description: 'Add a worker to the meld run', argumentHint: '[model | agent type | type@model]', immediate: true })
     await $.command.register({ name: 'meld-resume', description: 'List the meld runs of other sessions, or resume one', argumentHint: '[<board>]', immediate: true })
+    await $.command.register({ name: 'meld-report', description: 'Show the report of the meld run, of an archived run, or a table of the archived runs', argumentHint: '[<run id> | --runs]', immediate: true })
     // A timer runs outside every hook, so the engine would ask the person about each call of meld mcp. It reads the
     // board over the channel of meld mcp into the copy, and the facts from the copy.
     $.clock.every(FACTS_MS, () => {
@@ -171,7 +173,7 @@ export const register: Register = on => {
     ($, e, next) => next(e),
   )
 
-  on('command.run', { command: ['meld', 'meld-steer', 'meld-status', 'meld-stop', 'meld-clean', 'meld-deliver', 'meld-discard', 'meld-add', 'meld-resume'] }, async ($, e) => {
+  on('command.run', { command: ['meld', 'meld-steer', 'meld-status', 'meld-stop', 'meld-clean', 'meld-deliver', 'meld-discard', 'meld-add', 'meld-resume', 'meld-report'] }, async ($, e) => {
     const io: Io & Files & RunRecords = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
@@ -228,6 +230,7 @@ export const register: Register = on => {
     const control = COMMAND_CONTROLS[e.command as keyof typeof COMMAND_CONTROLS]
     if (control) return { text: await controlRun(io, control, args) }
     if (e.command === 'meld-clean') return { text: await cleanFolders(io, args) }
+    if (e.command === 'meld-report') return { text: await reportCommand(io, args) }
     if (e.command === 'meld-resume') {
       const boards: Boards | undefined = board.server
         ? {
