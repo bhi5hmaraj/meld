@@ -24,6 +24,8 @@ export type FolderEntry = { name: string; kind: 'file' | 'dir' | 'other'; mtimeM
 export type Store = {
   read(): Promise<Run | null>
   write(change: (run: Run | null) => Run | null): Promise<unknown>
+  /** Where the run lives: the session state alone, or a board file. A new run records it. */
+  store?: 'session' | 'file'
 }
 
 /**

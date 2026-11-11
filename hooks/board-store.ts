@@ -4,7 +4,7 @@ import { ACP_PREFIX, isAcpAgent } from '../core/options'
 import type { FactsStore, Runner, Store } from '../core/ports'
 import { remoteStore, sameRun } from '../core/remote-store'
 import type { Adopted, BoardRead, BoardServer } from '../core/remote-store'
-import type { Run } from '../types'
+import type { Facts, Run } from '../types'
 
 /**
  * Where this session keeps its run: the board server of meld mcp (empty without it), the board, the owner of its writes,
@@ -31,9 +31,10 @@ type Verdict = { decision: 'allow' | 'deny'; reason: string }
  * the facts in the session state. Without meld mcp, the session state alone, as in meld 0.8.
  */
 export function sessionStore(session: SessionBoard, remote: BoardServer, local: Store & FactsStore): Store & FactsStore {
-  if (!session.server) return local
+  const facts = { readFacts: () => local.readFacts(), writeFacts: (next: Facts | null) => local.writeFacts(next) }
+  if (!session.server) return { read: () => local.read(), write: change => local.write(change), ...facts, store: 'session' }
   const run = remoteStore(remote, copy => local.write(current => (sameRun(current, copy) ? current : copy)))
-  return { ...run, readFacts: () => local.readFacts(), writeFacts: facts => local.writeFacts(facts) }
+  return { ...run, ...facts, store: 'file' }
 }
 
 /**

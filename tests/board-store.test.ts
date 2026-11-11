@@ -1,8 +1,10 @@
 import { expect, test } from 'claude-code/testing'
 
+import { MemoryStore } from '../core/memory-store'
 import type { AgentState, Runner, SpawnArgs, Spawned } from '../core/ports'
+import type { BoardServer } from '../core/remote-store'
 import type { Run } from '../types'
-import { boardVerdict, noBoardWarning, problemOf, sessionRunner, storeNote, withNote, workerOffer } from '../hooks/board-store'
+import { boardVerdict, noBoardWarning, problemOf, sessionRunner, sessionStore, storeNote, withNote, workerOffer } from '../hooks/board-store'
 
 const SERVER = 'plugin:meld:board'
 const READ = 'mcp__plugin_meld_board__read_board'
@@ -64,6 +66,19 @@ test('an unlisted meld mcp says that the session started before meld, and names 
 test('the note of the store names the board in meld mcp, or why meld mcp is not there', () => {
   expect(storeNote({ server: SERVER, id: 's1', owner: 's1', problem: '', channel: '' })).toEqual({ store: 'meld mcp, ~/.meld/meld.db', board: 's1' })
   expect(storeNote({ server: '', id: 's1', owner: 's1', problem: 'bun: not found', channel: '' })).toEqual({ store: 'the session state', why: 'meld mcp did not connect: bun: not found' })
+})
+
+test('the store of a hook names where it keeps the run: the board file of meld mcp, or the session state alone', () => {
+  const server: BoardServer = { read: async () => ({ run: null, version: 0 }), commit: async () => 'committed' }
+  expect(sessionStore({ server: SERVER, id: 's1', owner: 's1', problem: '', channel: '' }, server, new MemoryStore()).store).toBe('file')
+  expect(sessionStore({ server: '', id: 's1', owner: 's1', problem: 'bun: not found', channel: '' }, server, new MemoryStore()).store).toBe('session')
+})
+
+test('the store of the session state alone reads and writes the run of the session state', async () => {
+  const local = new MemoryStore()
+  const store = sessionStore({ server: '', id: 's1', owner: 's1', problem: 'bun: not found', channel: '' }, { read: async () => ({ run: null, version: 0 }), commit: async () => 'committed' }, local)
+  await store.write(() => ({ id: 'r1' }) as Run)
+  expect((await local.read())?.id).toBe('r1')
 })
 
 test('the note goes into the reply of the board tool of the main session, next to its fields', () => {

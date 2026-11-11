@@ -59,6 +59,7 @@ export type StartInput = {
   vcs: VcsKind
   now: number
   costAtStart?: number
+  store?: 'session' | 'file'
   workers: { id: WorkerId; path: string; ref: string; agent: AgentSpec }[]
 }
 
@@ -82,6 +83,7 @@ export function startRun(input: StartInput): Run {
     base: input.base,
     startedAt: input.now,
     costAtStart: input.costAtStart,
+    store: input.store,
     workers: input.workers.map(worker => newWorker(worker, input.now)),
     tasks: [],
     log: [],
@@ -376,6 +378,11 @@ export function lineMerged(run: Run, id: number, head: string, now: number, merg
   if (!held.includes(id)) held.push(id)
   const line: Line = { head, tasks: held }
   return withEntry({ ...run, line }, { at: now, by: 'you', kind: 'merge', text: `merged #${id} into the integration line`, commit: head, task: id, ...merge })
+}
+
+/** The machine slept from `from` to `now`: a host entry at the wake records it, so the lanes show the sleep. */
+export function machineSlept(run: Run, from: number, now: number): Run {
+  return withEntry(run, { at: now, by: 'you', kind: 'host', from, text: `the machine slept for ${Math.round((now - from) / 60_000)} min` })
 }
 
 /** The commit of #id does not merge into the line: meld adds a task "integrate #id" of size S, open for any worker. */
