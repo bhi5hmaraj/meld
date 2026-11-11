@@ -327,7 +327,7 @@ export function splitTask(run: Run, by: WorkerId, input: SplitInput, now: number
 }
 
 /** The task and the tasks above it, up to the top. */
-function ancestorsOf(tasks: readonly Task[], id: number | undefined): number[] {
+export function ancestorsOf(tasks: readonly Task[], id: number | undefined): number[] {
   const ancestors: number[] = []
   for (let current = taskOf(tasks, id); current && !ancestors.includes(current.id); current = taskOf(tasks, current.parent)) ancestors.push(current.id)
   return ancestors
