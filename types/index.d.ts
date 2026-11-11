@@ -275,6 +275,8 @@ export type PaneView = {
   /** The parents that the person opened, and the parents that the person closed: the choice of the person wins over the parents that open and close themselves. Absent in a view that meld 0.6.0 stored. */
   open?: number[]
   closed?: number[]
+  /** The header shows all of the request. */
+  showRequest?: boolean
 }
 
 declare module 'claude-code' {

@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { leavesOf, partsOf, percentLabel, requestParts, requestPercent, SIZE_WEIGHT, topTasks, weightOf } from '../core/progress'
+import { leavesOf, partsOf, requestParts, SIZE_WEIGHT, topTasks, weightOf } from '../core/progress'
 import type { Task } from '../types'
 
 function task(id: number, fields: Partial<Task> = {}): Task {
@@ -53,12 +53,7 @@ test('the leaves of a task are the tasks under it with no parts, or the task whe
   expect(leavesOf(TREE, task(5)).map(one => one.id)).toEqual([5])
 })
 
-test('the request is the size-weighted mean of the top-level tasks', () => {
-  expect(rounded(requestPercent(TREE))).toBe(rounded((8 * (100 / 12) + 100) / 12))
-})
-
-test('a request with no tasks is at 0 percent', () => {
-  expect(requestPercent([])).toBe(0)
+test('a request with no tasks has no parts', () => {
   expect(requestParts([])).toEqual({ done: 0, claimed: 0, open: 0 })
 })
 
@@ -81,15 +76,8 @@ test('the parts of the request add up the top-level tasks by their size', () => 
   expect(rounded(parts.open)).toBe(rounded((8 / 12) * (3 / 12) + 3 / 12))
 })
 
-test('a percent shows as the whole number at or below it, so 100% means that all is done', () => {
-  expect(percentLabel(100)).toBe('100%')
-  expect(percentLabel(99.9)).toBe('99%')
-  expect(percentLabel(100 * 0.29)).toBe('29%')
-  expect(percentLabel(0)).toBe('0%')
-})
-
 test('a task that meld 0.6.0 stored, with no size and no parent, is a top-level M task', () => {
   const stored = [{ id: 1, title: 'Theme tokens', detail: '', state: 'done', owner: 'w1', version: 3, commit: 'def5678', summary: 'Tokens added' }, { id: 2, title: 'Toggle', detail: '', state: 'open', version: 1 }] as Task[]
   expect(topTasks(stored).map(one => one.id)).toEqual([1, 2])
-  expect(requestPercent(stored)).toBe(50)
+  expect(requestParts(stored).done).toBe(0.5)
 })

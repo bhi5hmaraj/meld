@@ -4,7 +4,7 @@ import type { Activity, AgentSpec, ContextKind, Entry, Facts, LaneFacts, PaneVie
 import { deliver, discard, LEADING_CD, stopAll, stopOne } from '../core/actions'
 import { CONTEXT_CAP, currentContext, NOT_STARTED, SPLIT_CALLS } from '../core/board'
 import { activityOf, sharedContextOf } from '../core/metrics'
-import type { SharedContext } from '../core/metrics'
+import type { Progress, SharedContext } from '../core/metrics'
 import { STEER_PRESETS } from '../core/contract'
 import { agentColor, BAR_HEIGHT, BAR_WIDTH, barCells, LANE_HEIGHT, LANE_WIDTH, laneAlt, laneGlyphs, laneSvg, partsBarSvg, STATUS } from './drawing'
 import { FLOW_CELLS, FLOW_HEIGHT, FLOW_LEGEND, FLOW_WIDTH, flowCells, flowSvg, partsIn, partWords } from './drawing'
@@ -13,7 +13,7 @@ import { efficiencyOf, lanesOf, progressOf } from '../core/metrics'
 import type { LanePart } from '../core/metrics'
 import type { Io } from '../core/ports'
 import { agentsOf, formatStart, isAcpSpec, MAX_AGENTS, MODELS, WORKER_TYPE } from '../core/options'
-import { leavesOf, percentLabel, requestParts, requestPercent, topTasks } from '../core/progress'
+import { leavesOf, requestParts, topTasks } from '../core/progress'
 import type { Parts } from '../core/progress'
 import { childrenOf, claimable, waitsFor } from '../core/tasks'
 
@@ -73,7 +73,8 @@ const TITLE_WORDS = 8
 const ROW_WORDS = 90
 /** A ready task that waits longer than this while a worker is idle shows in the warning colour. */
 const READY_WARN_MS = 300_000
-const REQUEST_CHARS = 72
+/** The characters of the request that the header shows before a press: two lines. */
+const REQUEST_CHARS = 144
 const FLOW_WINDOW_MS = 30 * 60_000
 const FLOW_WINDOW_WORDS = 'last 30m'
 const SKIPPED_ARGUMENT = /^(?:-|\d|\.$|[|&;<>]+$)/
@@ -125,10 +126,15 @@ export function paneTree(input: PaneInput) {
 
 function headerSection(input: PaneInput, run: Run) {
   const { Box, Text, Button } = input.table
-  const { io } = input
-  const calls = run.workers.reduce((sum, worker) => sum + (worker.calls ?? 0), 0)
+  const { io, now } = input
+  const units = run.workers.reduce((sum, worker) => sum + (worker.tokens ?? 0), 0)
   const spent = spentOf(input.sessionCost, run.costAtStart)
   const shared = sharedSpec(run)
+  const progress = progressOf(run, now)
+  const { done, working, ready, waiting } = progress
+  const others = [`${working} working`, `${ready} ready`, `${waiting} waiting`].filter(part => !part.startsWith('0 '))
+  const counts = [`${done} of ${done + working + ready + waiting} tasks done`, ...others].join(', ')
+  const request = run.request.replace(/\s+/g, ' ').trim()
   return (
     <Box key="sec-top" flexDirection="column" gap="xs">
       <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="md">
@@ -137,7 +143,7 @@ function headerSection(input: PaneInput, run: Run) {
             ● {STATE_WORD[run.state]}
           </Text>
           <Text dimColor>
-            {run.vcs} · {run.workers.length} agents{shared ? ` · ${shared}` : ''} · {ago(input.now - run.startedAt)} · {spent ?? callsOf(calls)}
+            {run.workers.length} agents{shared ? ` · ${shared}` : ''} · {ago(now - run.startedAt)} · {spent ?? `${tokenCount(units)} cost units`}
           </Text>
         </Box>
         <Box flexDirection="row" gap="sm">
@@ -158,10 +164,46 @@ function headerSection(input: PaneInput, run: Run) {
           )}
         </Box>
       </Box>
-      <Text dimColor wrap="truncate-end">
-        {cut(run.request.split('\n')[0] ?? '', REQUEST_CHARS)}
-      </Text>
+      {request.length > REQUEST_CHARS ? (
+        <Button key="request" plain dimColor onPress={() => void input.setView(view => ({ ...view, showRequest: !view.showRequest }))}>
+          {input.view.showRequest ? request : cut(request, REQUEST_CHARS)}
+        </Button>
+      ) : (
+        <Text dimColor wrap="wrap">
+          {request}
+        </Text>
+      )}
+      {run.tasks.length > 0 && (
+        <Box flexDirection="row" gap="sm" alignItems="center" flexWrap="wrap">
+          <Box key="counts">
+            <Text>{counts}</Text>
+          </Box>
+          {partsBar(input, 'all', requestParts(run.tasks), REQUEST_BAR, counts)}
+        </Box>
+      )}
+      {runWarning(input, run, progress)}
     </Box>
+  )
+}
+
+/** The most important warning of the run, one line: the machine slept, the run has no board file, or ready tasks wait while agents are idle. */
+function runWarning(input: PaneInput, run: Run, progress: Progress) {
+  const { Box, Text, Button } = input.table
+  const line = (text: string) => (
+    <Box key="warning">
+      <Text color="warning">{text}</Text>
+    </Box>
+  )
+  const asleepMs = efficiencyOf(run, input.now).asleepMs
+  if (asleepMs > 0) return line(`The machine slept for ${Math.round(asleepMs / 60_000)} minutes. Nothing ran in that time.`)
+  if (run.store === 'session') return line('This run lives in the session state. It has no record, and no other session can resume it.')
+  const idle = run.workers.filter(worker => worker.state === 'idle')
+  if (!progress.readyNoAgent.now || !idle.length) return null
+  const idleMs = input.now - Math.min(...idle.map(worker => worker.activityAt))
+  return (
+    <Button key="start-idle" plain color="warning" onPress={SERVED_BY_HOOK}>
+      {`${counted(progress.readyNoAgent.now, 'task')} ready, ${counted(idle.length, 'agent')} idle for ${Math.round(idleMs / 60_000)} min`}
+    </Button>
   )
 }
 
@@ -316,11 +358,6 @@ function costLine(worker: Worker): string {
   return worker.context ? `context ${tokenCount(worker.context.used)} of ${tokenCount(CONTEXT_CAP)} cap, ${cost}` : cost
 }
 
-function tokenCount(count: number): string {
-  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`
-  return count >= 1000 ? `${Math.round(count / 1000)}k` : String(count)
-}
-
 /** The one warning of a card, the most urgent first. A stuck agent shows its last command as a clue. */
 function warningOf(run: Run, worker: Worker, now: number): string | undefined {
   if (!LIVE.has(run.state) || worker.state === 'stopped') return undefined
@@ -344,7 +381,7 @@ type Row = { task: Task; depth: number; isParent: boolean; isOpen: boolean; grou
 /** What each row of the tree reads: the run, its ready leaves, the choices of the person, and whether a worker is idle. */
 type Tree = { run: Run; ready: ReadonlySet<number>; view: PaneView; now: number; idle: boolean }
 
-/** The percent of the request, and one row for each top-level task, with the rows of its children when it is open. The rows stop before the block passes 100 words. */
+/** One row for each top-level task, with the rows of its children when it is open. The header counts the tasks of the request. The rows stop before the block passes 100 words. */
 function progressSection(input: PaneInput, run: Run) {
   const { Box, Text } = input.table
   if (!run.tasks.length) {
@@ -361,17 +398,10 @@ function progressSection(input: PaneInput, run: Run) {
   const fold = first && done.length > 1 && done.length < all.length ? `${taskName(first.task)}, and ${done.length - 1} more done` : undefined
   const rows = fold ? all.filter(row => !done.includes(row)) : all
   const shown = rowsWithin(rows, ROW_WORDS - (fold ? wordCount(fold) : 0))
-  const percent = percentLabel(requestPercent(run.tasks))
   return (
     <Box key="sec-progress" flexDirection="column" gap="sm">
-      <Box key="progress-all" flexDirection="row" justifyContent="space-between" alignItems="center" gap="md">
+      <Box key="progress-all" flexDirection="row">
         <Text bold>Plan</Text>
-        <Box flexDirection="row" gap="sm" alignItems="center">
-          <Text bold tabular>
-            {percent}
-          </Text>
-          {partsBar(input, 'all', requestParts(run.tasks), REQUEST_BAR, `The request: ${percent} done`)}
-        </Box>
       </Box>
       <Box flexDirection="column" gap="xs">
         {shown.map(row => taskRow(input, row))}
@@ -546,6 +576,7 @@ function flowMetrics(run: Run, now: number): string {
   return [`busy ${Math.round(busyShare * 100)}%`, ready, ...finished].join('; ')
 }
 
+/** A count of tokens in a few characters: 182k, 1.2M. */
 function tokenCount(tokens: number): string {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
   return tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : String(Math.round(tokens))
@@ -766,10 +797,6 @@ function shortActivity(activity: string): string {
   const [name = 'Bash', ...rest] = command.replace(LEADING_CD, '').split(/\s+/).filter(Boolean)
   const target = rest.find(word => !SKIPPED_ARGUMENT.test(word))
   return cut(target ? `${name} ${target.split('/').filter(Boolean).pop() ?? target}` : name, ACTIVITY_CHARS)
-}
-
-function callsOf(calls: number): string {
-  return `${calls} ${calls === 1 ? 'call' : 'calls'}`
 }
 
 /** The dollars the session spent since the run started, when the host keeps a cost ledger and the run noted its start. */

@@ -29,15 +29,6 @@ export function requestParts(tasks: readonly Task[]): Parts {
   return meanOf(tasks, topTasks(tasks))
 }
 
-export function requestPercent(tasks: readonly Task[]): number {
-  return 100 * requestParts(tasks).done
-}
-
-/** The percent as the whole number at or below it, so 100% means that all the work is done. */
-export function percentLabel(percent: number): string {
-  return `${floored(percent)}%`
-}
-
 /** The whole number at or below the value, when the value is a sum of shares in floating point. */
 export function floored(value: number): number {
   return Math.floor(value + ROUNDING)
