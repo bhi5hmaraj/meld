@@ -18,7 +18,7 @@ function working(): Run {
 }
 
 function stored(key: string) {
-  return key === 'run' ? { value: { shape: 'run-4', value: working() }, version: 1 } : { value: undefined, version: 0 }
+  return key === 'run' ? { value: { shape: 'run-5', value: working() }, version: 1 } : { value: undefined, version: 0 }
 }
 
 test('a board call that fails says why in its refusal', async ($, on) => {

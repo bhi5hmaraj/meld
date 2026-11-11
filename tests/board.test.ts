@@ -118,7 +118,7 @@ test('a run of three workers waits for the third binding', () => {
 })
 
 test('the board shows every other worker as a peer', () => {
-  const view = boardFor(workingThree(), 'w2').view
+  const view = boardFor(workingThree(), 'w2', NOW).view
   expect(view.peers.map(peer => peer.id)).toEqual(['w1', 'w3'])
   expect(view.you).toEqual({ id: 'w2', path: '/tmp/meld/r1/w2', ref: 'meld/r1/w2' })
   expect(view.vcs).toBe('git')
@@ -244,9 +244,9 @@ test('a released task is open again', () => {
 test('a steer raises the revision and each worker sees it once', () => {
   const steered = runOf(steer(working(), 'Use the brand colours', NOW))
   expect(steered.revision).toBe(2)
-  const first = boardFor(steered, 'w1')
+  const first = boardFor(steered, 'w1', NOW)
   expect(first.view.notice?.steers).toEqual(['Use the brand colours'])
-  expect(boardFor(first.run, 'w1').view.notice).toBeUndefined()
+  expect(boardFor(first.run, 'w1', NOW).view.notice).toBeUndefined()
 })
 
 test('a worker that has not read a steer still claims work and the run keeps working', () => {
@@ -274,7 +274,7 @@ test('a stopped run refuses work but still shows its board', () => {
   const stopped = stopRun(withTask(), NOW)
   expect(stopped.workers.map(worker => worker.state)).toEqual(['stopped', 'stopped'])
   expect(claimTask(stopped, 'w1', 1, 1, NOW)).toMatchObject({ error: 'RUN_ENDED' })
-  expect(boardFor(stopped, 'w1').view.state).toBe('stopped')
+  expect(boardFor(stopped, 'w1', NOW).view.state).toBe('stopped')
 })
 
 test('a steer of a stopped run is refused', () => {
@@ -296,7 +296,7 @@ test('a tool reply carries a new steer once and leaves the news unread', () => {
   const taken = takeNotice(steered, 'w2')
   expect(taken.notice?.steers).toEqual(['Use the brand colours'])
   expect(takeNotice(taken.run, 'w2').notice).toBeUndefined()
-  expect(boardFor(taken.run, 'w2').view.news.map(entry => entry.kind)).toEqual(['note'])
+  expect(boardFor(taken.run, 'w2', NOW).view.news.map(entry => entry.kind)).toEqual(['note'])
 })
 
 test('a stopped worker gives back its claimed tasks and the integration', () => {
@@ -312,9 +312,9 @@ test('a stopped worker gives back its claimed tasks and the integration', () => 
 test('notes and checks of one worker are news for the other workers only', () => {
   const noted = runOf(addNote(workingThree(), 'w1', 'The theme lives in theme.css', undefined, NOW))
   const checked = runOf(addCheck(noted, 'w1', { command: 'pnpm test', commit: 'abc1234', passed: true, output: '' }, NOW))
-  expect(boardFor(checked, 'w2').view.news.map(entry => entry.kind)).toEqual(['note', 'check'])
-  expect(boardFor(checked, 'w3').view.news.map(entry => entry.kind)).toEqual(['note', 'check'])
-  expect(boardFor(checked, 'w1').view.news).toHaveLength(0)
+  expect(boardFor(checked, 'w2', NOW).view.news.map(entry => entry.kind)).toEqual(['note', 'check'])
+  expect(boardFor(checked, 'w3', NOW).view.news.map(entry => entry.kind)).toEqual(['note', 'check'])
+  expect(boardFor(checked, 'w1', NOW).view.news).toHaveLength(0)
 })
 
 test('a worker adds a batch of tasks when it has seen the current task list', () => {
@@ -334,7 +334,7 @@ test('an add from a worker that has not seen the newest tasks fails and shows th
 
 test('after a board read the worker adds what is missing', () => {
   const run = runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }] }, NOW))
-  const read = boardFor(run, 'w2')
+  const read = boardFor(run, 'w2', NOW)
   const added = runOf(addTasks(read.run, 'w2', { seen: read.view.taskList, tasks: [{ title: 'Docs' }] }, NOW))
   expect(added.tasks.map(task => task.title)).toEqual(['Tokens', 'Docs'])
 })
@@ -353,7 +353,7 @@ test('claims and finished tasks do not change the task list version', () => {
 
 test('a new run has no shared context', () => {
   expect(fresh().context).toEqual([])
-  expect(boardFor(working(), 'w1').view.context).toEqual([])
+  expect(boardFor(working(), 'w1', NOW).view.context).toEqual([])
 })
 
 test('a shared entry keeps its kind, author, text, commit and files, and starts with no readers', () => {
@@ -364,7 +364,7 @@ test('a shared entry keeps its kind, author, text, commit and files, and starts 
 test('every worker sees the shared entries in its board read, newest first', () => {
   const first = runOf(shareEntry(working(), 'w1', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW))
   const second = runOf(shareEntry(first, 'w2', { kind: 'fail', text: 'A CSS filter inverts the images' }, NOW))
-  expect(boardFor(second, 'w1').view.context.map(entry => [entry.id, entry.by, entry.text])).toEqual([
+  expect(boardFor(second, 'w1', NOW).view.context.map(entry => [entry.id, entry.by, entry.text])).toEqual([
     [2, 'w2', 'A CSS filter inverts the images'],
     [1, 'w1', 'The theme lives in theme.css'],
   ])
@@ -372,21 +372,21 @@ test('every worker sees the shared entries in its board read, newest first', () 
 
 test('a board read shows an entry with its id, kind, author, text, commit, files and readers', () => {
   const shared = runOf(shareEntry(working(), 'w1', { kind: 'fact', text: 'The theme lives in theme.css', commit: 'def5678', files: ['src/theme.css'] }, NOW))
-  const [entry] = JSON.parse(JSON.stringify(boardFor(shared, 'w2').view.context)) as object[]
+  const [entry] = JSON.parse(JSON.stringify(boardFor(shared, 'w2', NOW).view.context)) as object[]
   expect(Object.keys(entry ?? {}).sort()).toEqual(['by', 'commit', 'files', 'id', 'kind', 'seenBy', 'text'])
 })
 
 test('a share is news for the other workers', () => {
   const shared = runOf(shareEntry(working(), 'w1', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW))
-  expect(boardFor(shared, 'w2').view.news.map(entry => [entry.kind, entry.text])).toEqual([['share', 'shared fact 1']])
-  expect(boardFor(shared, 'w1').view.news).toHaveLength(0)
+  expect(boardFor(shared, 'w2', NOW).view.news.map(entry => [entry.kind, entry.text])).toEqual([['share', 'shared fact 1']])
+  expect(boardFor(shared, 'w1', NOW).view.news).toHaveLength(0)
 })
 
 test('an entry that a newer entry replaces is not current', () => {
   const first = runOf(shareEntry(working(), 'w1', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW))
   const fixed = runOf(shareEntry(first, 'w2', { kind: 'fact', text: 'The theme lives in tokens.css', replaces: 1 }, NOW))
   expect(currentContext(fixed).map(entry => entry.id)).toEqual([2])
-  expect(boardFor(fixed, 'w1').view.context.map(entry => entry.replaces)).toEqual([1])
+  expect(boardFor(fixed, 'w1', NOW).view.context.map(entry => entry.replaces)).toEqual([1])
 })
 
 test('a share that replaces an entry that does not exist is refused', () => {
@@ -420,51 +420,63 @@ test('a stopped run refuses a share', () => {
 
 test('a board read adds its reader to seenBy of each entry one time, and does not add the author', () => {
   const shared = runOf(shareEntry(workingThree(), 'w1', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW))
-  const byAuthor = boardFor(shared, 'w1').run
-  const twice = boardFor(boardFor(byAuthor, 'w2').run, 'w2')
+  const byAuthor = boardFor(shared, 'w1', NOW).run
+  const twice = boardFor(boardFor(byAuthor, 'w2', NOW).run, 'w2', NOW)
   expect(twice.run.context?.[0]?.seenBy).toEqual(['w2'])
-  expect(boardFor(twice.run, 'w3').run.context?.[0]?.seenBy).toEqual(['w2', 'w3'])
+  expect(boardFor(twice.run, 'w3', NOW).run.context?.[0]?.seenBy).toEqual(['w2', 'w3'])
 })
 
 test('the context of any board reply counts its reader in seenBy', () => {
   const shared = runOf(shareEntry(working(), 'w1', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW))
-  const passed = passContext(shared, 'w2')
+  const passed = passContext(shared, 'w2', NOW)
   expect(passed.context[0]?.seenBy).toEqual(['w2'])
   expect(passed.run.context?.[0]?.seenBy).toEqual(['w2'])
 })
 
+test('a reply logs one delivered entry for each entry that it adds its reader to, and a later reply logs none', () => {
+  const shared = runOf(shareEntry(working(), 'w1', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW))
+  const read = passContext(passContext(shared, 'w2', NOW).run, 'w2', NOW).run
+  const delivered = read.log.filter(entry => entry.kind === 'delivered')
+  expect(delivered.map(({ at, by, worker, context }) => ({ at, by, worker, context }))).toEqual([{ at: NOW, by: 'you', worker: 'w2', context: 1 }])
+})
+
+test('a reply logs no delivered entry for an entry that its reader wrote', () => {
+  const shared = runOf(shareEntry(working(), 'w1', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW))
+  expect(boardFor(shared, 'w1', NOW).run.log.filter(entry => entry.kind === 'delivered')).toEqual([])
+})
+
 test('a read counts no reader for an entry that it does not show', () => {
-  const read = passContext(withFacts(21), 'w2').run
+  const read = passContext(withFacts(21), 'w2', NOW).run
   expect(read.context?.[0]?.seenBy).toEqual([])
   expect(read.context?.[1]?.seenBy).toEqual(['w2'])
 })
 
 test('a later reply carries only the entries that are new for its reader since its last reply', () => {
   const first = runOf(shareEntry(working(), 'w2', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW))
-  const read = boardFor(first, 'w1')
+  const read = boardFor(first, 'w1', NOW)
   expect(read.view.context.map(entry => entry.text)).toEqual(['The theme lives in theme.css'])
   const second = runOf(shareEntry(read.run, 'w2', { kind: 'fail', text: 'A CSS filter inverts the images' }, NOW))
-  expect(boardFor(second, 'w1').view.context.map(entry => [entry.id, entry.text, entry.seenBy])).toEqual([[2, 'A CSS filter inverts the images', ['w1']]])
+  expect(boardFor(second, 'w1', NOW).view.context.map(entry => [entry.id, entry.text, entry.seenBy])).toEqual([[2, 'A CSS filter inverts the images', ['w1']]])
 })
 
 test('a reply carries no entry when nothing is new for its reader', () => {
-  const read = passContext(runOf(shareEntry(working(), 'w2', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW)), 'w1').run
-  expect(passContext(read, 'w1').context).toEqual([])
-  expect(boardFor(read, 'w1').view.context).toEqual([])
+  const read = passContext(runOf(shareEntry(working(), 'w2', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW)), 'w1', NOW).run
+  expect(passContext(read, 'w1', NOW).context).toEqual([])
+  expect(boardFor(read, 'w1', NOW).view.context).toEqual([])
 })
 
 test('after its first reply, a reply carries no entry that its reader wrote', () => {
-  const read = passContext(working(), 'w1').run
+  const read = passContext(working(), 'w1', NOW).run
   const shared = runOf(shareEntry(read, 'w1', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW))
-  expect(passContext(shared, 'w1').context).toEqual([])
-  expect(passContext(shared, 'w2').context.map(entry => entry.text)).toEqual(['The theme lives in theme.css'])
+  expect(passContext(shared, 'w1', NOW).context).toEqual([])
+  expect(passContext(shared, 'w2', NOW).context.map(entry => entry.text)).toEqual(['The theme lives in theme.css'])
 })
 
 test('the first reply to an agent carries the current entries, 20 at most, its own entries too', () => {
-  const first = passContext(withFacts(25), 'w1')
+  const first = passContext(withFacts(25), 'w1', NOW)
   expect(first.context).toHaveLength(20)
   expect([first.context[0]?.text, first.context.at(-1)?.text]).toEqual(['Fact 25', 'Fact 6'])
-  expect(passContext(first.run, 'w1').context).toEqual([])
+  expect(passContext(first.run, 'w1', NOW).context).toEqual([])
 })
 
 test('a stopped worker changes nothing on the board, as its agent can still call: each change fails with WORKER_STOPPED', () => {
@@ -483,29 +495,29 @@ test('a worker that the person stopped, or a worker of a run that does not work,
 })
 
 test('a new agent of a worker gets the current entries again at its first reply', () => {
-  const read = passContext(runOf(shareEntry(working(), 'w2', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW)), 'w1').run
-  const again = passContext(runOf(restartWorker(read, 'w1', 'agent-9', NOW)), 'w1')
+  const read = passContext(runOf(shareEntry(working(), 'w2', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW)), 'w1', NOW).run
+  const again = passContext(runOf(restartWorker(read, 'w1', 'agent-9', NOW)), 'w1', NOW)
   expect(again.context.map(entry => [entry.text, entry.seenBy])).toEqual([['The theme lives in theme.css', ['w1']]])
-  expect(passContext(again.run, 'w1').context).toEqual([])
+  expect(passContext(again.run, 'w1', NOW).context).toEqual([])
 })
 
 test('an entry that the first reply left out is not carried later, and does not count the reader', () => {
-  const later = passContext(passContext(withFacts(21), 'w2').run, 'w2')
+  const later = passContext(passContext(withFacts(21), 'w2', NOW).run, 'w2', NOW)
   expect(later.context).toEqual([])
   expect(later.run.context?.[0]?.seenBy).toEqual([])
 })
 
 test('a correction is new for a reader that got the entry it replaces', () => {
-  const read = passContext(runOf(shareEntry(working(), 'w2', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW)), 'w1').run
+  const read = passContext(runOf(shareEntry(working(), 'w2', { kind: 'fact', text: 'The theme lives in theme.css' }, NOW)), 'w1', NOW).run
   const fixed = runOf(shareEntry(read, 'w2', { kind: 'fact', text: 'The theme lives in tokens.css', replaces: 1 }, NOW))
-  expect(passContext(fixed, 'w1').context.map(entry => [entry.id, entry.replaces, entry.text])).toEqual([[2, 1, 'The theme lives in tokens.css']])
+  expect(passContext(fixed, 'w1', NOW).context.map(entry => [entry.id, entry.replaces, entry.text])).toEqual([[2, 1, 'The theme lives in tokens.css']])
 })
 
 test('a worker of a run that meld 0.7.0 or older stored gets the current entries at its next reply, then only new ones', () => {
-  const first = passContext(STORED_BY_0_6_0, 'w1')
+  const first = passContext(STORED_BY_0_6_0, 'w1', NOW)
   expect(first.context.map(entry => [entry.text, entry.seenBy])).toEqual([['The theme lives in theme.css', ['w1']]])
   const shared = runOf(shareEntry(first.run, 'w2', { kind: 'fail', text: 'A CSS filter inverts the images' }, NOW))
-  expect(passContext(shared, 'w1').context.map(entry => entry.text)).toEqual(['A CSS filter inverts the images'])
+  expect(passContext(shared, 'w1', NOW).context.map(entry => entry.text)).toEqual(['A CSS filter inverts the images'])
 })
 
 test('a finished task shares its interfaces and what it left unfinished, with its commit', () => {
@@ -538,7 +550,7 @@ test('a run that meld 0.5.3 stored, with no context, takes a share and shows it'
 })
 
 test('a board read of a run that meld 0.5.3 stored has an empty context', () => {
-  expect(boardFor(storedByOldMeld(working()), 'w1').view.context).toEqual([])
+  expect(boardFor(storedByOldMeld(working()), 'w1', NOW).view.context).toEqual([])
 })
 
 test('a new task keeps its parent, size and needs', () => {
@@ -642,7 +654,7 @@ test('the tasks of a run that meld 0.6.0 stored get no ready time later', () => 
 })
 
 test('a board read of a run that meld 0.7.0 stored carries its current entries one time, and counts its reader', () => {
-  const read = boardFor(STORED_BY_0_7_0, 'w3')
+  const read = boardFor(STORED_BY_0_7_0, 'w3', NOW)
   expect(read.view.context.map(entry => [entry.id, entry.seenBy])).toEqual([
     [3, ['w1', 'w3']],
     [2, ['w1', 'w2']],
@@ -654,7 +666,7 @@ test('a board read of a run that meld 0.7.0 stored carries its current entries o
     [4, 'claimed'],
     [5, 'claimed'],
   ])
-  expect(boardFor(read.run, 'w3').view.context).toEqual([])
+  expect(boardFor(read.run, 'w3', NOW).view.context).toEqual([])
 })
 
 test('a split in a run that meld 0.7.0 stored needs the task list version of the run', () => {
@@ -673,7 +685,7 @@ test('a run that meld 0.7.0 stored nudges at once its S task over 30 calls, and 
 })
 
 test('a board read of a run that meld 0.6.0 stored shows its tasks and context', () => {
-  const view = boardFor(STORED_BY_0_6_0, 'w2').view
+  const view = boardFor(STORED_BY_0_6_0, 'w2', NOW).view
   expect(view.tasks.map(task => task.state)).toEqual(['done', 'claimed', 'open'])
   expect(view.context.map(entry => entry.text)).toEqual(['The theme lives in theme.css'])
 })
