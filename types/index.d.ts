@@ -7,7 +7,23 @@ export type WorkerState = 'starting' | 'working' | 'idle' | 'stopped'
 export type TaskState = 'open' | 'claimed' | 'done'
 /** The size of a task: S, M or L, with weights 1, 3 and 8. */
 export type TaskSize = 'S' | 'M' | 'L'
-export type EntryKind = 'task' | 'note' | 'check' | 'steer' | 'event' | 'share'
+/**
+ * The kinds of a log entry. The records of the metrics (by `you`): `worker` (a start or a new state of a worker),
+ * `merge` (one merge, at its end), `delivered` (a reply carried a context entry to a worker) and `host` (the machine slept).
+ */
+export type EntryKind = 'task' | 'note' | 'check' | 'steer' | 'event' | 'share' | 'worker' | 'merge' | 'delivered' | 'host'
+/** The state of a worker as its lane records it. A waiting worker has a reason. */
+export type LaneState = 'working' | 'idle' | 'waiting' | 'stopped'
+/** Why a worker waits: for a restart or an approval of meld, a merge, or its own background work. */
+export type WaitReason = 'restart' | 'approval' | 'merge' | 'background'
+/** Why an agent of a worker started: the start of the run, a new agent, the old agent in its session, a worker that joined. */
+export type StartReason = 'start' | 'restart' | 'resume' | 'join'
+/** Where the time of a worker goes: model calls, then its tool calls by class (see core/metrics.ts). */
+export type Activity = 'model' | 'tests' | 'builds' | 'app' | 'background' | 'tools' | 'board'
+/** Sums of milliseconds by activity. */
+export type ActivityTimes = Partial<Record<Activity, number>>
+/** Sums of tokens by kind. */
+export type TokenSums = { input: number; cacheWrite: number; cacheRead: number; output: number }
 export type ContextKind = 'fact' | 'fail' | 'interface'
 export type ErrorCode =
   | 'NOT_FOUND'
@@ -55,6 +71,18 @@ export type Worker = {
   context?: AgentContext
   /** When meld last gave the agent of this worker a new prompt in its own session. Absent for a new agent. */
   resumedAt?: number
+  /** The last sentence of the agent, at most 20 words, and when it said it. Absent until the agent writes text. */
+  said?: string
+  saidAt?: number
+  /** The time of the worker by activity, since the start of the run. */
+  times?: ActivityTimes
+  /** The tokens of the worker by kind. Absent for an agent that reports no usage. */
+  usage?: TokenSums
+  /** The largest context of an agent of this worker, and its model calls: the mean context is (input + cacheWrite + cacheRead) / steps. */
+  largestContext?: number
+  steps?: number
+  /** The fresh agents that meld started for this worker at CONTEXT_CAP. */
+  capStarts?: number
 }
 
 /** The tokens in the context of an agent, and the size of the window of its model. */
@@ -95,6 +123,14 @@ export type Task = {
   nudged?: boolean
   /** The task whose commit this task brings into the integration line: meld adds "integrate #N" when that merge conflicts. */
   integrates?: number
+  /** The context entries that its finish names as a help. */
+  used?: number[]
+  /** The time of its owners on it, by activity. */
+  times?: ActivityTimes
+  /** The tokens of its owners on it, by kind. */
+  usage?: TokenSums
+  /** At its finish: the commits of its lane whose author is another worker. */
+  taken?: number
 }
 
 /** What a finished task leaves for the tasks that need it: the contracts it made, and the work it did not do. */
@@ -113,6 +149,22 @@ export type Entry = {
   revision?: number
   commit?: string
   passed?: boolean
+  /** The task of a task entry (claim, release, finish, split), or of a merge. */
+  task?: number
+  /** The worker of a record: a `worker`, `merge` or `delivered` entry. */
+  worker?: WorkerId
+  /** A `worker` entry: the new state, and the reason of a wait. */
+  state?: LaneState
+  reason?: WaitReason
+  /** A `worker` entry for a start of an agent: why it started, and whether a task was ready for it. */
+  start?: StartReason
+  noTask?: boolean
+  /** A `merge` or `host` entry: when the merge or the sleep began. The entry is at its end. */
+  from?: number
+  /** A `merge` entry: the files of the merge. */
+  files?: string[]
+  /** A `delivered` entry: the id of the context entry. */
+  context?: number
 }
 
 /**
@@ -166,6 +218,8 @@ export type Run = {
   taskList: number
   /** The newest log entry when the main session last read the status view; absent before its first status read. */
   sessionSeen?: number
+  /** Where the run lives: the session state only, or a board file. Absent in a run that meld 0.10.1 or older stored. */
+  store?: 'session' | 'file'
 }
 
 export type Failure = { error: ErrorCode; message: string; taskList?: number; tasks?: Task[] }
@@ -218,8 +272,13 @@ export type PaneView = {
   agents: number
   model: string
   vcs: VcsChoice
-  /** The tasks whose children the progress shows; absent in a view that meld 0.6.0 stored. */
+  /** The parents that the person opened, and the parents that the person closed: the choice of the person wins over the parents that open and close themselves. Absent in a view that meld 0.6.0 stored. */
   open?: number[]
+  closed?: number[]
+  /** The header shows all of the request. */
+  showRequest?: boolean
+  /** The steer box of a ready run is open: the person asks for changes. */
+  asking?: boolean
 }
 
 declare module 'claude-code' {

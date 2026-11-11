@@ -14,7 +14,7 @@ const IDS: WorkerId[] = ['w1', 'w2']
 const CHANNEL = '/tmp/meld/channels/1.sock'
 const WINDOW = 200_000
 const USAGE = { input_tokens: 1000, cache_creation_input_tokens: 2000, cache_read_input_tokens: 30_000, output_tokens: 500, model: 'claude-opus-5-5' } as TurnUsage
-const STORED = { shape: 'run-4' }
+const STORED = { shape: 'run-5' }
 /** The offer of the worker type, as the engine checks it before it resumes an agent of that type. */
 const WORKER_OFFER = { agent: 'meld:worker', description: 'A meld worker.', source: 'plugin', provider: { plugin: 'meld', tier: 'user' as const } }
 const TYPED = { origin: { kind: 'composer' as const }, presentation: { isFullscreen: false, columns: 80 } }
@@ -199,7 +199,7 @@ test('the timer keeps the copy of the run when the channel does not answer the b
 test('without meld mcp, a command keeps the run in the session state, as meld 0.8 does', async ($, on) => {
   const written: string[] = []
   answerTheEngine(on, undefined)
-  on('state.get', ($, e) => ({ value: e.key === 'run' ? { value: { shape: 'run-4', value: working() }, version: 1 } : { value: undefined, version: 0 } }))
+  on('state.get', ($, e) => ({ value: e.key === 'run' ? { value: { shape: 'run-5', value: working() }, version: 1 } : { value: undefined, version: 0 } }))
   on('state.set', ($, e) => {
     written.push(`${e.key} ${String((e.value as { value?: Run } | undefined)?.value?.state)}`)
     return { value: { isSet: true, version: 2 } }
@@ -274,6 +274,48 @@ test('a model call of a subagent records the context of its worker, against the 
   for await (const chunk of stream) void chunk
   await stream.result
   expect(written.at(-1)?.workers[0]?.context).toEqual({ used: 33_000, size: WINDOW })
+})
+
+test('a subagent records the time of its tool calls and of its model calls by activity, in the write of its next model call', async ($, on) => {
+  const written: (Run | undefined)[] = []
+  const clock = answerTheEngine(on, undefined)
+  on('state.get', ($, e) => ({ value: e.key === 'run' ? { value: { ...STORED, value: working() }, version: 1 } : { value: undefined, version: 0 } }))
+  on('state.set', ($, e) => {
+    if (e.key === 'run') written.push((e.value as { value?: Run }).value)
+    return { value: { isSet: true, version: 2 } }
+  })
+  on('tool.call', { tool: 'Bash' }, async () => {
+    await clock.advance(500)
+    return { result: 'ok' }
+  })
+  on('turn.step', async function* ($, e) {
+    await clock.advance(300)
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage: USAGE }
+  })
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  await $.tool.call({ tool: 'Bash', command: 'bun test', agentId: 'agent-1' } as never)
+  const stream = $.turn.step({ turnId: 't1', index: 0, model: USAGE.model, messageCount: 3, agentId: 'agent-1' })
+  for await (const chunk of stream) void chunk
+  await stream.result
+  expect(written.at(-1)?.workers[0]?.times).toEqual({ tests: 500, model: 300 })
+})
+
+test('the answer of a model call of a subagent becomes the said of its worker', async ($, on) => {
+  const written: (Run | undefined)[] = []
+  answerTheEngine(on, undefined)
+  on('state.get', ($, e) => ({ value: e.key === 'run' ? { value: { ...STORED, value: working() }, version: 1 } : { value: undefined, version: 0 } }))
+  on('state.set', ($, e) => {
+    if (e.key === 'run') written.push((e.value as { value?: Run }).value)
+    return { value: { isSet: true, version: 2 } }
+  })
+  on('turn.step', async function* ($, e) {
+    return { turnId: e.turnId, index: e.index, answer: 'I claim #2. Then the tests.', toolUses: [], stopReason: 'end_turn' as const, usage: USAGE }
+  })
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  const stream = $.turn.step({ turnId: 't1', index: 0, model: USAGE.model, messageCount: 3, agentId: 'agent-1' })
+  for await (const chunk of stream) void chunk
+  await stream.result
+  expect(written.at(-1)?.workers[0]?.said).toBe('I claim #2.')
 })
 
 test('at the end of a turn, an idle worker with a small context gets the step in its own session, and no new agent', async ($, on) => {

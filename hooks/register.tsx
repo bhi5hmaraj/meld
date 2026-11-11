@@ -1,20 +1,21 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentStatus, HookFailure, Register } from 'claude-code'
 
-import { compactWorker, controlRun, countStep, guardCall, markWorker, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll, vcsVerdict } from '../core/actions'
+import { compactWorker, controlRun, countStep, guardCall, markWorker, noteTime, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll, timeCall, vcsVerdict } from '../core/actions'
 import { CONTEXT_CAP } from '../core/board'
 import { cleanFolders } from '../core/clean'
 import type { Action, BoardRead, Boards, BoardSummary, Committed } from '../core/remote-store'
+import { reportCommand } from '../core/report'
 import { resumeRun } from '../core/resume'
 import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL, TOOL_PREFIX, TOOL_SPECS, WORKER_SYSTEM } from '../core/contract'
 import type { AgentState, FactsStore, Files, Io, RunRecord, RunRecords, Spawned, Store } from '../core/ports'
-import { parseStart, WORKER_TYPE } from '../core/options'
+import { MAX_AGENTS, parseStart, WORKER_TYPE } from '../core/options'
 import { adoptedOf, BOARD_STORE_TOOLS, boardVerdict, copyFromChannel, noBoardWarning, problemOf, sessionRunner, sessionStore, storeNote, valueOf, withNote, workerOffer } from './board-store'
 import type { SessionBoard } from './board-store'
 import { DEFAULT_VIEW, paneTree } from './pane'
 
 // Change a shape tag when the fields of its value change: a value stored by an older version then reads as the initial value.
-const runRef = atom({ plugin: 'meld', key: 'run' } as const, null, { shape: 'run-4' })
+const runRef = atom({ plugin: 'meld', key: 'run' } as const, null, { shape: 'run-5' })
 const factsRef = atom({ plugin: 'meld', key: 'facts' } as const, null, { shape: 'facts-1' })
 const viewRef = atom({ plugin: 'meld', key: 'view' } as const, null, { shape: 'view-1' })
 const boardRef = atom({ plugin: 'meld', key: 'board' } as const, null, { shape: 'board-1' })
@@ -22,7 +23,9 @@ const PROCESS_TIMEOUT_MS = 120_000
 const FACTS_MS = 3000
 const ENDED_AGENT = new Set<AgentStatus>(['completed', 'failed', 'killed'])
 const START_KEY = 'start'
-const PRESS_KEYS = [START_KEY, ...STEER_PRESETS.map(preset => `preset-${preset.key}`)]
+/** The Start buttons on the cards of idle agents while tasks are ready: each starts the idle workers. */
+const START_WORKER_KEYS = Array.from({ length: MAX_AGENTS }, (_, index) => `start-w${index + 1}`)
+const PRESS_KEYS = [START_KEY, ...START_WORKER_KEYS, ...STEER_PRESETS.map(preset => `preset-${preset.key}`)]
 /** The longest reason that a refusal quotes from a failed hook. */
 const REASON_CHARS = 300
 
@@ -137,6 +140,7 @@ export const register: Register = on => {
     await $.command.register({ name: 'meld-discard', description: 'Stop the meld run and remove its workspaces', immediate: true })
     await $.command.register({ name: 'meld-add', description: 'Add a worker to the meld run', argumentHint: '[model | agent type | type@model]', immediate: true })
     await $.command.register({ name: 'meld-resume', description: 'List the meld runs of other sessions, or resume one', argumentHint: '[<board>]', immediate: true })
+    await $.command.register({ name: 'meld-report', description: 'Show the report of the meld run, of an archived run, or a table of the archived runs', argumentHint: '[<run id> | --runs]', immediate: true })
     // A timer runs outside every hook, so the engine would ask the person about each call of meld mcp. It reads the
     // board over the channel of meld mcp into the copy, and the facts from the copy.
     $.clock.every(FACTS_MS, () => {
@@ -169,7 +173,7 @@ export const register: Register = on => {
     ($, e, next) => next(e),
   )
 
-  on('command.run', { command: ['meld', 'meld-steer', 'meld-status', 'meld-stop', 'meld-clean', 'meld-deliver', 'meld-discard', 'meld-add', 'meld-resume'] }, async ($, e) => {
+  on('command.run', { command: ['meld', 'meld-steer', 'meld-status', 'meld-stop', 'meld-clean', 'meld-deliver', 'meld-discard', 'meld-add', 'meld-resume', 'meld-report'] }, async ($, e) => {
     const io: Io & Files & RunRecords = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
@@ -226,6 +230,7 @@ export const register: Register = on => {
     const control = COMMAND_CONTROLS[e.command as keyof typeof COMMAND_CONTROLS]
     if (control) return { text: await controlRun(io, control, args) }
     if (e.command === 'meld-clean') return { text: await cleanFolders(io, args) }
+    if (e.command === 'meld-report') return { text: await reportCommand(io, args) }
     if (e.command === 'meld-resume') {
       const boards: Boards | undefined = board.server
         ? {
@@ -358,8 +363,15 @@ export const register: Register = on => {
     return { deny }
   })
 
+  /** The guard of each tool call. Each call of a worker, the board tools too, counts its time by class: the next write of the worker holds it. */
   on('tool.call', async ($, e, next) => {
-    if (String(e.tool).startsWith(TOOL_PREFIX)) return next(e)
+    const timed = async () => {
+      const started = await $.clock.now()
+      const reply = await next(e)
+      timeCall(e, (await $.clock.now()) - started)
+      return reply
+    }
+    if (String(e.tool).startsWith(TOOL_PREFIX)) return timed()
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
@@ -403,7 +415,7 @@ export const register: Register = on => {
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
     }
     const deny = await guardCall(io, e)
-    return deny ? { deny } : next(e)
+    return deny ? { deny } : timed()
   }).catch(($, e, next) => {
     // The guard lets the call through when it fails, so a broken board does not stop every tool of the session. The debug log keeps the reason.
     $.ui.log(failedText('the guard of tool calls', next.error), { to: 'debug' })
@@ -411,10 +423,12 @@ export const register: Register = on => {
   })
 
 
-  /** Each model call of a worker adds its cost in input tokens at once: a worker does a task in one long turn. */
+  /** Each model call of a worker adds its cost in input tokens and its time at once: a worker does a task in one long turn. */
   on('turn.step', async function* ($, e, next) {
+    const started = await $.clock.now()
     const response = yield* next(e)
     if (e.agentId === undefined) return response
+    noteTime(e.agentId, 'model', (await $.clock.now()) - started)
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
@@ -458,7 +472,7 @@ export const register: Register = on => {
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
     }
     const window = await $.session.usage().then(usage => usage.context?.window, () => undefined)
-    await countStep(io, e.agentId, response.usage, window).catch(() => undefined)
+    await countStep(io, e.agentId, response.usage, window, response.answer).catch(() => undefined)
     return response
   })
 
@@ -639,6 +653,11 @@ export const register: Register = on => {
       command: (name, args) => $.command.run({ command: name, args }),
       toast: text => $.ui.toast(text),
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
+    }
+    if (START_WORKER_KEYS.includes(e.element)) {
+      const started = await restartIdleWorkers(io)
+      io.toast(started.length ? `meld: ${started.join(', ')} started again` : 'meld: no idle worker to start')
+      return { element: e.element }
     }
     const preset = STEER_PRESETS.find(one => `preset-${one.key}` === e.element)
     const view = (await read($, viewRef)) ?? DEFAULT_VIEW

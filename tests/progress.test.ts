@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { ownersOf, partsOf, percentLabel, percentOf, requestParts, requestPercent, SIZE_WEIGHT, topTasks, weightOf } from '../core/progress'
+import { leavesOf, partsOf, requestParts, SIZE_WEIGHT, topTasks, weightOf } from '../core/progress'
 import type { Task } from '../types'
 
 function task(id: number, fields: Partial<Task> = {}): Task {
@@ -39,35 +39,21 @@ test('a size weighs 1, 3 or 8, and a task with no size weighs as M', () => {
   expect(weightOf(task(1))).toBe(3)
 })
 
-test('a leaf is at 0 percent until a worker finishes it, and at 100 after that', () => {
-  const tasks = [task(1), task(2, { state: 'claimed', owner: 'w1' }), task(3, { state: 'done', owner: 'w1' })]
-  expect(tasks.map(one => percentOf(tasks, one))).toEqual([0, 0, 100])
+test('the done share of a parent of parents takes the share of each child, not the count of its leaves', () => {
+  expect(partsOf(DEEP, task(2, { parent: 1, size: 'L' })).done).toBe(0.5)
+  expect(rounded(partsOf(DEEP, task(1)).done)).toBe(rounded((8 * 0.5) / 9))
 })
 
-test('a parent is the size-weighted mean of its children', () => {
-  expect(rounded(percentOf(TREE, task(1, { size: 'L' })))).toBe(rounded(100 / 12))
+test('the parent state on the board does not change its done share', () => {
+  expect(rounded(partsOf(TREE, task(1, { size: 'L', state: 'done' })).done)).toBe(rounded(1 / 12))
 })
 
-test('a parent of parents takes the percent of each child, not the count of its leaves', () => {
-  expect(percentOf(DEEP, task(2, { parent: 1, size: 'L' }))).toBe(50)
-  expect(rounded(percentOf(DEEP, task(1)))).toBe(rounded((8 * 50) / 9))
+test('the leaves of a task are the tasks under it with no parts, or the task when it is a leaf', () => {
+  expect(leavesOf(DEEP, task(1)).map(one => one.id)).toEqual([4, 5, 6])
+  expect(leavesOf(TREE, task(5)).map(one => one.id)).toEqual([5])
 })
 
-test('the parent state on the board does not change its percent', () => {
-  expect(rounded(percentOf(TREE, task(1, { size: 'L', state: 'done' })))).toBe(rounded(100 / 12))
-})
-
-test('a parent is at 100 percent when all its children are done', () => {
-  const tasks = [task(1), task(2, { parent: 1, size: 'S', state: 'done' }), task(3, { parent: 1, size: 'L', state: 'done' }), task(4, { parent: 1, state: 'done' })]
-  expect(percentOf(tasks, task(1))).toBe(100)
-})
-
-test('the request is the size-weighted mean of the top-level tasks', () => {
-  expect(rounded(requestPercent(TREE))).toBe(rounded((8 * (100 / 12) + 100) / 12))
-})
-
-test('a request with no tasks is at 0 percent', () => {
-  expect(requestPercent([])).toBe(0)
+test('a request with no tasks has no parts', () => {
   expect(requestParts([])).toEqual({ done: 0, claimed: 0, open: 0 })
 })
 
@@ -90,25 +76,8 @@ test('the parts of the request add up the top-level tasks by their size', () => 
   expect(rounded(parts.open)).toBe(rounded((8 / 12) * (3 / 12) + 3 / 12))
 })
 
-test('the owners of a task are the workers that claim its leaves, each one time and in worker order', () => {
-  expect(ownersOf(DEEP, task(1))).toEqual(['w1', 'w3'])
-  expect(ownersOf(TREE, task(1, { size: 'L' }))).toEqual(['w2'])
-})
-
-test('a leaf that is done or open has no owner dots', () => {
-  expect(ownersOf(TREE, task(5, { size: 'S', state: 'done', owner: 'w3' }))).toEqual([])
-  expect(ownersOf(TREE, task(6, { needs: [1] }))).toEqual([])
-})
-
-test('a percent shows as the whole number at or below it, so 100% means that all is done', () => {
-  expect(percentLabel(100)).toBe('100%')
-  expect(percentLabel(99.9)).toBe('99%')
-  expect(percentLabel(100 * 0.29)).toBe('29%')
-  expect(percentLabel(0)).toBe('0%')
-})
-
 test('a task that meld 0.6.0 stored, with no size and no parent, is a top-level M task', () => {
   const stored = [{ id: 1, title: 'Theme tokens', detail: '', state: 'done', owner: 'w1', version: 3, commit: 'def5678', summary: 'Tokens added' }, { id: 2, title: 'Toggle', detail: '', state: 'open', version: 1 }] as Task[]
   expect(topTasks(stored).map(one => one.id)).toEqual([1, 2])
-  expect(requestPercent(stored)).toBe(50)
+  expect(requestParts(stored).done).toBe(0.5)
 })

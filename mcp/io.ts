@@ -13,6 +13,7 @@ export function mcpIo(boards: SqliteBoards, board: string, acp?: Runner): Io {
   const forPlugin = (kind: 'send' | 'toast', agent: string, text: string) => boards.addAction({ board, kind, agent, text, at: Date.now() })
   return {
     ...boards.board(board),
+    store: 'file',
     readFacts: async () => null,
     writeFacts: async () => undefined,
     ...bunCodeHost,

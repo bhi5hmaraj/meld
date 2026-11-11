@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
 import { serveTool } from '../core/actions'
-import { addNote, addTasks, bindWorker, claimTask, finishTask, isFailure, setWorkerState, startRun } from '../core/board'
+import { addNote, addTasks, bindWorker, claimTask, finishTask, isFailure, isQuiet, passContext, setWorkerState, shareEntry, startRun } from '../core/board'
 import { TOOL } from '../core/contract'
 import type { Change, Run, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
@@ -59,10 +59,38 @@ test('a status read gives the log entries since the last status read of the main
   const io = new FakeIo()
   io.current = planned()
   const first = (await status(io)).log as { text: string }[]
-  expect(first.map(entry => entry.text)).toEqual(io.current.log.map(entry => entry.text))
+  expect(first.map(entry => entry.text)).toEqual(io.current.log.filter(entry => !isQuiet(entry)).map(entry => entry.text))
   io.current = runOf(addNote(io.current as Run, 'w1', 'The tokens are in theme.ts', undefined, NOW))
   expect(((await status(io)).log as { text: string }[]).map(entry => entry.text)).toEqual(['The tokens are in theme.ts'])
   expect((await status(io)).log).toEqual([])
+})
+
+test('the status view and the full board of the main session leave out the delivered entries', async () => {
+  const io = new FakeIo()
+  io.current = passContext(runOf(shareEntry(planned(), 'w1', { kind: 'fact', text: 'The tokens are in theme.ts' }, NOW)), 'w2', NOW).run
+  expect(io.current.log.some(entry => entry.kind === 'delivered')).toBe(true)
+  const full = JSON.parse((await serveTool(io, { tool: TOOL.board } as unknown as ToolCallInput)).result) as { log: { kind: string }[] }
+  const statusLog = (await status(io)).log as { kind: string }[]
+  expect(full.log.map(entry => entry.kind)).toContain('share')
+  expect([...full.log, ...statusLog].filter(entry => entry.kind === 'delivered')).toEqual([])
+  expect(statusLog.map(entry => entry.kind)).toContain('share')
+})
+
+test('the status view and the full board of the main session keep a start or a stop of a worker, and leave out its other changes of state', async () => {
+  const io = new FakeIo()
+  const run = planned()
+  const last = run.log.at(-1)?.id ?? 0
+  const lane: Run['log'] = [
+    { id: last + 1, at: NOW, by: 'you', kind: 'worker', worker: 'w1', state: 'idle', text: 'w1 is idle' },
+    { id: last + 2, at: NOW, by: 'you', kind: 'worker', worker: 'w1', state: 'working', start: 'restart', text: 'w1 starts again' },
+    { id: last + 3, at: NOW, by: 'you', kind: 'worker', worker: 'w2', state: 'stopped', text: 'stopped w2' },
+  ]
+  io.current = { ...run, log: [...run.log, ...lane] }
+  const full = JSON.parse((await serveTool(io, { tool: TOOL.board } as unknown as ToolCallInput)).result) as { log: Run['log'] }
+  const statusLog = (await status(io)).log as Run['log']
+  const laneTexts = (log: Run['log']) => log.filter(entry => entry.kind === 'worker' && entry.id > last).map(entry => entry.text)
+  expect(laneTexts(full.log)).toEqual(['w1 starts again', 'stopped w2'])
+  expect(laneTexts(statusLog)).toEqual(['w1 starts again', 'stopped w2'])
 })
 
 test('a board read with no view gives the main session the full board', async () => {
