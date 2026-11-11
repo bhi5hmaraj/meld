@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { addCheck, addTasks, bindWorker, boardFor, claimTask, declareFinal, finishTask, isFailure, refuseWorker, setActivity, setWorkerState, shareEntry, splitTask, startRun, takeIntegration } from '../core/board'
+import { addCheck, addIntegrateTask, addNote, addTasks, bindWorker, boardFor, claimTask, declareFinal, finishTask, isFailure, lineMerged, refuseWorker, setActivity, setWorkerState, shareEntry, splitTask, startRun, steer, takeIntegration } from '../core/board'
 import { agentColor } from '../hooks/drawing'
 import type { Change, ContextKind, Facts, Run, Task, Worker, WorkerId } from '../types'
 import { STORED_BY_0_6_0, STORED_BY_0_7_0 } from './stored-runs'
@@ -31,6 +31,18 @@ const SHARES: { by: WorkerId; kind: ContextKind; text: string }[] = [
 const CORRECTION = 'useTheme(): Theme gives the stored theme, light or dark.'
 const CLOSED_VIEW = { showDiff: false, task: '', agents: 2, model: 'inherit', vcs: 'auto' }
 const LONG_TITLE = 'Make the theme tokens, the toggle, the docs and the tests of the dark theme'
+const CLOCK = /^\d\d:\d\d$/
+const TALK = [
+  'Conversation',
+  'w2 \u2192 all',
+  'The tokens are in theme.css.',
+  'you \u2192 all',
+  'Keep each card short.',
+  'w1 \u2192 w3',
+  'Handover of #1: tokens() gives the colours.',
+  'Merged #1 into the line.',
+  '#2 conflicted. #6 integrates it.',
+]
 
 type Stored = { value: unknown; version: number }
 
@@ -209,6 +221,52 @@ test('Show diff opens the real diff of the result', async ($, on) => {
   expect((await second.find({ type: 'Code' }))?.props).toMatchObject({ format: 'diff', path: 'src/theme.css' })
   expect(await second.find({ type: 'Text', text: '1 more files.' })).toBeDefined()
   await second.unmount()
+})
+
+/** w2 notes, the person steers, w1 finishes #1 with a handover for #5 of w3, meld merges #1 and cannot merge #2. */
+function talkRun(): Run {
+  const minute = 60_000
+  const planned = runOf(addTasks(workingRun(3), 'w2', { seen: 1, tasks: [{ title: 'Dark toggle', needs: [1] }] }, NOW - 12 * minute))
+  const noted = runOf(addNote(planned, 'w2', 'The tokens are in theme.css.', undefined, NOW - 10 * minute))
+  const steered = runOf(steer(noted, 'Keep each card short.', NOW - 8 * minute))
+  const handed = runOf(finishTask(steered, 'w1', 1, 2, FULL, 'Tokens', NOW - 6 * minute, { interfaces: 'tokens() gives the colours.' }))
+  const merged = lineMerged(runOf(claimTask(handed, 'w3', 5, 1, NOW - 6 * minute)), 1, FULL, NOW - 5 * minute)
+  return runOf(addIntegrateTask(merged, 2, 'conflict in theme.css', NOW - 4 * minute))
+}
+
+test('the conversation shows the notes, the steers, the handovers from one agent to another, and the merges and conflicts of meld, oldest first, on every surface', async ($, on) => {
+  const state = new FakeState().load(talkRun(), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  for (const surface of ALL_SURFACES) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    const texts = textsOf(await ui.find({ key: 'sec-conversation' })).filter(text => !CLOCK.test(text))
+    expect(texts, surface).toEqual(TALK)
+    await ui.unmount()
+  }
+})
+
+test('each line of the conversation shows the hour and minute of its entry', async ($, on) => {
+  const state = new FakeState().load(talkRun(), null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(textsOf(await ui.find({ key: 'sec-conversation' })).filter(text => CLOCK.test(text))).toHaveLength(5)
+  await ui.unmount()
+})
+
+test('the conversation holds 100 words at most: the newest notes, each cut to 30 words', async ($, on) => {
+  const long = Array.from({ length: 20 }, (_, index) => `note ${index} ${'word '.repeat(40)}`)
+  const run = long.reduce((current, text, index) => runOf(addNote(current, 'w1', text, undefined, NOW + index)), workingRun(3))
+  const state = new FakeState().load(run, null)
+  on('clock.now', () => ({ value: NOW + 20 }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const block = await ui.find({ key: 'sec-conversation' })
+  expect(wordsOf(block)).toBeLessThanOrEqual(WORD_LIMIT)
+  expect(textsOf(block).some(text => text.startsWith('note 19 '))).toBe(true)
+  expect(textsOf(block).some(text => text.startsWith('note 0 '))).toBe(false)
+  await ui.unmount()
 })
 
 test('Ask for changes on a ready run opens the steer box', async ($, on) => {

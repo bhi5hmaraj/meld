@@ -2,7 +2,7 @@ import type { ElementTable, RenderSurface } from 'claude-code'
 
 import type { Activity, AgentSpec, ContextEntry, ContextKind, Facts, PaneView, ResultFacts, Run, RunState, Task, Worker, WorkerId } from '../types'
 import { deliver, discard, LEADING_CD, stopAll } from '../core/actions'
-import { currentContext, NOT_STARTED, saidOf } from '../core/board'
+import { ancestorsOf, currentContext, NOT_STARTED, saidOf } from '../core/board'
 import { activityOf } from '../core/metrics'
 import { STEER_PRESETS } from '../core/contract'
 import { agentColor, BAR_HEIGHT, BAR_WIDTH, barCells, partsBarSvg, STATUS } from './drawing'
@@ -15,7 +15,7 @@ import type { Io } from '../core/ports'
 import { MAX_AGENTS, MODELS, WORKER_TYPE } from '../core/options'
 import { leavesOf, requestParts, topTasks } from '../core/progress'
 import type { Parts } from '../core/progress'
-import { childrenOf, claimable, waitsFor } from '../core/tasks'
+import { childrenOf, claimable, taskOf, waitsFor } from '../core/tasks'
 
 export const PANE = 'meld'
 export const DEFAULT_VIEW: PaneView = { showDiff: false, task: '', agents: 2, model: 'inherit', vcs: 'auto' }
@@ -65,6 +65,11 @@ const ROW_INDENT = 2
 const TITLE_WORDS = 8
 /** The words of the rows: the plan block holds 100 words with its heading and the count of the rows left out. */
 const ROW_WORDS = 90
+/** The conversation block holds 100 words with its heading; a message shows its first 30. */
+const TALK_BLOCK_WORDS = 100
+const TALK_WORDS = 30
+/** The arrow from the author of a message to its readers. */
+const ARROW = String.fromCharCode(0x2192)
 /** A ready task that waits longer than this while a worker is idle shows in the warning colour. */
 const READY_WARN_MS = 300_000
 /** The characters of the request that the header shows before a press: two lines. */
@@ -104,7 +109,9 @@ export function paneTree(input: PaneInput) {
     <Box flexDirection="column" gap="lg">
       {headerSection(input, run)}
       {refusedSection(input, run)}
-      {working ? [agentsSection(input, run), learningsSection(input, run), progressSection(input, run)] : reportSections(input, run, facts)}
+      {working
+        ? [agentsSection(input, run), conversationSection(input, run), learningsSection(input, run), progressSection(input, run)]
+        : reportSections(input, run, facts)}
       {(working || (run.state === 'ready' && input.view.asking)) && steerSection(input, run)}
     </Box>
   )
@@ -535,6 +542,69 @@ function reportSections(input: PaneInput, run: Run, facts: Facts | null) {
       {row(report.numbers)}
     </Box>,
   ]
+}
+
+/** A message of the conversation from one author to others, or a quiet line of meld when it has no author. */
+type Talk = { key: string; at: number; from?: string; to?: string; text: string }
+
+/** The notes, steers and handovers of the run, and the merges and conflicts of meld, oldest first. */
+function talksOf(run: Run): Talk[] {
+  const fromLog = run.log.flatMap((entry): Talk[] => {
+    const key = `talk-${entry.id}`
+    if (entry.kind === 'note') return [{ key, at: entry.at, from: entry.by, to: 'all', text: entry.text }]
+    if (entry.kind === 'steer') return [{ key, at: entry.at, from: 'you', to: 'all', text: entry.text }]
+    if (entry.kind === 'merge' && entry.task !== undefined) return [{ key, at: entry.at, text: `Merged #${entry.task} into the line.` }]
+    const finished = entry.kind === 'task' && entry.text.startsWith('finished ') ? taskOf(run.tasks, entry.task) : undefined
+    const handover = finished?.handover?.interfaces ?? finished?.handover?.unfinished
+    if (!finished || !handover) return []
+    const chain = ancestorsOf(run.tasks, finished.id)
+    const takers = run.tasks.filter(task => task.owner && task.owner !== entry.by && task.needs?.some(need => chain.includes(need))).map(task => task.owner)
+    return takers.length ? [{ key, at: entry.at, from: entry.by, to: [...new Set(takers)].join(', '), text: `Handover of #${finished.id}: ${handover}` }] : []
+  })
+  const conflicts = run.tasks.flatMap((task): Talk[] =>
+    task.integrates === undefined
+      ? []
+      : [{ key: `talk-task-${task.id}`, at: task.addedAt ?? 0, text: `#${task.integrates} conflicted. ${task.owner ? `${task.owner} integrates it as #${task.id}` : `#${task.id} integrates it`}.` }],
+  )
+  return [...fromLog, ...conflicts].sort((one, other) => one.at - other.at)
+}
+
+/** The newest messages and lines that fit the block, oldest first, each with the hour and minute of its entry. */
+function conversationSection(input: PaneInput, run: Run) {
+  const { Box, Text } = input.table
+  const shown: Talk[] = []
+  let words = 1
+  for (const talk of talksOf(run).reverse()) {
+    words += 1 + (talk.from ? 3 + wordCount(cutWords(talk.text, TALK_WORDS)) : wordCount(talk.text))
+    if (words > TALK_BLOCK_WORDS) break
+    shown.unshift(talk)
+  }
+  if (!shown.length) return undefined
+  return (
+    <Box key="sec-conversation" flexDirection="column" gap="xs">
+      <Text bold>Conversation</Text>
+      {shown.map(talk => (
+        <Box key={talk.key} flexDirection="row" gap="sm">
+          <Text dimColor>{clock(talk.at)}</Text>
+          {talk.from ? (
+            <Box flexDirection="column">
+              <Text color={talk.from === 'you' ? 'suggestion' : agentColor(run.workers.findIndex(worker => worker.id === talk.from)).light}>{`${talk.from} ${ARROW} ${talk.to}`}</Text>
+              <Text wrap="wrap">{cutWords(talk.text, TALK_WORDS)}</Text>
+            </Box>
+          ) : (
+            <Text dimColor wrap="wrap">
+              {talk.text}
+            </Text>
+          )}
+        </Box>
+      ))}
+    </Box>
+  )
+}
+
+function clock(at: number): string {
+  const time = new Date(at)
+  return `${String(time.getHours()).padStart(2, '0')}:${String(time.getMinutes()).padStart(2, '0')}`
 }
 
 /** One line of Learnings: the first sentence of an entry, and who used it, heeded it or how many got it. */
