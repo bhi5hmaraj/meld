@@ -534,6 +534,15 @@ test('the warning of the header says first that the machine slept', async ($, on
   await ui.unmount()
 })
 
+test('the warning of the header says that the permission check of meld does not run', async ($, on) => {
+  const state = new FakeState().load({ ...workingRun(2), unchecked: true }, null)
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: state.get(e.key) }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(textsOf(await ui.find({ key: 'warning' }))).toEqual(['The permission check of meld does not run: a hook of another plugin answers first. An agent can get an ask for git, and for a read of the board files.'])
+  await ui.unmount()
+})
+
 test('the warning of the header says that a run in the session state has no record', async ($, on) => {
   const state = new FakeState().load({ ...workingRun(2), store: 'session' }, null)
   on('clock.now', () => ({ value: NOW }))

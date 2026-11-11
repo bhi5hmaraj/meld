@@ -162,7 +162,6 @@ A thick border marks the parts of meld, and a dashed arrow a call of the board t
 - **Your last commit is the base.** Commit the changes that the agents need before the run.
 - **No dependencies in the workspaces.** The agents install them when their checks need them.
 - **A guard rail, not a sandbox.** meld refuses an edit tool outside the workspace of an agent, but a Bash command can write in other folders.
-- **Some restarts wait for your session.** An agent goes on to its next step at its own stop. An idle agent of another worker starts again at the end of a turn of your session ([#12](https://github.com/bhi5hmaraj/meld/issues/12)).
 - **More agents cost more.** The header shows the dollars of the run.
 - **An early access API.** The plugin API of Claude Code can change between releases.
 

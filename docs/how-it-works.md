@@ -6,6 +6,10 @@ This page gives the details that the [README](../README.md) leaves out. Two word
 
 Each agent starts as the hidden agent type `meld:worker`, in its own folder. With no `--model`, an agent uses the model of its agent type, and `meld:worker` uses the model of your session.
 
+A `meld:worker` starts with a short list of tools: the shell, the file tools and a tool search. The board tools and the web tools load when the agent searches for them. This keeps its first request small: in one session it went from 35,000 to 8,400 tokens, and to 11,100 with the board tools loaded. An agent reads that part again at each model call ([#6](https://github.com/bhi5hmaraj/meld/issues/6)).
+
+A `meld:worker` has no Skill tool, as the list of all skills was a third of its first request. At a start, meld lists your skills in `~/.claude/skills`, and the rules of each agent name them. An agent reads the `SKILL.md` of the skill that fits its task. It has no subagents and no tools of your other MCP servers. For an agent with all the tools of your session, give another type, for example `--agents general-purpose`.
+
 - **Claude agents** run as subagents of your session.
 - **Codex** runs through ACP with `npx -y @agentclientprotocol/codex-acp`, which needs Node and an OpenAI login. `meld mcp` runs it, so it needs Bun.
 - **Gemini and Cursor** run through ACP with `npx -y @google/gemini-cli --acp` and `agent acp`. Each needs its own login. Neither has a live check yet.
@@ -202,15 +206,17 @@ meld has three `tool.check` hooks. Claude Code runs the `tool.check` hooks of al
 
 - **The board check** allows the calls of meld to `meld mcp`, and refuses the calls of agents, of the main session and of other plugins. Without it, the other plugin or the mode of your session decides each call. A call of meld can wait for your answer or fail, and a call of an agent is not refused.
 - **The Agent check** approves each start and restart of an agent in auto mode, while a run that you started is live. Without it, auto mode refuses these starts, and the pane shows the reason under the header.
-- **The worker check** allows two kinds of calls of an agent. The first is `git -C` and `jj -R` in its own folder, for the commands of the rules. The second is a read of the board files: one search command (`rg`, `grep`, `jq`, `sed -n`, `head`, `tail`, `cat`, `wc` or `ls`) or a read tool, on paths in the folder of the board files and on no other path. Without it, Claude Code asks you for each such call, and a run with no person cannot commit or search its board.
+- **The worker check** allows two kinds of calls of an agent. The first is `git -C` and `jj -R` in its own folder, for the commands of the rules. The second is a read of the board files or of a skill in `~/.claude/skills`. It is one search command (`rg`, `grep`, `jq`, `sed -n`, `head`, `tail`, `cat`, `wc` or `ls`) or a read tool. Its paths are in these two folders and in no other place. Without it, Claude Code asks you for each such call, and a run with no person cannot commit or search its board.
 
 The edit guard is a `tool.call` hook, and a skip in `tool.check` does not stop it.
+
+meld sees when the worker check does not run. After three calls of agents in a row that the check did not see, the pane and the log of the run say so ([#9](https://github.com/bhi5hmaraj/meld/issues/9)).
 
 ## Restarts and compaction
 
 ### Restarts
 
-Claude Code ends an agent when the agent returns its result. At the end of each turn of your session, meld restarts an idle agent in the same folder when there is work for it:
+Claude Code ends an agent when the agent returns its result. At the end of each turn, meld restarts an idle agent in the same folder when there is work for it. This is a turn of your session or of an agent:
 
 - **A task is ready, and the agent claims no task.** meld restarts one agent for each ready task at most. An agent that works, claims no task and does not integrate counts for one of them: meld started it for a task, or it planned the tasks, and it claims a task next. The integrator does not count, as it takes no task, and an agent that Claude Code did not start yet does not count.
 - **The board has news that the agent did not read, and the agent claims a task that is not done.** A note, a share, a claim, a finished task or a check of another agent is news.
@@ -220,9 +226,9 @@ A restarted agent reads its rules at its first board read. meld reads the agent 
 
 Of the idle agents with no claim, meld starts first the agent that it started for open tasks the fewest times since its last claim. So an agent that stopped with no claim leaves the next start to another agent.
 
-A restart waits for the end of a turn of your session. One step does not wait. When an agent of the run is about to stop, meld looks for a step for its worker. With a step, and with room in its context (see the next section), the agent goes on in the same turn. With every task done and no integrator, this agent integrates.
+No restart waits for a turn of your session. When an agent of the run is about to stop, meld looks for a step for its worker. With a step, and with room in its context (see the next section), the agent goes on in the same turn. With as many starts for open tasks as an idle agent, this agent takes the open task, as it is there. With every task done and no integrator, this agent integrates.
 
-An idle agent of another worker still waits for a turn of your session, and so does a worker that needs a new agent ([#12](https://github.com/bhi5hmaraj/meld/issues/12)).
+When the agent stops, the end of its turn starts the idle agents that have work. Its own worker gets a new agent when it has work. So a run goes on in a session with no person ([#12](https://github.com/bhi5hmaraj/meld/issues/12)).
 
 ### A short session, then a new agent
 

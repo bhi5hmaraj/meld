@@ -1,14 +1,14 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentStatus, HookFailure, Register } from 'claude-code'
 
-import { compactWorker, controlRun, countStep, guardCall, markWorker, noteTime, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stepAtStop, stopAll, timeCall, workerVerdict } from '../core/actions'
+import { CHECKED_TOOLS, compactWorker, controlRun, countStep, guardCall, markWorker, noteTime, refreshFacts, restartIdleWorkers, sawCheck, serveTool, spawnVerdict, startFromView, startRun, steerRun, stepAtStop, stopAll, timeCall, workerVerdict } from '../core/actions'
 import { CONTEXT_CAP } from '../core/board'
 import { cleanFolders } from '../core/clean'
 import type { Action, Boards, BoardSummary, Committed } from '../core/remote-store'
 import { reportCommand } from '../core/report'
 import { resumeRun } from '../core/resume'
 import { viewRoot } from '../core/view'
-import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL, TOOL_PREFIX, TOOL_SPECS, WORKER_SYSTEM } from '../core/contract'
+import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL, TOOL_PREFIX, TOOL_SPECS, WORKER_SYSTEM, WORKER_TOOLS } from '../core/contract'
 import type { AgentState, Clock, FactsStore, Files, Io, RunRecord, RunRecords, Spawned, Store } from '../core/ports'
 import { MAX_AGENTS, parseStart, WORKER_TYPE } from '../core/options'
 import { adoptedOf, BOARD_STORE_TOOLS, boardVerdict, connectBoard, copyFromChannel, noBoardWarning, readRow, sessionRunner, sessionStore, storeNote, valueOf, withNote, workerOffer } from './board-store'
@@ -126,7 +126,7 @@ export const register: Register = on => {
     }
     for (const spec of TOOL_SPECS) await $.tool.register(spec)
     await $.agent
-      .register({ name: 'worker', description: 'A meld worker. meld starts it for a run; never start it yourself.', prompt: WORKER_SYSTEM, autoCompactWindow: CONTEXT_CAP })
+      .register({ name: 'worker', description: 'A meld worker. meld starts it for a run; never start it yourself.', prompt: WORKER_SYSTEM, autoCompactWindow: CONTEXT_CAP, tools: WORKER_TOOLS })
       .catch(() => $.ui.toast('meld: the meld:worker agent type did not register; use --agents with another type.'))
     await $.command.register({ name: 'meld', description: 'Start several agents on one task, each in its own workspace', argumentHint: '[--agents 3] [--model sonnet] [--vcs jj] <task>' })
     await $.command.register({ name: 'meld-steer', description: 'Give every meld worker a new instruction', argumentHint: '<instruction>', immediate: true })
@@ -160,11 +160,12 @@ export const register: Register = on => {
     decision: 'deny',
   }))
 
-  // A worker runs git -C or jj -R in its own folder, and searches the files of its board: see workerVerdict.
-  on('tool.check', { tool: ['Bash', 'Read', 'Grep', 'Glob'] }, async ($, e, next) => {
+  // A worker runs git -C or jj -R in its own folder, and reads the files of its board and the skills of the person: see workerVerdict.
+  on('tool.check', { tool: CHECKED_TOOLS }, async ($, e, next) => {
+    if (e.agentId !== undefined) sawCheck()
     const run = await read($, runRef)
-    const root = run ? viewRoot({ store: board.server ? 'file' : 'session' }, run) : undefined
-    return workerVerdict(await next(e), { agentId: e.agentId, tool: String(e.tool), input: e.input }, run, root)
+    const roots = run ? [viewRoot({ store: board.server ? 'file' : 'session' }, run), run.skills?.folder].flatMap(root => (root ? [root] : [])) : []
+    return workerVerdict(await next(e), { agentId: e.agentId, tool: String(e.tool), input: e.input }, run, roots)
   }).catch(($, e, next) => next(e))
 
   // A worker spawn is an Agent call that meld raises, and auto mode cannot link it to the person: see spawnVerdict.
@@ -570,7 +571,7 @@ export const register: Register = on => {
     }
     const completed = await next(e)
     await markWorker(io, e.agentId, 'idle')
-    if (e.agentId === undefined) await restartIdleWorkers(io)
+    await restartIdleWorkers(io)
     const actions = board.server ? await $.mcp.call(board.server, 'take_actions', { board: board.id }).then(result => valueOf<{ actions: Action[] }>(result).actions, () => []) : []
     for (const action of actions) {
       if (action.kind === 'toast') $.ui.toast(action.text)

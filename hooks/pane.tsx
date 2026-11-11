@@ -173,10 +173,17 @@ function headerSection(input: PaneInput, run: Run) {
   )
 }
 
-/** The most important warning of the run, one line: the machine slept, or the run has no board file. The card of an idle agent names a ready task. */
+/** The most important warning of the run, one line: the machine slept, the run has no board file, or the permission check of meld does not run. The card of an idle agent names a ready task. */
 function runWarning(input: PaneInput, run: Run) {
   const asleepMs = efficiencyOf(run, input.now).asleepMs
-  const text = asleepMs > 0 ? `The machine slept for ${Math.round(asleepMs / 60_000)} minutes. Nothing ran in that time.` : run.store === 'session' ? 'This run lives in the session state. It has no record, and no other session can resume it.' : undefined
+  const text =
+    asleepMs > 0
+      ? `The machine slept for ${Math.round(asleepMs / 60_000)} minutes. Nothing ran in that time.`
+      : run.store === 'session'
+        ? 'This run lives in the session state. It has no record, and no other session can resume it.'
+        : run.unchecked
+          ? 'The permission check of meld does not run: a hook of another plugin answers first. An agent can get an ask for git, and for a read of the board files.'
+          : undefined
   const { Box, Text } = input.table
   return text ? (
     <Box key="warning">

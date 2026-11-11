@@ -126,7 +126,7 @@ async function startAlone(io: Io, cwd: string, options: StartOptions): Promise<C
   if ('error' in prepared) return { text: `meld could not make the workspaces: ${prepared.error}` }
   const workspaces = prepared.workspaces
   const workers = ids.map((wid, index) => ({ id: wid, agent: options.agents[index] ?? { type: 'meld:worker' }, path: workspaces[index]?.path ?? '', ref: workspaces[index]?.ref ?? '' }))
-  const run = board.startRun({ id, request, repo, base, vcs: kind, now, costAtStart: await io.cost(), store: io.store, workers })
+  const run = board.startRun({ id, request, repo, base, vcs: kind, now, costAtStart: await io.cost(), store: io.store, skills: await skillsOf(io, repo), workers })
   await io.write(() => run)
   await io.writeFacts(null)
   void io.openPane(false)
@@ -638,6 +638,35 @@ async function resumed(io: Store & Clock & Runner, run: Run, worker: Worker, ste
  * A deny reason for a tool call of a worker, or undefined; records the call as the worker's activity. A hand-back ends
  * the turn of the agent: its worker is idle at once, as meld does not see the end of a turn that a restart started.
  */
+/** The most skills that the rules of a worker name. */
+const SKILLS_NAMED = 40
+
+/**
+ * The skills of the person on this machine: their folder and their names, or undefined when there is none. meld lists
+ * them, as the host lets an agent read a file outside the folders of the session, and not list a folder there.
+ */
+async function skillsOf(io: CodeHost, cwd: string): Promise<Run['skills']> {
+  const home = (await command(io, cwd, ['printenv', 'HOME'])).out
+  if (!home) return undefined
+  const folder = `${home}/.claude/skills`
+  const files = (await command(io, cwd, ['find', '-L', folder, '-maxdepth', '2', '-name', 'SKILL.md'])).out.split('\n').filter(Boolean)
+  const names = files.map(file => file.split('/').at(-2) ?? '').filter(Boolean).sort().slice(0, SKILLS_NAMED)
+  return names.length ? { folder, names } : undefined
+}
+
+/** The tools of a worker whose calls the permission check of meld sees (see workerVerdict). */
+export const CHECKED_TOOLS = ['Bash', 'Read', 'Grep', 'Glob']
+
+/** This many calls of workers in a row with no permission check of meld: a hook of another plugin answers before it. */
+const UNCHECKED_LIMIT = 3
+
+let unchecked = 0
+
+/** The permission check of meld saw a call of a worker. */
+export function sawCheck(): void {
+  unchecked = 0
+}
+
 export async function guardCall(io: Store & Clock & Runner, e: ToolCall): Promise<string | undefined> {
   if (e.agentId === undefined) return undefined
   if (String(e.tool) === HANDBACK_TOOL) {
@@ -650,6 +679,10 @@ export async function guardCall(io: Store & Clock & Runner, e: ToolCall): Promis
   const path = editedPath(e)
   const refusal = refusalOf(run, worker, path ? [path] : [])
   if (refusal) return refusal
+  if (CHECKED_TOOLS.includes(String(e.tool)) && !run.unchecked && ++unchecked >= UNCHECKED_LIMIT) {
+    const now = await io.now()
+    await writeRunOf(io, run.id, current => board.markUnchecked(current, now))
+  }
   await recordCall(io, worker, describeCall(e))
   return undefined
 }
@@ -831,9 +864,10 @@ const VIEW_READERS: Readonly<Record<string, { flags: RegExp; word?: (word: strin
 }
 
 /**
- * The verdict on a read of the board files by a worker: one search command of Bash, or a read tool, on paths under the
- * root of the files and on no other path. The engine asks a person for a read outside the folders of the session, and
- * with no person the agents could not search the board. Every other verdict stands.
+ * The verdict on a read by a worker of the files that meld gives it: the files of its board, and the skills of the
+ * person. It is one search command of Bash, or a read tool, on paths under `roots` and on no other path. The engine asks
+ * a person for a read outside the folders of the session, and with no person the agents could not search the board.
+ * Every other verdict stands.
  */
 export function viewVerdict<V extends { decision: string }>(
   verdict: V,
@@ -841,30 +875,30 @@ export function viewVerdict<V extends { decision: string }>(
   tool: string,
   input: unknown,
   run: Run | null,
-  root: string | undefined,
+  roots: readonly string[],
 ): V | { decision: 'allow'; reason: string } {
-  const worker = verdict.decision === 'ask' && agentId && run && root && LIVE_STATES.has(run.state) ? board.workerOf(run, agentId) : undefined
-  return worker && root && readsView(tool, (input ?? {}) as Record<string, unknown>, root) ? { decision: 'allow', reason: VIEW_APPROVAL } : verdict
+  const worker = verdict.decision === 'ask' && agentId && run && roots.length && LIVE_STATES.has(run.state) ? board.workerOf(run, agentId) : undefined
+  return worker && readsView(tool, (input ?? {}) as Record<string, unknown>, roots) ? { decision: 'allow', reason: VIEW_APPROVAL } : verdict
 }
 
-function readsView(tool: string, input: Record<string, unknown>, root: string): boolean {
-  if (tool === 'Bash') return isViewRead(shellWords(String(input.command ?? '')), root)
+function readsView(tool: string, input: Record<string, unknown>, roots: readonly string[]): boolean {
+  if (tool === 'Bash') return isViewRead(shellWords(String(input.command ?? '')), roots)
   const path = input[READ_TOOL_PATHS[tool] ?? '']
-  return typeof path === 'string' && isUnder(path, root)
+  return typeof path === 'string' && isUnder(path, roots)
 }
 
-function isUnder(path: string, root: string): boolean {
-  return !path.split('/').includes('..') && (path === root || path.startsWith(`${root}/`))
+function isUnder(path: string, roots: readonly string[]): boolean {
+  return !path.split('/').includes('..') && roots.some(root => path === root || path.startsWith(`${root}/`))
 }
 
-function isViewRead(words: string[] | undefined, root: string): boolean {
+function isViewRead(words: string[] | undefined, roots: readonly string[]): boolean {
   const reader = words ? VIEW_READERS[words[0] ?? ''] : undefined
   if (!words || !reader) return false
   const given = words.slice(1)
   const flags = given.filter(word => word.startsWith('-'))
   const others = given.filter(word => !word.startsWith('-') && !/^\d+$/.test(word))
-  const paths = others.filter(word => isUnder(word, root))
-  const free = others.filter(word => !isUnder(word, root))
+  const paths = others.filter(word => isUnder(word, roots))
+  const free = others.filter(word => !isUnder(word, roots))
   if (!flags.every(flag => reader.flags.test(flag)) || (reader.needs && !flags.includes(reader.needs))) return false
   return paths.length > 0 && free.length <= (reader.word ? 1 : 0) && free.every(word => reader.word?.(word)) && others.indexOf(free[0] ?? '') <= 0
 }
@@ -877,11 +911,11 @@ export function workerVerdict<V extends { decision: string }>(
   verdict: V,
   call: { agentId?: string; tool: string; input: unknown },
   run: Run | null,
-  root: string | undefined,
+  roots: readonly string[],
 ): V | { decision: 'allow'; reason: string } {
   const command = call.tool === 'Bash' ? String(((call.input ?? {}) as { command?: unknown }).command ?? '') : undefined
   const own = command === undefined ? verdict : vcsVerdict(verdict, call.agentId, command, run)
-  return own.decision === 'ask' ? viewVerdict(verdict, call.agentId, call.tool, call.input, run, root) : own
+  return own.decision === 'ask' ? viewVerdict(verdict, call.agentId, call.tool, call.input, run, roots) : own
 }
 
 /** Characters that the shell reads as syntax outside quotes: operators, redirects, substitutions, escapes, globs and comments. */
@@ -1004,8 +1038,9 @@ type Restart = { worker: Worker; step: string; offer?: true }
  * worker idle, the owners of unfinished tasks, then idle workers for open tasks, else the lead to plan, steer or integrate. Each beat that starts a worker counts; a finished task or a steer resets
  * the count, so after three beats that finish nothing meld stops and tells the person once. One beat runs at a time.
  *
- * Only hooks that no worker needs call it: an agent skips the hook that started it, and an agent that a clock or a
- * button closure starts skips every meld hook, the board and the edit guard included.
+ * The end of each turn calls it, the turn of a worker too, so a restart waits for no turn of the main session: every
+ * hook hears the end of the turn of an agent, also of an agent that this hook started. No clock calls it: an agent that
+ * a clock or a button closure starts skips every meld hook, the board and the edit guard included.
  *
  * Each worker has one host that starts it again, so no worker gets two agents: the main session starts the workers of
  * its engine, and meld mcp starts its ACP workers (`owns`).
@@ -1049,9 +1084,9 @@ export async function stepAtStop(io: Store & Clock, agentId: string): Promise<st
     if (!next) return undefined
     let goesOn = false
     await writeRunOf(io, run.id, current => {
-      const resumed = board.resumeWorker(board.countBeat(current, offeredIn([next])), worker.id, now)
-      goesOn = !board.isFailure(resumed)
-      return board.isFailure(resumed) ? current : resumed.run
+      const resumed = current.nudges < NUDGE_LIMIT ? board.resumeWorker(board.countBeat(current, offeredIn([next])), worker.id, now) : undefined
+      goesOn = resumed !== undefined && !board.isFailure(resumed)
+      return resumed === undefined || board.isFailure(resumed) ? current : resumed.run
     })
     return goesOn ? wakeText(next.step) : undefined
   } finally {
@@ -1088,8 +1123,8 @@ function everyWorker(): boolean {
  * Of the idle workers, those with the fewest offers go first (Worker.offers): a worker that meld started for the open
  * tasks, and that stopped with no claim, has left them to the others.
  *
- * `stopping` is the worker whose agent is about to stop (see stepAtStop). With no integrator yet, it leads: its agent
- * can go on at once, and the agent of another worker waits for a turn of the main session.
+ * `stopping` is the worker whose agent is about to stop (see stepAtStop). Its agent is there and can go on at once,
+ * so with as many offers as an idle worker it takes the open task, and with no integrator yet it leads.
  */
 function restartsFor(run: Run, stopping?: WorkerId): Restart[] {
   const live = run.workers.filter(worker => worker.state !== 'stopped')
@@ -1100,7 +1135,7 @@ function restartsFor(run: Run, stopping?: WorkerId): Restart[] {
   const pending = live.filter(worker => isPending(run, worker)).length
   const takers = idle
     .filter(worker => !claimsOf(run, worker).length)
-    .sort((one, other) => (one.offers ?? 0) - (other.offers ?? 0))
+    .sort((one, other) => (one.offers ?? 0) - (other.offers ?? 0) || Number(other.id === stopping) - Number(one.id === stopping))
     .slice(0, Math.max(0, open.length - pending))
   const restarts = [
     ...owners.map(worker => ({ worker, step: `Your task is not done: ${titles(claimsOf(run, worker))}. Go on with it, or release it with a note.` })),
