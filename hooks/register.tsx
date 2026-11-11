@@ -23,7 +23,9 @@ const PROCESS_TIMEOUT_MS = 120_000
 const FACTS_MS = 3000
 const ENDED_AGENT = new Set<AgentStatus>(['completed', 'failed', 'killed'])
 const START_KEY = 'start'
-const PRESS_KEYS = [START_KEY, ...STEER_PRESETS.map(preset => `preset-${preset.key}`)]
+/** The ui.press element that starts the idle workers while tasks are ready. */
+const START_IDLE_KEY = 'start-idle'
+const PRESS_KEYS = [START_KEY, START_IDLE_KEY, ...STEER_PRESETS.map(preset => `preset-${preset.key}`)]
 /** The longest reason that a refusal quotes from a failed hook. */
 const REASON_CHARS = 300
 
@@ -651,6 +653,11 @@ export const register: Register = on => {
       command: (name, args) => $.command.run({ command: name, args }),
       toast: text => $.ui.toast(text),
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
+    }
+    if (e.element === START_IDLE_KEY) {
+      const started = await restartIdleWorkers(io)
+      io.toast(started.length ? `meld: ${started.join(', ')} started again` : 'meld: no idle worker to start')
+      return { element: e.element }
     }
     const preset = STEER_PRESETS.find(one => `preset-${one.key}` === e.element)
     const view = (await read($, viewRef)) ?? DEFAULT_VIEW
