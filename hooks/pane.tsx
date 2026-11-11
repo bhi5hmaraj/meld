@@ -144,7 +144,7 @@ function headerSection(input: PaneInput, run: Run) {
             ● {STATE_WORD[run.state]}
           </Text>
           <Text dimColor>
-            {run.workers.length} agents{shared ? ` · ${shared}` : ''} · {ago(now - run.startedAt)} · {spent ?? `${compact(units)} cost units`}
+            {run.workers.length} agents{shared ? ` · ${shared}` : ''} · {ago(now - run.startedAt)} · {spent ?? `${tokenCount(units)} cost units`}
           </Text>
         </Box>
         <Box flexDirection="row" gap="sm">
@@ -182,13 +182,13 @@ function headerSection(input: PaneInput, run: Run) {
           {partsBar(input, 'all', requestParts(run.tasks), REQUEST_BAR, counts)}
         </Box>
       )}
-      {warningOf(input, run, progress)}
+      {runWarning(input, run, progress)}
     </Box>
   )
 }
 
 /** The most important warning of the run, one line: the machine slept, the run has no board file, or ready tasks wait while agents are idle. */
-function warningOf(input: PaneInput, run: Run, progress: Progress) {
+function runWarning(input: PaneInput, run: Run, progress: Progress) {
   const { Box, Text, Button } = input.table
   const line = (text: string) => (
     <Box key="warning">
@@ -206,12 +206,6 @@ function warningOf(input: PaneInput, run: Run, progress: Progress) {
       {`${counted(progress.readyNoAgent.now, 'task')} ready, ${counted(idle.length, 'agent')} idle for ${Math.round(idleMs / 60_000)} min`}
     </Button>
   )
-}
-
-/** A count of tokens in a few characters: 182k, 1.2M. */
-function compact(count: number): string {
-  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`
-  return count >= 1_000 ? `${Math.round(count / 1_000)}k` : String(count)
 }
 
 /** Why agents did not start, once per reason and in full: a lane has room for a few words. */
@@ -363,11 +357,6 @@ function plainWords(activity: string): string {
 function costLine(worker: Worker): string {
   const cost = worker.tokens || !isAcpSpec(worker.agent) ? `cost ${tokenCount(worker.tokens)} tokens` : 'cost not reported'
   return worker.context ? `context ${tokenCount(worker.context.used)} of ${tokenCount(CONTEXT_CAP)} cap, ${cost}` : cost
-}
-
-function tokenCount(count: number): string {
-  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`
-  return count >= 1000 ? `${Math.round(count / 1000)}k` : String(count)
 }
 
 /** The one warning of a card, the most urgent first. A stuck agent shows its last command as a clue. */
