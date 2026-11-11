@@ -3,6 +3,8 @@ import type { ElementTable, RenderSurface } from 'claude-code'
 import type { AgentSpec, ContextKind, Entry, Facts, LaneFacts, PaneView, ResultFacts, Run, RunState, Task, Worker, WorkerId, WorkerState } from '../types'
 import { deliver, discard, LEADING_CD, stopAll, stopOne } from '../core/actions'
 import { currentContext, NOT_STARTED } from '../core/board'
+import { sharedContextOf } from '../core/metrics'
+import type { SharedContext } from '../core/metrics'
 import { STEER_PRESETS } from '../core/contract'
 import { agentColor, BAR_HEIGHT, BAR_WIDTH, barCells, LANE_HEIGHT, LANE_WIDTH, laneAlt, laneGlyphs, laneSvg, partsBarSvg, ROW_BAR_WIDTH, STATUS } from './drawing'
 import { FLOW_CELLS, FLOW_HEIGHT, FLOW_LEGEND, FLOW_WIDTH, flowCells, flowSvg, partsIn, partWords } from './drawing'
@@ -36,8 +38,10 @@ const STATE_TONE: Record<RunState, string> = {
 const WORKER_TONE: Record<WorkerState, string> = { starting: 'warning', working: 'success', idle: 'inactive', stopped: 'error' }
 const KIND_SHAPE: Record<ContextKind, string> = { fact: '■', fail: '✕', interface: '◇' }
 const KIND_TONE: Record<ContextKind, string | undefined> = { fact: undefined, fail: 'error', interface: 'suggestion' }
+const KIND_ORDER: readonly ContextKind[] = ['fact', 'fail', 'interface']
 const CONTEXT_ROWS = 5
-const CONTEXT_WORDS = 12
+const CONTEXT_WORDS = 8
+const NAMED_WORKERS = 3
 const SLOW_MS = 120_000
 const STUCK_MS = 300_000
 const ACTIVITY_CHARS = 22
@@ -94,6 +98,7 @@ export function paneTree(input: PaneInput) {
       {progressSection(input, run)}
       {flowSection(input, run)}
       {contextSection(input, run)}
+      {contextEntriesSection(input, run)}
       {checksSection(input, run)}
       {run.final && resultSection(input, run, facts?.result)}
       {LIVE.has(run.state) && steerSection(input, run)}
@@ -402,26 +407,75 @@ function tokenCount(tokens: number): string {
   return tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : String(Math.round(tokens))
 }
 
-/** One line for each of the newest current entries. The cut is in words, so that five lines keep the block under 100 words. */
+/** The heading and the metrics of the shared context: whether the agents learn from each other. */
 function contextSection(input: PaneInput, run: Run) {
   const { Box, Text } = input.table
-  const entries = currentContext(run, CONTEXT_ROWS)
-  if (!entries.length) return undefined
+  if (!currentContext(run, 1).length) return undefined
   return (
     <Box key="sec-context" flexDirection="column" gap="xs">
       <Text bold>Shared context</Text>
-      {entries.map(entry => (
-        <Box key={`context-${entry.id}`} flexDirection="row" gap="sm">
-          <Text color={KIND_TONE[entry.kind]}>{KIND_SHAPE[entry.kind]}</Text>
-          <Text color={agentColor(run.workers.findIndex(worker => worker.id === entry.by)).light}>{entry.by}</Text>
-          <Text dimColor wrap="truncate-end">
-            {cutWords(entry.text, CONTEXT_WORDS)}
+      <Box key="context-metrics" flexDirection="row" gap="sm" flexWrap="wrap">
+        {contextMetrics(sharedContextOf(run, input.now)).map(metric => (
+          <Text key={metric} dimColor>
+            {metric}
           </Text>
-          <Text dimColor>{entry.seenBy.length} read</Text>
-        </Box>
-      ))}
+        ))}
+      </Box>
     </Box>
   )
+}
+
+/** The newest current entries, by kind: who shared each one, who got it and who used it. A block of its own, as five lines fill most of 100 words. */
+function contextEntriesSection(input: PaneInput, run: Run) {
+  const { Box, Text } = input.table
+  const entries = currentContext(run, CONTEXT_ROWS).sort((one, other) => KIND_ORDER.indexOf(one.kind) - KIND_ORDER.indexOf(other.kind))
+  if (!entries.length) return undefined
+  return (
+    <Box key="sec-context-entries" flexDirection="column" gap="xs">
+      {entries.map(entry => {
+        const users = usersOf(run, entry.id)
+        return (
+          <Box key={`context-${entry.id}`} flexDirection="row" gap="sm">
+            <Text color={KIND_TONE[entry.kind]}>{KIND_SHAPE[entry.kind]}</Text>
+            <Text color={agentColor(run.workers.findIndex(worker => worker.id === entry.by)).light}>{entry.by}</Text>
+            <Text dimColor wrap="truncate-end">
+              {cutWords(entry.text, CONTEXT_WORDS)}
+            </Text>
+            <Text dimColor>{`got ${workersText(entry.seenBy)}`}</Text>
+            {users.length > 0 && <Text>{`used by ${workersText(users)}`}</Text>}
+          </Box>
+        )
+      })}
+    </Box>
+  )
+}
+
+/** The workers whose finished tasks name the entry in used. */
+function usersOf(run: Run, id: number): WorkerId[] {
+  return [...new Set(run.tasks.flatMap(task => (task.state === 'done' && task.owner && task.used?.includes(id) ? [task.owner] : [])))]
+}
+
+/** A few workers by name; more as a count, so that a line stays short with eight agents. */
+function workersText(workers: readonly WorkerId[]): string {
+  if (!workers.length) return 'none'
+  return workers.length > NAMED_WORKERS ? `${workers.length} agents` : workers.join(' ')
+}
+
+/** The metrics of section 4.4 of the pane note, one short text each. */
+function contextMetrics(shared: SharedContext): string[] {
+  const { entries, all, delivered, deliveryMs, cited, received, failsHeeded, failsReceived, repeatedFails, perTask } = shared
+  return [
+    `${counted(all, 'entry', 'entries')}: ${counted(entries.fact, 'fact')}, ${counted(entries.fail, 'fail')}, ${counted(entries.interface, 'interface')}`,
+    ...(perTask ? [`${Number(perTask.toFixed(1))} for each done task`] : []),
+    `${delivered} of ${all} delivered${delivered ? `, median ${ago(deliveryMs)}` : ''}`,
+    `${cited} of ${counted(received, 'received entry', 'received entries')} cited`,
+    `${failsHeeded} of ${counted(failsReceived, 'fail')} heeded`,
+    `${counted(repeatedFails, 'fail')} repeated`,
+  ]
+}
+
+function counted(count: number, one: string, many = `${one}s`): string {
+  return `${count} ${count === 1 ? one : many}`
 }
 
 function checksSection(input: PaneInput, run: Run) {
