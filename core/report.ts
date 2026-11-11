@@ -1,4 +1,4 @@
-import type { ContextEntry, Entry, Run, Task } from '../types'
+import type { ContextEntry, Entry, Run, Task, WorkerId } from '../types'
 import { command } from './git'
 import { collaborationOf, efficiencyOf, lanesOf, progressOf, sharedContextOf, workloadOf } from './metrics'
 import type { LaneKind, LanePart } from './metrics'
@@ -63,13 +63,41 @@ export function sleepsOf(run: Run): TimeSpan[] {
   return run.log.filter(entry => entry.kind === 'host').map(entry => ({ from: entry.from ?? entry.at, to: entry.at }))
 }
 
+/** What one agent did: the titles of its finished tasks, and its counts of tasks, shared and used learnings. */
+export type AgentRecap = { worker: WorkerId; did: string; counts: string[] }
+
 /**
- * The report of section 3.5 of docs/design/pane-metrics-logs.md: a story in five sentences, the time, progress and cost
- * of the run, how the agents worked together, and one line for each worker.
+ * The report of section 3.5 of docs/design/pane-metrics-logs.md. The pane shows the story, the recap of each agent and
+ * the three numbers; /meld-report and the archive add the metric lines of the run, the team and each worker.
  */
-export type Report = { story: string; run: string[]; team: string[]; workers: string[] }
+export type Report = { story: string; agents: AgentRecap[]; numbers: string[]; run: string[]; team: string[]; workers: string[] }
 
 const MINUTE = 60_000
+/** Counts that open a sentence, in words. */
+const NUMBER_WORDS = ['No', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve']
+const STEERED = ['did not steer', 'steered once', 'steered twice']
+const RECAP_TITLES = 3
+const NO_TASKS = 'No tasks: the run ended before the agents planned.'
+
+function opening(count: number, word: string): string {
+  return `${NUMBER_WORDS[count] ?? count} ${count === 1 ? word : `${word}s`}`
+}
+
+function spoken(ms: number): string {
+  const all = Math.round(ms / MINUTE)
+  const hours = Math.floor(all / 60)
+  return hours ? `${plural(hours, 'hour')} ${plural(all % 60, 'minute')}` : plural(all, 'minute')
+}
+
+/** Minutes from the start at the start, a third, two thirds and the end of the window, over the cells of a lane. */
+export function flowAxis(window: TimeSpan, cells: number): string {
+  const line = Array<string>(cells).fill(' ')
+  for (const share of [0, 1 / 3, 2 / 3, 1]) {
+    const label = minutes(share * (window.to - window.from))
+    line.splice(Math.min(Math.round(share * cells), cells - label.length), label.length, ...label)
+  }
+  return line.join('')
+}
 
 function plural(count: number, word: string, many = `${word}s`): string {
   return `${count} ${count === 1 ? word : many}`
@@ -95,18 +123,35 @@ export function reportOf(run: Run, now: number, events: readonly Entry[] = run.l
   const together = collaborationOf(run, now, events)
   const context = sharedContextOf(run, now, events)
   const workload = workloadOf(run, now, events)
-  const top = workload.shares.reduce<(typeof workload.shares)[number] | undefined>((best, one) => (!best || one.share > best.share ? one : best), undefined)
+  const learnings = run.context ?? []
+  const usedByOthers = learnings.filter(entry => run.tasks.some(task => task.state === 'done' && task.owner !== entry.by && task.used?.includes(entry.id))).length
+  const aloneMinutes = Math.round(efficiency.aloneMs / MINUTE)
   const story = [
-    `${plural(run.workers.length, 'agent')} finished ${plural(progress.done, 'task')} in ${plural(Math.round(efficiency.runMs / MINUTE), 'minute')}.`,
-    `For ${Math.round(efficiency.aloneMs / MINUTE)} of those minutes, only one agent worked.`,
-    progress.done && top ? `${top.worker} did ${percent(top.share)} of the work.` : 'No agent finished a task.',
-    context.all ? `${context.delivered} of ${context.all} entries reached another agent.` : 'No agent shared an entry.',
-    `${efficiency.checks ? `${efficiency.failedChecks} of ${plural(efficiency.checks, 'check')} failed` : 'No check ran'}, and the person ${together.steers ? `steered ${plural(together.steers, 'time')}` : 'did not steer'}.`,
+    `${opening(run.workers.length, 'agent')} finished ${plural(progress.done, 'task')} in ${spoken(efficiency.runMs)}.`,
+    learnings.length ? `They shared ${plural(learnings.length, 'learning')}, and used ${usedByOthers} of them in later tasks.` : 'They shared no learning.',
+    ...(context.failsHeeded ? [`${opening(context.failsHeeded, 'fail')} stopped the others from the same dead end.`] : []),
+    ...(aloneMinutes ? [`For ${plural(aloneMinutes, 'minute')} only one agent worked.`] : []),
+    `You ${STEERED[together.steers] ?? `steered ${together.steers} times`}.`,
   ].join(' ')
   const all = progress.done + progress.working + progress.ready + progress.waiting
   const mix = workload.agentMix.map(kind => `${kind.type} did ${percent(kind.share)} of the work with rework ${kind.rework.toFixed(2)}`).join('; ')
   return {
-    story,
+    story: run.tasks.length ? story : NO_TASKS,
+    agents: run.workers.map((worker, index) => {
+      const done = run.tasks.filter(task => task.state === 'done' && task.owner === worker.id && task.commit).sort((one, other) => (other.doneAt ?? 0) - (one.doneAt ?? 0))
+      const titles = done.slice(0, RECAP_TITLES).map(task => task.title)
+      const more = done.length - titles.length
+      return {
+        worker: worker.id,
+        did: done.length ? `${titles.join(', ')}${more ? `, and ${more} more` : ''}.` : 'No finished task.',
+        counts: [plural(done.length, 'task'), `shared ${plural(learnings.filter(entry => entry.by === worker.id).length, 'learning')}`, `used ${context.workers[index]?.cited ?? 0}`],
+      }
+    }),
+    numbers: [
+      `${efficiency.parallelism.toFixed(1)} agents at work on average`,
+      `${percent(efficiency.runMs ? efficiency.aloneMs / efficiency.runMs : 0)} of the time one agent alone`,
+      progress.done ? `${tokenCount(efficiency.costPerTask)} tokens per task` : 'no finished task',
+    ],
     run: [
       `Time: ${minutes(efficiency.runMs)} of run, ${minutes(efficiency.workerMs)} of agent time, busy ${percent(efficiency.busyShare)}, parallelism ${efficiency.parallelism.toFixed(1)}, one agent alone ${minutes(efficiency.aloneMs)}, waiting on meld ${minutes(efficiency.waitingMs)}, asleep ${minutes(efficiency.asleepMs)}, idle restarts ${efficiency.idleRestarts}.`,
       `Progress: ${progress.done} of ${plural(all, 'task')} done, weight ${progress.doneWeight} of ${progress.allWeight}, ready with no agent ${minutes(progress.readyNoAgent.ms)}, scope growth ${progress.scopeGrowth.toFixed(2)}, critical path left ${plural(progress.criticalPath.tasks, 'task')}, ${progress.blocked.count} blocked, task time ${minutes(progress.taskMs)}.`,
@@ -130,14 +175,16 @@ export function endOf(run: Run): number {
   return run.endedAt ?? run.log.at(-1)?.at ?? run.startedAt
 }
 
-/** The report as text, for /meld-report and the archive: the story, the lanes of the whole run in cells, and the metrics. */
+/** The report as text, for /meld-report and the archive: the story, what each agent did, the lanes of the whole run in cells, and the metrics. */
 export function reportText(run: Run, now: number): string {
   const report = reportOf(run, now)
   const window = { from: run.startedAt, to: run.endedAt ?? now }
   const lanes = lanesOf(run, now)
     .filter(lane => lane.to > lane.from)
     .map(lane => `${lane.worker} ${flowCells(partsIn(lane.parts, window), sleepsOf(run), window, FLOW_CELLS)}`)
-  return [report.story, ['```', ...lanes, FLOW_LEGEND, '```'].join('\n'), [...report.run, ...report.team, ...report.workers].join('\n')].join('\n\n')
+  const agents = report.agents.map(agent => `${agent.worker}: ${agent.did} ${agent.counts.join(', ')}.`)
+  const axis = `   ${flowAxis(window, FLOW_CELLS)}`
+  return [report.story, agents.join('\n'), ['```', ...lanes, axis, FLOW_LEGEND, '```'].join('\n'), [report.numbers.join(', '), ...report.run, ...report.team, ...report.workers].join('\n')].join('\n\n')
 }
 
 /** A run that meld archived at Deliver or Discard, or undefined when its record is missing or broken. */

@@ -274,6 +274,8 @@ export type PaneView = {
   vcs: VcsChoice
   /** The tasks whose children the progress shows; absent in a view that meld 0.6.0 stored. */
   open?: number[]
+  /** The steer box of a ready run is open: the person asks for changes. */
+  asking?: boolean
 }
 
 declare module 'claude-code' {

@@ -12,8 +12,11 @@ const START = NOW - 40 * MINUTE
 const BASE = 'a'.repeat(40)
 const FULL = 'f'.repeat(40)
 const OTHER = 'e'.repeat(40)
-const STORY = '2 agents finished 2 tasks in 40 minutes. For 20 of those minutes, only one agent worked. w1 did 50% of the work. 1 of 1 entries reached another agent. 1 of 2 checks failed, and the person did not steer.'
-const EMPTY_STORY = '2 agents finished 0 tasks in 40 minutes. For 0 of those minutes, only one agent worked. No agent finished a task. No agent shared an entry. No check ran, and the person steered 1 time.'
+const STORY = 'Two agents finished 2 tasks in 40 minutes. They shared 1 learning, and used 1 of them in later tasks. For 20 minutes only one agent worked. You did not steer.'
+const EMPTY_STORY = 'Two agents finished 0 tasks in 40 minutes. They shared no learning. You steered once.'
+const FAIL_STORY = 'Two agents finished 0 tasks in 40 minutes. They shared 1 learning, and used 0 of them in later tasks. One fail stopped the others from the same dead end. You did not steer.'
+const W1_DID = { worker: 'w1', did: 'Theme tokens.', counts: ['1 task', 'shared 1 learning', 'used 0'] }
+const NUMBERS = ['1.5 agents at work on average', '50% of the time one agent alone', '0 tokens per task']
 const TIME_LINE = 'Time: 40m of run, 80m of agent time, busy 75%, parallelism 1.5, one agent alone 20m, waiting on meld 0m, asleep 0m, idle restarts 0.'
 const W1_LINE = 'w1: busy 20m of 40m, 50% of the work, 20m idle while others worked, 0 tokens.'
 const ARCHIVED = `${ARCHIVE}/r1.json`
@@ -45,16 +48,29 @@ function reportRun(): Run {
   const shared = boardFor(runOf(shareEntry(claimed, 'w1', { kind: 'fact', text: 'The tokens live in theme.css' }, START + 5 * MINUTE)), 'w2', START + 6 * MINUTE).run
   const w1Done = setWorkerState(runOf(finishTask(shared, 'w1', 1, 2, FULL, 'Tokens', START + 20 * MINUTE)), 'w1', 'idle', START + 20 * MINUTE)
   const checked = runOf(addCheck(runOf(addCheck(w1Done, 'w2', { command: 'bun test', commit: OTHER, passed: false, output: '' }, START + 30 * MINUTE)), 'w2', { command: 'bun test', commit: OTHER, passed: true, output: '' }, START + 39 * MINUTE))
-  const w2Done = runOf(finishTask(checked, 'w2', 2, 2, OTHER, 'Toggle', NOW))
+  const w2Done = runOf(finishTask(checked, 'w2', 2, 2, OTHER, 'Toggle', NOW, {}, { used: [1] }))
   return runOf(declareFinal(runOf(takeIntegration(w2Done, 'w2', NOW)), 'w2', OTHER, 'A dark theme', NOW))
 }
 
-test('the story of a run gives its agents, tasks, time, the time of one agent alone, the share of the top worker, deliveries, checks and steers', () => {
+test('the story of a run gives its agents, tasks, time, the learnings shared and used, the time of one agent alone, and the steers', () => {
   expect(reportOf(reportRun(), NOW).story).toBe(STORY)
 })
 
-test('the story of a run with no finished task, no entry and no check says so, and counts the steers', () => {
+test('the story of a run with no finished task and no learning says so, and counts the steers', () => {
   expect(reportOf(runOf(steer(started(['w1', 'w2']), 'Use the old colours', START)), NOW).story).toBe(EMPTY_STORY)
+})
+
+test('the story counts the fails that another agent got and did not repeat', () => {
+  const failed = runOf(shareEntry(started(['w1', 'w2']), 'w1', { kind: 'fail', text: 'A theme in JS flickers' }, START))
+  expect(reportOf(boardFor(failed, 'w2', START + MINUTE).run, NOW).story).toBe(FAIL_STORY)
+})
+
+test('the report recaps each agent: the titles of its finished tasks, and its counts of tasks, shared and used learnings', () => {
+  expect(reportOf(reportRun(), NOW).agents[0]).toEqual(W1_DID)
+})
+
+test('the report gives three numbers: agents at work on average, the share of one agent alone, and the cost per task', () => {
+  expect(reportOf(reportRun(), NOW).numbers).toEqual(NUMBERS)
 })
 
 test('the report gives the time metrics of the run in one line', () => {
@@ -100,16 +116,27 @@ test('/meld-report --runs gives one row for each archived run', async () => {
   expect(await reportCommand(io, '--runs')).toContain(RUNS_ROW)
 })
 
-test('a ready run shows the report in place of Flow, the same on every surface', async ($, on) => {
+test('a ready run shows the story, what each agent did, the lanes and the three numbers, the same on every surface', async ($, on) => {
   on('clock.now', () => ({ value: NOW }))
   on('state.get', ($, e) => ({ value: e.key === 'run' ? { value: { shape: 'run-5', value: reportRun() }, version: 1 } : { value: undefined, version: 0 } }))
   for (const surface of ALL_SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
     expect(await ui.find({ type: 'Text', text: STORY }), surface).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: TIME_LINE }), surface).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: W1_LINE }), surface).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: W1_DID.did }), surface).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: W1_DID.counts[1] }), surface).toBeDefined()
     expect(await ui.find({ key: 'flow-w1' }), surface).toBeDefined()
-    expect(await ui.find({ key: 'sec-flow' }), surface).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: NUMBERS[1] }), surface).toBeDefined()
     await ui.unmount()
   }
+})
+
+test('a ready run leaves out the agent cards, the plan, the steer box and the long metric lines', async ($, on) => {
+  on('clock.now', () => ({ value: NOW }))
+  on('state.get', ($, e) => ({ value: e.key === 'run' ? { value: { shape: 'run-5', value: reportRun() }, version: 1 } : { value: undefined, version: 0 } }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ key: 'agents' })).toBeUndefined()
+  expect(await ui.find({ key: 'sec-progress' })).toBeUndefined()
+  expect(await ui.find({ key: 'steer' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: TIME_LINE })).toBeUndefined()
+  await ui.unmount()
 })
