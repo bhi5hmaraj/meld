@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
 import { serveTool } from '../core/actions'
-import { addNote, addTasks, bindWorker, claimTask, finishTask, isFailure, passContext, setWorkerState, shareEntry, startRun } from '../core/board'
+import { addNote, addTasks, bindWorker, claimTask, finishTask, isFailure, isQuiet, passContext, setWorkerState, shareEntry, startRun } from '../core/board'
 import { TOOL } from '../core/contract'
 import type { Change, Run, WorkerId } from '../types'
 import { FakeIo, HEAD } from './fake-io'
@@ -59,7 +59,7 @@ test('a status read gives the log entries since the last status read of the main
   const io = new FakeIo()
   io.current = planned()
   const first = (await status(io)).log as { text: string }[]
-  expect(first.map(entry => entry.text)).toEqual(io.current.log.map(entry => entry.text))
+  expect(first.map(entry => entry.text)).toEqual(io.current.log.filter(entry => !isQuiet(entry)).map(entry => entry.text))
   io.current = runOf(addNote(io.current as Run, 'w1', 'The tokens are in theme.ts', undefined, NOW))
   expect(((await status(io)).log as { text: string }[]).map(entry => entry.text)).toEqual(['The tokens are in theme.ts'])
   expect((await status(io)).log).toEqual([])
@@ -88,8 +88,9 @@ test('the status view and the full board of the main session keep a start or a s
   io.current = { ...run, log: [...run.log, ...lane] }
   const full = JSON.parse((await serveTool(io, { tool: TOOL.board } as unknown as ToolCallInput)).result) as { log: Run['log'] }
   const statusLog = (await status(io)).log as Run['log']
-  expect(full.log.filter(entry => entry.kind === 'worker').map(entry => entry.text)).toEqual(['w1 starts again', 'stopped w2'])
-  expect(statusLog.filter(entry => entry.kind === 'worker').map(entry => entry.text)).toEqual(['w1 starts again', 'stopped w2'])
+  const laneTexts = (log: Run['log']) => log.filter(entry => entry.kind === 'worker' && entry.id > last).map(entry => entry.text)
+  expect(laneTexts(full.log)).toEqual(['w1 starts again', 'stopped w2'])
+  expect(laneTexts(statusLog)).toEqual(['w1 starts again', 'stopped w2'])
 })
 
 test('a board read with no view gives the main session the full board', async () => {

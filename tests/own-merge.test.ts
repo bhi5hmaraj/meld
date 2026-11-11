@@ -110,6 +110,22 @@ test('a finish_task that meld refuses merges nothing, though done tasks wait for
   expect(io.current?.line).toBeUndefined()
 })
 
+test('a finish_task keeps the commits that its commit took from other lanes', async () => {
+  const io = ioWith(backlog())
+  io.answers[`git rev-list --count --no-merges ${HEAD}..${FULL}`] = '5'
+  io.answers[`git rev-list --count --no-merges --first-parent ${HEAD}..${FULL}`] = '3'
+  await serveTool(io, call(FINISH_1))
+  expect(io.current?.tasks.find(task => task.id === 1)?.taken).toBe(2)
+})
+
+test('a finish_task whose taken commits git cannot count keeps no count', async () => {
+  const io = ioWith(backlog())
+  io.answers[`git rev-list --count --no-merges ${HEAD}..${FULL}`] = '5'
+  io.failing.push(`git rev-list --count --no-merges --first-parent ${HEAD}..${FULL}`)
+  await serveTool(io, call(FINISH_1))
+  expect(io.current?.tasks.find(task => task.id === 1)).not.toHaveProperty('taken')
+})
+
 test('two finish_task calls at once merge one at a time, each the commit of its own task', async () => {
   const io = ioWith(runOf(claimTask(planned(), 'w2', 2, 1, NOW)))
   await Promise.all([serveTool(io, call(FINISH_1)), serveTool(io, call(FINISH_2))])
