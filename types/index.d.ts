@@ -78,8 +78,9 @@ export type Worker = {
   times?: ActivityTimes
   /** The tokens of the worker by kind. Absent for an agent that reports no usage. */
   usage?: TokenSums
-  /** The largest context of an agent of this worker. */
+  /** The largest context of an agent of this worker, and its model calls: the mean context is (input + cacheWrite + cacheRead) / steps. */
   largestContext?: number
+  steps?: number
   /** The fresh agents that meld started for this worker at CONTEXT_CAP. */
   capStarts?: number
 }
