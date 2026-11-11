@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **A higher context cap.** A `meld:worker` compacts before 500k tokens, and an idle worker past 500k gets a fresh agent. With the cap of 150k, a worker compacted every few minutes, as it holds about 70k tokens just after a compaction.
+- **A parked session connects late.** The desktop app can start a session as a parked spare, before its MCP servers run. meld connected to `meld mcp` only at the start of the session, so such a session refused every Codex worker, and its run had no board file. Now each meld command, start tool and press of the pane connects again while the session has no board server. A run that lives in the session state stays there.
 
 ## 0.10.1
 

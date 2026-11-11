@@ -147,6 +147,8 @@ The session that writes a board owns it for 60 s from its last write. Another se
 
 Only meld calls the tools of `meld mcp`. The permission check allows the calls of meld, and refuses the calls of agents and of the main session. The board tool of the main session names the store, and why `meld mcp` did not connect. When the session started before meld was installed or updated, a new session starts `meld mcp`. In a local session, `/reload-plugins` starts it too.
 
+The desktop app can start a session parked, before its MCP servers run. So each meld command, start tool and press of the pane connects again while the session has no board server. A run that lives in the session state stays there.
+
 Deliver marks the run delivered, and Discard drops it, before they remove its folder. So no restart gives a new agent to a run whose folder goes.
 
 ### Backups

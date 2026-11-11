@@ -119,6 +119,27 @@ export function problemOf(refusal: { reason: string; message: string }): string 
   return refusal.reason === 'unlisted' ? `${refusal.message} ${RELOAD}` : refusal.message
 }
 
+/** What a hook gives connectBoard: the connection to meld mcp, and a call of one of its tools. */
+export type BoardLink = {
+  connect: () => Promise<{ isConnected: true; server: string } | { isConnected: false; reason: string; message: string }>
+  call: (tool: string, args: Record<string, unknown>) => Promise<McpToolResult>
+}
+
+/**
+ * Connects the board of the session to meld mcp. The desktop app can start a session parked, before its MCP servers
+ * run, so the hooks that start or drive a run call it again while the session has no server. A run that lives in the
+ * session state stays there: only a session with no such run connects.
+ */
+export async function connectBoard(session: SessionBoard, link: BoardLink, held: Run | null = null): Promise<void> {
+  if (session.server || (held && held.state !== 'delivered')) return
+  const connected = await link.connect().catch((error: unknown) => ({ isConnected: false as const, reason: 'failed', message: String(error) }))
+  session.server = connected.isConnected ? connected.server : ''
+  session.problem = connected.isConnected ? '' : problemOf(connected)
+  if (!session.server) return
+  session.channel = await link.call('board_channel', {}).then(result => valueOf<{ socketPath: string }>(result).socketPath, () => '')
+  await link.call('lead_board', { board: session.id, owner: session.owner }).catch(() => undefined)
+}
+
 /**
  * What a start tells the person when its new run has no board file: the run lives in the session state, so it ends
  * with the session. A start with no started worker, a run that was there before, and a run on the board of meld mcp

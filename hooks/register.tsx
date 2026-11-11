@@ -10,7 +10,7 @@ import { resumeRun } from '../core/resume'
 import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL, TOOL_PREFIX, TOOL_SPECS, WORKER_SYSTEM } from '../core/contract'
 import type { AgentState, FactsStore, Files, Io, RunRecord, RunRecords, Spawned, Store } from '../core/ports'
 import { MAX_AGENTS, parseStart, WORKER_TYPE } from '../core/options'
-import { adoptedOf, BOARD_STORE_TOOLS, boardVerdict, copyFromChannel, noBoardWarning, problemOf, sessionRunner, sessionStore, storeNote, valueOf, withNote, workerOffer } from './board-store'
+import { adoptedOf, BOARD_STORE_TOOLS, boardVerdict, connectBoard, copyFromChannel, noBoardWarning, sessionRunner, sessionStore, storeNote, valueOf, withNote, workerOffer } from './board-store'
 import type { SessionBoard } from './board-store'
 import { DEFAULT_VIEW, paneTree } from './pane'
 
@@ -77,13 +77,9 @@ function stateOf(status: AgentStatus): AgentState {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     sessionCwd = e.cwd
-    const connected = await $.mcp.connect('board').catch((error: unknown) => ({ isConnected: false as const, reason: 'failed', message: String(error) }))
-    board.server = connected.isConnected ? connected.server : ''
-    board.problem = connected.isConnected ? '' : problemOf(connected)
-    board.channel = board.server ? await $.mcp.call(board.server, 'board_channel', {}).then(result => valueOf<{ socketPath: string }>(result).socketPath, () => '') : ''
     board.owner = await $.session.id()
     board.id = (await read($, boardRef)) ?? board.owner
-    if (board.server) await $.mcp.call(board.server, 'lead_board', { board: board.id, owner: board.owner }).catch(() => undefined)
+    await connectBoard(board, { connect: () => $.mcp.connect('board'), call: (tool, args) => $.mcp.call(board.server, tool, args) })
     const sessionState: Store & FactsStore = {
       read: () => read($, runRef),
       write: change => update($, runRef, change),
@@ -174,6 +170,7 @@ export const register: Register = on => {
   )
 
   on('command.run', { command: ['meld', 'meld-steer', 'meld-status', 'meld-stop', 'meld-clean', 'meld-deliver', 'meld-discard', 'meld-add', 'meld-resume', 'meld-report'] }, async ($, e) => {
+    await connectBoard(board, { connect: () => $.mcp.connect('board'), call: (tool, args) => $.mcp.call(board.server, tool, args) }, await read($, runRef))
     const io: Io & Files & RunRecords = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
@@ -251,6 +248,7 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: SESSION_TOOLS }, async ($, e) => {
+    await connectBoard(board, { connect: () => $.mcp.connect('board'), call: (tool, args) => $.mcp.call(board.server, tool, args) }, await read($, runRef))
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
@@ -612,6 +610,7 @@ export const register: Register = on => {
   })
 
   on('ui.press', { plugin: 'meld', element: PRESS_KEYS }, async ($, e) => {
+    await connectBoard(board, { connect: () => $.mcp.connect('board'), call: (tool, args) => $.mcp.call(board.server, tool, args) }, await read($, runRef))
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),
@@ -668,6 +667,7 @@ export const register: Register = on => {
 
   on('ui.input', { plugin: 'meld', element: ['task', 'steer'] }, async ($, e, next) => {
     if (e.kind !== 'submit') return next(e)
+    await connectBoard(board, { connect: () => $.mcp.connect('board'), call: (tool, args) => $.mcp.call(board.server, tool, args) }, await read($, runRef))
     const io: Io = {
       run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }),
       now: () => $.clock.now(),

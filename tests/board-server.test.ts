@@ -99,7 +99,7 @@ class FakeMcp {
 }
 
 /** What the engine answers for a session start; with a FakeMcp, meld mcp connects, and without one it does not start. */
-function answerTheEngine(on: On, mcp: FakeMcp | undefined, agents: { name: string; autoCompactWindow?: number }[] = []): MockClock {
+function answerTheEngine(on: On, mcp: FakeMcp | undefined, agents: { name: string; autoCompactWindow?: number }[] = [], isUp = () => true): MockClock {
   const clock = mock.clock(on, { now: NOW })
   on('session.id', () => ({ value: SESSION }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -109,7 +109,7 @@ function answerTheEngine(on: On, mcp: FakeMcp | undefined, agents: { name: strin
     agents.push({ name: e.name, autoCompactWindow: e.autoCompactWindow })
     return { value: { agent: e.name } }
   })
-  on('mcp.connect', () => ({ value: mcp ? { isConnected: true, server: SERVER } : { isConnected: false, reason: 'failed', message: 'bun: not found' } }))
+  on('mcp.connect', () => ({ value: mcp && isUp() ? { isConnected: true, server: SERVER } : { isConnected: false, reason: 'failed', message: 'bun: not found' } }))
   if (mcp) on('mcp.call', ($, e) => ({ value: mcp.answer(e.tool, e.args) }))
   return clock
 }
@@ -458,4 +458,39 @@ test('the worker type compacts its agent at the context cap', async ($, on) => {
   answerTheEngine(on, new FakeMcp(), registered)
   await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
   expect(registered).toEqual([{ name: 'worker', autoCompactWindow: CONTEXT_CAP }])
+})
+
+test('a session that started before meld mcp ran connects at its first command, and its codex worker starts on the board', async ($, on) => {
+  const mcp = new FakeMcp()
+  let isUp = false
+  answerTheEngine(on, mcp, [], () => isUp)
+  on('state.get', () => ({ value: { value: undefined, version: 0 } }))
+  on('state.set', () => ({ value: { isSet: true, version: 1 } }))
+  on('process.run', ($, e) => gitAnswer(e.argv))
+  on('session.usage', () => ({ value: { startedAt: NOW, cost: { usd: 0 } } as never }))
+  on('agent.list', () => ({ value: [] }))
+  on('ui.open', () => ({ value: { isPlaced: false, reason: 'a test draws no pane' } }))
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  isUp = true
+  const replied = await $.command.run({ command: 'meld', args: '--agents codex --vcs git Add a greeting', ...TYPED })
+  expect(replied.text).toContain('workers on git')
+  expect(mcp.boards[SESSION]?.run?.workers[0]?.agentId).toBe('acp-1')
+})
+
+test('a run that lives in the session state stays there when meld mcp comes up later', async ($, on) => {
+  const mcp = new FakeMcp()
+  let isUp = false
+  let stored: unknown = { shape: 'run-4', value: working() }
+  answerTheEngine(on, mcp, [], () => isUp)
+  on('state.get', ($, e) => ({ value: e.key === 'run' ? { value: stored, version: 1 } : { value: undefined, version: 0 } }))
+  on('state.set', ($, e) => {
+    if (e.key === 'run') stored = e.value
+    return { value: { isSet: true, version: 2 } }
+  })
+  on('agent.list', () => ({ value: [] }))
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  isUp = true
+  await $.command.run({ command: 'meld-stop', args: '', ...TYPED })
+  expect(mcp.calls.map(call => call.tool)).not.toContain('lead_board')
+  expect((stored as { value: Run }).value.state).toBe('stopped')
 })
