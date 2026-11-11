@@ -133,7 +133,7 @@ function readyRun(run = workingRun(3)): Run {
 function sharedRun(run: Run, text?: string): Run {
   const shared = SHARES.reduce((current, share) => runOf(shareEntry(current, share.by, { kind: share.kind, text: text ?? share.text }, NOW)), run)
   const corrected = runOf(shareEntry(shared, 'w3', { kind: 'interface', text: text ?? CORRECTION, replaces: SHARES.length }, NOW))
-  return boardFor(boardFor(corrected, 'w1').run, 'w2').run
+  return boardFor(boardFor(corrected, 'w1', NOW).run, 'w2', NOW).run
 }
 
 /** The text of each part of a line: the children of each Text in it. */

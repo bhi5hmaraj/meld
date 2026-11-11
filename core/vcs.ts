@@ -26,10 +26,11 @@ export type Prepared = { workspaces: Workspace[] } | { error: string }
 export type Resolved = { commit: string; conflict: boolean }
 export type LaneRead = { snapshot?: boolean }
 /**
- * A merge into the integration line: merged, with the head of the line (the same head when the line holds the commit);
- * a conflict, with the head that stays and the files in conflict; or failed, with the reason.
+ * A merge into the integration line: merged, with the head of the line (the same head when the line holds the commit) and
+ * the files that the line got (absent when it held the commit or git could not tell); a conflict, with the head that stays and the files in
+ * conflict; or failed, with the reason.
  */
-export type LineMerge = { state: 'merged'; head: string } | { state: 'conflict'; head: string; files: string[] } | { state: 'failed'; error: string }
+export type LineMerge = { state: 'merged'; head: string; files?: string[] } | { state: 'conflict'; head: string; files: string[] } | { state: 'failed'; error: string }
 
 /** What meld asks of a version control: workspaces for the workers, the commits they name, the facts the pane shows, and the delivery. */
 export type Vcs = {
@@ -179,7 +180,9 @@ async function mergeInGit(io: CodeHost, gitDir: string, ref: string, base: strin
     next = made.out
   }
   const moved = await git(io, gitDir, ['update-ref', ref, next, found ?? ''])
-  return moved.ok ? { state: 'merged', head: next } : { state: 'failed', error: moved.err || moved.out }
+  if (!moved.ok) return { state: 'failed', error: moved.err || moved.out }
+  const changed = await git(io, gitDir, ['diff', '--name-only', '--no-renames', head, next])
+  return { state: 'merged', head: next, ...(changed.ok && { files: changed.out.split('\n').filter(Boolean) }) }
 }
 
 /** The commit of a ref in the git store `gitDir`, or undefined when the ref is not there yet. */

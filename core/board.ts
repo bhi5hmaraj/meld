@@ -28,6 +28,13 @@ import type { AgentState } from './ports'
 import { childrenOf, isParent, isReady, taskOf, waitsFor, waitsOn } from './tasks'
 
 const LOG_LIMIT = 500
+/**
+ * A record of the metrics that the status view and the overview of the main session leave out of their log: a delivery of
+ * context, or a change of state of a worker that is neither a start nor a stop.
+ */
+export function isQuiet(entry: Entry): boolean {
+  return entry.kind === 'delivered' || (entry.kind === 'worker' && !entry.start && entry.state !== 'stopped')
+}
 /** The random characters at the end of a run id. */
 export const RUN_ID_BYTES = 4
 const CONTEXT_KEPT = 200
@@ -356,13 +363,19 @@ export function unmergedTasks(run: Run): Task[] {
   return lackingTasks(run).filter(task => !integrated.has(task.id))
 }
 
-/** meld merged the commit of #id into the line: the line moves to `head`, and holds #id and each task that #id integrates. */
-export function lineMerged(run: Run, id: number, head: string, now: number): Run {
+/** The facts of one merge for its log entry: when it began, the worker whose finish started it, and the files the line got. */
+export type MergeFacts = { from?: number; worker?: WorkerId; files?: string[] }
+
+/**
+ * meld merged the commit of #id into the line: the line moves to `head`, and holds #id and each task that #id integrates.
+ * A merge entry at `now`, the end of the merge, records it.
+ */
+export function lineMerged(run: Run, id: number, head: string, now: number, merge: MergeFacts = {}): Run {
   const held = [...(run.line?.tasks ?? [])]
   for (let task = taskOf(run.tasks, id); task && !held.includes(task.id); task = taskOf(run.tasks, task.integrates)) held.push(task.id)
   if (!held.includes(id)) held.push(id)
   const line: Line = { head, tasks: held }
-  return withEntry({ ...run, line }, { at: now, by: 'you', kind: 'event', text: `merged #${id} into the integration line`, commit: head })
+  return withEntry({ ...run, line }, { at: now, by: 'you', kind: 'merge', text: `merged #${id} into the integration line`, commit: head, task: id, ...merge })
 }
 
 /** The commit of #id does not merge into the line: meld adds a task "integrate #id" of size S, open for any worker. */
@@ -446,15 +459,18 @@ export function currentContext(run: Run, limit = CONTEXT_SHOWN): ContextEntry[] 
  * The context that a board reply carries to a worker, newest first. The first reply to a new agent carries the current
  * entries, CONTEXT_SHOWN at most; each later reply carries only the current entries that are new since the last reply,
  * other than the entries of the worker. Each entry that a reply carries counts the worker as a reader, unless the worker
- * wrote it, so seenBy names the workers that got the entry.
+ * wrote it, so seenBy names the workers that got the entry, and a delivered entry at `now` records each new reader.
  */
-export function passContext(run: Run, by: WorkerId): { run: Run; context: ContextView[] } {
+export function passContext(run: Run, by: WorkerId, now: number): { run: Run; context: ContextView[] } {
   const you = findWorker(run, by)
   const carried = new Set(newContextFor(run, you).map(entry => entry.id))
-  const context = contextOf(run).map(entry =>
-    carried.has(entry.id) && entry.by !== by && !entry.seenBy.includes(by) ? { ...entry, seenBy: [...entry.seenBy, by] } : entry,
+  const fresh = contextOf(run).filter(entry => carried.has(entry.id) && entry.by !== by && !entry.seenBy.includes(by))
+  const context = contextOf(run).map(entry => (fresh.includes(entry) ? { ...entry, seenBy: [...entry.seenBy, by] } : entry))
+  const logged = fresh.reduce(
+    (current, entry) => withEntry(current, { at: now, by: 'you', kind: 'delivered', text: `delivered context ${entry.id} to ${by}`, worker: by, context: entry.id }),
+    run,
   )
-  const passed = replaceWorker({ ...run, context }, { ...you, seenContext: context.at(-1)?.id ?? 0 })
+  const passed = replaceWorker({ ...logged, context }, { ...you, seenContext: context.at(-1)?.id ?? 0 })
   return { run: passed, context: context.filter(entry => carried.has(entry.id)).reverse().map(viewOf) }
 }
 
@@ -534,11 +550,11 @@ export function steersOf(run: Run): string[] {
   return run.log.filter(entry => entry.kind === 'steer').map(entry => entry.text)
 }
 
-export function boardFor(run: Run, by: WorkerId): { run: Run; view: BoardView } {
+export function boardFor(run: Run, by: WorkerId, now: number): { run: Run; view: BoardView } {
   const you = findWorker(run, by)
   const steers = unseenSteers(run, you)
   const news = run.log.filter(entry => entry.id > you.seenEntry && entry.by !== by && entry.by !== 'you')
-  const passed = passContext(run, by)
+  const passed = passContext(run, by, now)
   const view: BoardView = {
     you: { id: you.id, path: you.path, ref: you.ref },
     peers: run.workers
@@ -558,7 +574,7 @@ export function boardFor(run: Run, by: WorkerId): { run: Run; view: BoardView } 
     final: run.final,
     ...nonEmpty('handovers', handoversOfClaims(run, by)),
   }
-  const seen: Worker = { ...findWorker(passed.run, by), seenRevision: run.revision, seenEntry: run.log.at(-1)?.id ?? 0 }
+  const seen: Worker = { ...findWorker(passed.run, by), seenRevision: run.revision, seenEntry: passed.run.log.at(-1)?.id ?? 0 }
   return { run: replaceWorker(passed.run, seen), view }
 }
 
