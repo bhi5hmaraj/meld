@@ -8,7 +8,7 @@ import type { Action, BoardRead, Boards, BoardSummary, Committed } from '../core
 import { resumeRun } from '../core/resume'
 import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL, TOOL_PREFIX, TOOL_SPECS, WORKER_SYSTEM } from '../core/contract'
 import type { AgentState, FactsStore, Files, Io, RunRecord, RunRecords, Spawned, Store } from '../core/ports'
-import { parseStart, WORKER_TYPE } from '../core/options'
+import { MAX_AGENTS, parseStart, WORKER_TYPE } from '../core/options'
 import { adoptedOf, BOARD_STORE_TOOLS, boardVerdict, copyFromChannel, noBoardWarning, problemOf, sessionRunner, sessionStore, storeNote, valueOf, withNote, workerOffer } from './board-store'
 import type { SessionBoard } from './board-store'
 import { DEFAULT_VIEW, paneTree } from './pane'
@@ -22,9 +22,9 @@ const PROCESS_TIMEOUT_MS = 120_000
 const FACTS_MS = 3000
 const ENDED_AGENT = new Set<AgentStatus>(['completed', 'failed', 'killed'])
 const START_KEY = 'start'
-/** The ui.press element that starts the idle workers while tasks are ready. */
-const START_IDLE_KEY = 'start-idle'
-const PRESS_KEYS = [START_KEY, START_IDLE_KEY, ...STEER_PRESETS.map(preset => `preset-${preset.key}`)]
+/** The Start buttons on the cards of idle agents while tasks are ready: each starts the idle workers. */
+const START_WORKER_KEYS = Array.from({ length: MAX_AGENTS }, (_, index) => `start-w${index + 1}`)
+const PRESS_KEYS = [START_KEY, ...START_WORKER_KEYS, ...STEER_PRESETS.map(preset => `preset-${preset.key}`)]
 /** The longest reason that a refusal quotes from a failed hook. */
 const REASON_CHARS = 300
 
@@ -651,7 +651,7 @@ export const register: Register = on => {
       toast: text => $.ui.toast(text),
       openPane: focus => $.ui.open(focus ? { id: 'meld', title: 'meld', focus: true } : { id: 'meld', title: 'meld' }),
     }
-    if (e.element === START_IDLE_KEY) {
+    if (START_WORKER_KEYS.includes(e.element)) {
       const started = await restartIdleWorkers(io)
       io.toast(started.length ? `meld: ${started.join(', ')} started again` : 'meld: no idle worker to start')
       return { element: e.element }

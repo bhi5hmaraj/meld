@@ -1,18 +1,18 @@
 import type { ElementTable, RenderSurface } from 'claude-code'
 
-import type { Activity, AgentSpec, ContextKind, Entry, Facts, LaneFacts, PaneView, ResultFacts, Run, RunState, Task, Worker, WorkerId, WorkerState } from '../types'
-import { deliver, discard, LEADING_CD, stopAll, stopOne } from '../core/actions'
-import { CONTEXT_CAP, currentContext, NOT_STARTED, SPLIT_CALLS } from '../core/board'
+import type { Activity, AgentSpec, ContextKind, Entry, Facts, PaneView, ResultFacts, Run, RunState, Task, Worker, WorkerId } from '../types'
+import { deliver, discard, LEADING_CD, stopAll } from '../core/actions'
+import { currentContext, NOT_STARTED } from '../core/board'
 import { activityOf, sharedContextOf } from '../core/metrics'
-import type { Progress, SharedContext } from '../core/metrics'
+import type { SharedContext } from '../core/metrics'
 import { STEER_PRESETS } from '../core/contract'
-import { agentColor, BAR_HEIGHT, BAR_WIDTH, barCells, LANE_HEIGHT, LANE_WIDTH, laneAlt, laneGlyphs, laneSvg, partsBarSvg, STATUS } from './drawing'
+import { agentColor, BAR_HEIGHT, BAR_WIDTH, barCells, partsBarSvg, STATUS } from './drawing'
 import { FLOW_CELLS, FLOW_HEIGHT, FLOW_LEGEND, FLOW_WIDTH, flowCells, flowSvg, partsIn, partWords } from './drawing'
 import type { TimeSpan } from './drawing'
 import { efficiencyOf, lanesOf, progressOf } from '../core/metrics'
 import type { LanePart } from '../core/metrics'
 import type { Io } from '../core/ports'
-import { agentsOf, formatStart, isAcpSpec, MAX_AGENTS, MODELS, WORKER_TYPE } from '../core/options'
+import { agentsOf, formatStart, MAX_AGENTS, MODELS, WORKER_TYPE } from '../core/options'
 import { leavesOf, requestParts, topTasks } from '../core/progress'
 import type { Parts } from '../core/progress'
 import { childrenOf, claimable, waitsFor } from '../core/tasks'
@@ -35,20 +35,16 @@ const STATE_TONE: Record<RunState, string> = {
   delivered: 'inactive',
   stopped: 'error',
 }
-const WORKER_TONE: Record<WorkerState, string> = { starting: 'warning', working: 'success', idle: 'inactive', stopped: 'error' }
 const KIND_SHAPE: Record<ContextKind, string> = { fact: '■', fail: '✕', interface: '◇' }
 const KIND_TONE: Record<ContextKind, string | undefined> = { fact: undefined, fail: 'error', interface: 'suggestion' }
 const KIND_ORDER: readonly ContextKind[] = ['fact', 'fail', 'interface']
 const CONTEXT_ROWS = 5
 const CONTEXT_WORDS = 8
 const NAMED_WORKERS = 3
-const STUCK_MS = 300_000
 /** After this long with no text, the Now line of a card gives plain words from the tool calls of its agent. */
 const SAID_FRESH_MS = 60_000
-const DID_WORDS = 16
-/** A card warns past these shares of CONTEXT_CAP and of the SPLIT_CALLS of its task. */
-const NEAR_CAP = 0.8
-const NEAR_SPLIT = 0.8
+/** The finished tasks that a card names; four would pass the 100 words of the block with long titles. */
+const DONE_TITLES = 3
 const TICK = '✓'
 /** meld's own plain words for an agent that starts or goes on. */
 const MELD_ACTIVITIES = new Set(['started', 'started again', 'goes on', 'starting'])
@@ -62,7 +58,6 @@ const CLASS_WORDS: Partial<Record<Activity, string>> = {
   background: 'waiting for its background work',
   board: 'using the board',
 }
-const ACTIVITY_CHARS = 22
 const CHECK_CHIPS = 6
 const CARD_INDENT = 3
 const SUMMARY_WORDS = 24
@@ -77,7 +72,6 @@ const READY_WARN_MS = 300_000
 const REQUEST_CHARS = 144
 const FLOW_WINDOW_MS = 30 * 60_000
 const FLOW_WINDOW_WORDS = 'last 30m'
-const SKIPPED_ARGUMENT = /^(?:-|\d|\.$|[|&;<>]+$)/
 const AGENT_OPTIONS = Array.from({ length: MAX_AGENTS }, (_, index) => ({ value: String(index + 1), label: `${index + 1}` }))
 const MODEL_OPTIONS = [{ value: 'inherit', label: 'Same as this session' }, ...MODELS.map(model => ({ value: model, label: model }))]
 const VCS_OPTIONS = [
@@ -112,7 +106,7 @@ export function paneTree(input: PaneInput) {
     <Box flexDirection="column" gap="lg">
       {headerSection(input, run)}
       {refusedSection(input, run)}
-      {agentsSection(input, run, facts)}
+      {agentsSection(input, run)}
       {progressSection(input, run)}
       {flowSection(input, run)}
       {contextSection(input, run)}
@@ -130,8 +124,7 @@ function headerSection(input: PaneInput, run: Run) {
   const units = run.workers.reduce((sum, worker) => sum + (worker.tokens ?? 0), 0)
   const spent = spentOf(input.sessionCost, run.costAtStart)
   const shared = sharedSpec(run)
-  const progress = progressOf(run, now)
-  const { done, working, ready, waiting } = progress
+  const { done, working, ready, waiting } = progressOf(run, now)
   const others = [`${working} working`, `${ready} ready`, `${waiting} waiting`].filter(part => !part.startsWith('0 '))
   const counts = [`${done} of ${done + working + ready + waiting} tasks done`, ...others].join(', ')
   const request = run.request.replace(/\s+/g, ' ').trim()
@@ -181,30 +174,21 @@ function headerSection(input: PaneInput, run: Run) {
           {partsBar(input, 'all', requestParts(run.tasks), REQUEST_BAR, counts)}
         </Box>
       )}
-      {runWarning(input, run, progress)}
+      {runWarning(input, run)}
     </Box>
   )
 }
 
-/** The most important warning of the run, one line: the machine slept, the run has no board file, or ready tasks wait while agents are idle. */
-function runWarning(input: PaneInput, run: Run, progress: Progress) {
-  const { Box, Text, Button } = input.table
-  const line = (text: string) => (
+/** The most important warning of the run, one line: the machine slept, or the run has no board file. The card of an idle agent names a ready task. */
+function runWarning(input: PaneInput, run: Run) {
+  const asleepMs = efficiencyOf(run, input.now).asleepMs
+  const text = asleepMs > 0 ? `The machine slept for ${Math.round(asleepMs / 60_000)} minutes. Nothing ran in that time.` : run.store === 'session' ? 'This run lives in the session state. It has no record, and no other session can resume it.' : undefined
+  const { Box, Text } = input.table
+  return text ? (
     <Box key="warning">
       <Text color="warning">{text}</Text>
     </Box>
-  )
-  const asleepMs = efficiencyOf(run, input.now).asleepMs
-  if (asleepMs > 0) return line(`The machine slept for ${Math.round(asleepMs / 60_000)} minutes. Nothing ran in that time.`)
-  if (run.store === 'session') return line('This run lives in the session state. It has no record, and no other session can resume it.')
-  const idle = run.workers.filter(worker => worker.state === 'idle')
-  if (!progress.readyNoAgent.now || !idle.length) return null
-  const idleMs = input.now - Math.min(...idle.map(worker => worker.activityAt))
-  return (
-    <Button key="start-idle" plain color="warning" onPress={SERVED_BY_HOOK}>
-      {`${counted(progress.readyNoAgent.now, 'task')} ready, ${counted(idle.length, 'agent')} idle for ${Math.round(idleMs / 60_000)} min`}
-    </Button>
-  )
+  ) : null
 }
 
 /** Why agents did not start, once per reason and in full: a lane has room for a few words. */
@@ -236,82 +220,66 @@ function firstSentence(text: string): string {
   return /^.*?\.(?=\s|$)/s.exec(text)?.[0] ?? text
 }
 
-function agentsSection(input: PaneInput, run: Run, facts: Facts | null) {
+/** One card for each agent. The idle agents pair in worker order with the ready tasks in board order. */
+function agentsSection(input: PaneInput, run: Run) {
   const { Box } = input.table
-  const checks = run.log.filter(entry => entry.kind === 'check')
+  const ready = LIVE.has(run.state) ? claimable(run.tasks) : []
+  const idle = run.workers.filter(worker => worker.state === 'idle')
   return (
     <Box key="agents" flexDirection="column" gap="md">
-      {run.workers.map((worker, index) => agentCard(input, run, worker, index, laneOf(facts, worker), checks))}
+      {run.workers.map((worker, index) => agentCard(input, run, worker, index, worker.state === 'idle' ? ready[idle.indexOf(worker)] : undefined))}
     </Box>
   )
 }
 
-/**
- * The card of an agent, a block of its own (section 3.2 of docs/design/pane-metrics-logs.md): its task and its lane, what it
- * says or does now, what it finished and shared, its context and cost, and one warning.
- */
-function agentCard(input: PaneInput, run: Run, worker: Worker, index: number, lane: LaneFacts, checks: Entry[]) {
+/** The card of an agent, a block of its own: its task, what it does now in its own words, and the titles of the tasks it finished. */
+function agentCard(input: PaneInput, run: Run, worker: Worker, index: number, ready: Task | undefined) {
   const { Box, Text, Button } = input.table
-  const Svg = input.surface !== 'terminal' && 'Svg' in input.table ? input.table.Svg : undefined
-  const { io, now } = input
-  const marks = { lane, color: index, checks, final: run.final?.commit }
+  const { now } = input
   const spec = sharedSpec(run) === undefined ? specLabel(worker.agent) : ''
   const claim = claimOf(run, worker)
-  const [did, ...older] = doneBy(run, worker)
-  const learned = currentContext(run, run.context?.length).find(entry => entry.by === worker.id)
+  const done = doneBy(run, worker)
   const said = nowLine(worker, now)
-  const warning = warningOf(run, worker, now)
   return (
     <Box key={`sec-card-${worker.id}`} flexDirection="column" gap="xs">
-      <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="md">
+      <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="md" flexWrap="wrap">
         <Box flexDirection="row" gap="sm" alignItems="center">
-          <Text color={WORKER_TONE[worker.state]}>●</Text>
           <Text bold color={agentColor(index).light}>
             {worker.id}
           </Text>
           {spec && <Text dimColor>{spec}</Text>}
-          <Text wrap="truncate-end">{taskLabel(run, worker, claim)}</Text>
+          <Text bold={claim !== undefined} dimColor={claim === undefined} wrap="truncate-end">
+            {taskLabel(run, worker, claim)}
+          </Text>
           {claim?.claimedAt !== undefined && <Text dimColor>{ago(now - claim.claimedAt)}</Text>}
-          {isRefused(worker) ? null : Svg ? (
-            <Svg source={laneSvg(marks)} alt={laneAlt(worker.id, lane)} width={LANE_WIDTH} height={LANE_HEIGHT} isInteractive />
-          ) : (
-            <Text color={agentColor(index).light}>{laneGlyphs(marks)}</Text>
-          )}
         </Box>
-        {LIVE.has(run.state) && worker.state !== 'stopped' && (
-          <Button key={`stop-${worker.id}`} dimColor onPress={() => void act(io, () => stopOne(io, worker.id))}>
-            ■ Stop
-          </Button>
+        {ready && (
+          <Box flexDirection="row" gap="sm" alignItems="center">
+            <Text color="warning">{readyText(ready, now)}</Text>
+            <Button key={`start-${worker.id}`} onPress={SERVED_BY_HOOK}>
+              Start
+            </Button>
+          </Box>
         )}
       </Box>
       {!isRefused(worker) && (
         <Box flexDirection="column" gap="xs" paddingLeft={CARD_INDENT}>
           {said && <Text wrap="wrap">{said}</Text>}
-          {did && (
-            <Box flexDirection="row" gap="sm">
-              <Text color="success">{TICK}</Text>
-              <Text>{`#${did.id} ${cutWords(did.title, TITLE_WORDS)}`}</Text>
-              <Text dimColor wrap="truncate-end">
-                {cutWords(did.summary ?? '', DID_WORDS)}
-              </Text>
-              <Text dimColor>{(did.commit ?? '').slice(0, 7)}</Text>
-            </Box>
-          )}
-          {older.length > 0 && <Text dimColor>{`and ${older.length} more`}</Text>}
-          {learned && (
-            <Box flexDirection="row" gap="sm">
-              <Text color={KIND_TONE[learned.kind]}>{KIND_SHAPE[learned.kind]}</Text>
-              <Text dimColor wrap="truncate-end">
-                {cutWords(learned.text, CONTEXT_WORDS)}
-              </Text>
-            </Box>
-          )}
-          <Text dimColor>{costLine(worker)}</Text>
-          {warning && <Text color="warning">{warning}</Text>}
+          {done.length > 0 && <Text dimColor wrap="wrap">{finishedText(done)}</Text>}
         </Box>
       )}
     </Box>
   )
+}
+
+function readyText(task: Task, now: number): string {
+  return task.readyAt === undefined ? `#${task.id} is ready` : `#${task.id} is ready since ${Math.round((now - task.readyAt) / 60_000)} min`
+}
+
+/** The titles of the finished tasks, newest first, with how many more past DONE_TITLES. */
+function finishedText(done: readonly Task[]): string {
+  const titles = done.slice(0, DONE_TITLES).map(task => `${TICK} ${cutWords(task.title, TITLE_WORDS)}`)
+  return [...titles, ...(done.length > DONE_TITLES ? [`${done.length - DONE_TITLES} more`] : [])].join(' · ')
 }
 
 function claimOf(run: Run, worker: Worker): Task | undefined {
@@ -327,7 +295,7 @@ function taskLabel(run: Run, worker: Worker, claim: Task | undefined): string {
   return run.integrator === worker.id ? 'integrating' : 'no task'
 }
 
-/** The finished leaves of the worker, newest first. One shows on its card: two would pass the 100 words of the block. */
+/** The finished leaves of the worker, newest first. */
 function doneBy(run: Run, worker: Worker): Task[] {
   return run.tasks.filter(task => task.state === 'done' && task.owner === worker.id && task.commit).sort((one, two) => (two.doneAt ?? 0) - (one.doneAt ?? 0) || two.id - one.id)
 }
@@ -350,25 +318,6 @@ function plainWords(activity: string): string {
   if (READ_TOOLS.has(tool)) return 'reading code'
   if (EDIT_TOOLS.has(tool)) return target ? `editing ${target.split('/').pop()}` : 'editing'
   return CLASS_WORDS[activityOf(tool, activity)] ?? `in a step of the agent: ${activity}`
-}
-
-/** The context of the agent against CONTEXT_CAP, and the cost of the worker in input tokens (costTokens). An ACP agent that reports no usage has no cost. */
-function costLine(worker: Worker): string {
-  const cost = worker.tokens || !isAcpSpec(worker.agent) ? `cost ${tokenCount(worker.tokens)} tokens` : 'cost not reported'
-  return worker.context ? `context ${tokenCount(worker.context.used)} of ${tokenCount(CONTEXT_CAP)} cap, ${cost}` : cost
-}
-
-/** The one warning of a card, the most urgent first. A stuck agent shows its last command as a clue. */
-function warningOf(run: Run, worker: Worker, now: number): string | undefined {
-  if (!LIVE.has(run.state) || worker.state === 'stopped') return undefined
-  const claim = claimOf(run, worker)
-  const quiet = now - Math.max(worker.activityAt, worker.saidAt ?? 0)
-  if (worker.state === 'working' && quiet > STUCK_MS) return `No word for ${ago(quiet)}, last: ${shortActivity(worker.activity)}`
-  if (claim && worker.state === 'working' && plainWords(worker.activity) === CLASS_WORDS.background) return 'Waits for its own background work'
-  if (worker.state === 'idle' && claimable(run.tasks).length) return 'Idle, task ready'
-  if ((worker.context?.used ?? 0) >= NEAR_CAP * CONTEXT_CAP) return 'Context near the cap: a fresh agent takes its next task'
-  if (claim && (claim.calls ?? 0) >= NEAR_SPLIT * SPLIT_CALLS[claim.size ?? 'M']) return 'Long task, may split'
-  return undefined
 }
 
 /** The state of a row: a leaf by its own state, a parent by the leaves under it. Each level of the tree shows the groups in this order. */
@@ -784,19 +733,6 @@ function startSection(input: PaneInput) {
 
 async function act(io: Io, action: () => Promise<string>): Promise<void> {
   io.toast(`meld: ${await action()}`)
-}
-
-function laneOf(facts: Facts | null, worker: Worker): LaneFacts {
-  return facts?.lanes.find(lane => lane.id === worker.id) ?? { id: worker.id, commits: [], edits: false }
-}
-
-/** A shell command as its name and its target (past a leading cd, flags, numbers and redirections), a path as its last part; another tool as its name and target. */
-function shortActivity(activity: string): string {
-  const command = /^Bash: (.*)$/.exec(activity)?.[1]
-  if (command === undefined) return cut(activity, ACTIVITY_CHARS)
-  const [name = 'Bash', ...rest] = command.replace(LEADING_CD, '').split(/\s+/).filter(Boolean)
-  const target = rest.find(word => !SKIPPED_ARGUMENT.test(word))
-  return cut(target ? `${name} ${target.split('/').filter(Boolean).pop() ?? target}` : name, ACTIVITY_CHARS)
 }
 
 /** The dollars the session spent since the run started, when the host keeps a cost ledger and the run noted its start. */
