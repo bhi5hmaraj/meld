@@ -353,8 +353,9 @@ test('the header counts the tasks in place of a percent: done of all, working, r
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   for (const surface of ALL_SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(textsOf(await ui.find({ key: 'counts' }))).toEqual(['0 of 4 tasks done, 1 working, 3 ready, 0 waiting'])
+    expect(textsOf(await ui.find({ key: 'counts' }))).toEqual(['0 of 4 tasks done, 1 working, 3 ready'])
     expect(textsOf(await ui.find({ key: 'sec-top' })).some(text => /\d%/.test(text))).toBe(false)
+    expect(textsOf(await ui.find({ key: 'sec-top' })).join(' ')).not.toMatch(/\bgit\b/)
     await ui.unmount()
   }
 })
@@ -584,7 +585,7 @@ test('a graphic surface draws the bar of the request and of each row as a pictur
   for (const surface of GRAPHIC_SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
     const alts = (await ui.findAll({ type: 'Svg' })).map(svg => String(svg.props.alt)).filter(alt => !/^w\d+: /.test(alt))
-    expect(alts).toEqual(['1 of 4 tasks done, 2 working, 0 ready, 1 waiting', '#1: 50% done', '#2: 0% done', '#3: 0% done'])
+    expect(alts).toEqual(['1 of 4 tasks done, 2 working, 1 waiting','#1: 50% done', '#2: 0% done', '#3: 0% done'])
     await ui.unmount()
   }
 })
@@ -701,7 +702,7 @@ test('a run that meld 0.6.0 stored, with no task tree and a view with no open ro
   for (const surface of ALL_SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
     expect(rowKeys(await ui.findAll({ type: 'Box' }))).toEqual(['task-1', 'task-2', 'task-3'])
-    expect(textsOf(await ui.find({ key: 'counts' }))).toEqual(['1 of 3 tasks done, 1 working, 1 ready, 0 waiting'])
+    expect(textsOf(await ui.find({ key: 'counts' }))).toEqual(['1 of 3 tasks done, 1 working, 1 ready'])
     expect(await ui.find({ type: 'Text', text: /^waits for/ })).toBeUndefined()
     await ui.unmount()
   }
@@ -714,7 +715,7 @@ test('a run that meld 0.7.0 stored draws its task tree, its progress and its sha
   for (const surface of ALL_SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
     expect(rowKeys(await ui.findAll({ type: 'Box' }))).toEqual(['task-1', 'task-4', 'task-5', 'task-2', 'task-3'])
-    expect(textsOf(await ui.find({ key: 'counts' }))).toEqual(['1 of 4 tasks done, 2 working, 0 ready, 1 waiting'])
+    expect(textsOf(await ui.find({ key: 'counts' }))).toEqual(['1 of 4 tasks done, 2 working, 1 waiting'])
     expect(await ui.find({ type: 'Text', text: 'waits for #1' })).toBeDefined()
     const lines = (await ui.findAll({ type: 'Box' })).filter(box => /^context-\d+$/.test(box.key ?? ''))
     expect(lines.map(line => line.key)).toEqual(['context-3', 'context-2'])
@@ -744,6 +745,6 @@ test('a parent row is at 100% when the workers finish its parts', async ($, on) 
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(textsOf(await ui.find({ key: 'task-1' })).slice(0, 2)).toEqual(['▸ #1 Theme tokens in theme.css', '100%'])
-  expect(textsOf(await ui.find({ key: 'counts' }))).toEqual(['2 of 5 tasks done, 0 working, 3 ready, 0 waiting'])
+  expect(textsOf(await ui.find({ key: 'counts' }))).toEqual(['2 of 5 tasks done, 3 ready'])
   await ui.unmount()
 })

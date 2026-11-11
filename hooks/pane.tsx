@@ -108,7 +108,8 @@ function headerSection(input: PaneInput, run: Run) {
   const shared = sharedSpec(run)
   const progress = progressOf(run, now)
   const { done, working, ready, waiting } = progress
-  const counts = `${done} of ${done + working + ready + waiting} tasks done, ${working} working, ${ready} ready, ${waiting} waiting`
+  const others = [`${working} working`, `${ready} ready`, `${waiting} waiting`].filter(part => !part.startsWith('0 '))
+  const counts = [`${done} of ${done + working + ready + waiting} tasks done`, ...others].join(', ')
   const request = run.request.replace(/\s+/g, ' ').trim()
   return (
     <Box key="sec-top" flexDirection="column" gap="xs">
@@ -118,7 +119,7 @@ function headerSection(input: PaneInput, run: Run) {
             ● {STATE_WORD[run.state]}
           </Text>
           <Text dimColor>
-            {run.vcs} · {run.workers.length} agents{shared ? ` · ${shared}` : ''} · {ago(now - run.startedAt)} · {spent ?? `${compact(units)} cost units`}
+            {run.workers.length} agents{shared ? ` · ${shared}` : ''} · {ago(now - run.startedAt)} · {spent ?? `${compact(units)} cost units`}
           </Text>
         </Box>
         <Box flexDirection="row" gap="sm">
