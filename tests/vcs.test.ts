@@ -284,10 +284,11 @@ test('each adapter names the integration line as a worker names it in its folder
   expect(vcsFor('jj').lineName(runOn('jj'))).toBe('meld_integration')
 })
 
-test('git merges a finished commit into the integration line with a merge commit and no worktree', async () => {
+test('git merges a finished commit into the integration line with a merge commit and no worktree, and names the files that the line got', async () => {
   const io = new FakeIo()
   lineAnswers(io, GIT_LINE)
-  expect(await vcsFor('git').mergeIntoLine(io, runOn('git'), FULL, MESSAGE)).toEqual({ state: 'merged', head: MERGED })
+  io.answers[`git diff --name-only --no-renames ${LINE} ${MERGED}`] = 'src/theme.ts\nsrc/tokens.ts\n'
+  expect(await vcsFor('git').mergeIntoLine(io, runOn('git'), FULL, MESSAGE)).toEqual({ state: 'merged', head: MERGED, files: ['src/theme.ts', 'src/tokens.ts'] })
   expect(io.commands).toContain(`git update-ref ${GIT_LINE} ${MERGED} ${LINE}`)
   expect(io.cwds[`git merge-tree --write-tree --name-only --no-messages ${LINE} ${FULL}`]).toBe('/repo')
   expect(io.ran('git merge ')).toBe(false)
@@ -297,7 +298,7 @@ test('git merges a finished commit into the integration line with a merge commit
 test('git starts the integration line at the base, and moves it forward to a commit that holds it', async () => {
   const io = new FakeIo()
   io.failing = [`git rev-parse --verify --quiet ${GIT_LINE}`, `git merge-base --is-ancestor ${FULL} ${HEAD}`]
-  expect(await vcsFor('git').mergeIntoLine(io, runOn('git'), FULL, MESSAGE)).toEqual({ state: 'merged', head: FULL })
+  expect(await vcsFor('git').mergeIntoLine(io, runOn('git'), FULL, MESSAGE)).toEqual({ state: 'merged', head: FULL, files: [] })
   expect(io.commands).toContain(`git update-ref ${GIT_LINE} ${FULL} `)
   expect(io.ran('git merge-tree')).toBe(false)
   expect(io.ran('git commit-tree')).toBe(false)
@@ -340,7 +341,7 @@ test('jj merges in its store, with the identity of the repository, and gives jj 
   io.answers['git config user.name'] = 'Sample Person'
   io.answers['git config user.email'] = 'sample@example.com'
   lineAnswers(io, JJ_LINE, '-c user.name=Sample Person -c user.email=sample@example.com ')
-  expect(await vcsFor('jj').mergeIntoLine(io, runOn('jj'), FULL, MESSAGE)).toEqual({ state: 'merged', head: MERGED })
+  expect(await vcsFor('jj').mergeIntoLine(io, runOn('jj'), FULL, MESSAGE)).toEqual({ state: 'merged', head: MERGED, files: [] })
   expect(io.cwds[`git merge-tree --write-tree --name-only --no-messages ${LINE} ${FULL}`]).toBe(STORE)
   expect(io.cwds[`git update-ref ${JJ_LINE} ${MERGED} ${LINE}`]).toBe(STORE)
   expect(io.commands.at(-1)).toBe(`jj -R ${JJ_REPO} --ignore-working-copy git import`)

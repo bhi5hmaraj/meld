@@ -162,10 +162,10 @@ test('a part gets the handovers of what its parent needs, and a need with parts 
 
 test('a board read shows the handovers that the claims of its reader need, and the task list holds no handover', () => {
   const run = runOf(claimTask(tokensDone(), 'w2', 2, 1, NOW))
-  const view = boardFor(run, 'w2').view
+  const view = boardFor(run, 'w2', NOW).view
   expect(view.handovers).toEqual([{ task: 1, title: 'Tokens', commit: 'def5678', ...HANDOVER }])
   expect(view.tasks.map(task => 'handover' in task)).toEqual([false, false, false])
-  expect(boardFor(run, 'w3').view.handovers).toBeUndefined()
+  expect(boardFor(run, 'w3', NOW).view.handovers).toBeUndefined()
 })
 
 test('a claim answers with the handovers of the tasks that the task needs', async () => {
@@ -205,7 +205,7 @@ test('a task added to a run that meld 0.7.0 stored gets the commit of its done n
 })
 
 test('a board read of a run that meld 0.7.0 stored shows its tasks as they were, and no handovers', () => {
-  const view = boardFor(STORED_BY_0_7_0, 'w1').view
+  const view = boardFor(STORED_BY_0_7_0, 'w1', NOW).view
   expect(view.tasks).toEqual(STORED_BY_0_7_0.tasks)
   expect(view.handovers).toBeUndefined()
 })

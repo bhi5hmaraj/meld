@@ -275,7 +275,7 @@ export async function serveTool(io: Io, e: ToolCall, cwd = ''): Promise<ToolRepl
   await io.write(run => {
     if (!run) return run
     const done = answered(run, worker.id, 'error' in checked ? checked : mutate(run, worker.id, tool, checked.args, now, checked.held))
-    const passed = board.passContext(done.run, worker.id)
+    const passed = board.passContext(done.run, worker.id, now)
     answer = { ...done.answer, context: passed.context }
     const counted = countedCall(passed.run, worker.id, now)
     nudge = counted.task
@@ -304,10 +304,11 @@ async function mergeTask(io: Store & CodeHost & Clock & Runner, by: WorkerId, id
   const run = await readRun(io)
   const task = run && ACTIVE_RUN.has(run.state) ? board.unmergedTasks(run).find(one => one.id === id) : undefined
   if (!run || !task) return
+  const from = await io.now()
   const merged = await vcsFor(run.vcs).mergeIntoLine(io, run, task.commit ?? '', `meld: integrate #${task.id} ${task.title}`)
   const now = await io.now()
   await writeRunOf(io, run.id, current => {
-    if (merged.state === 'merged') return board.lineMerged(current, task.id, merged.head, now)
+    if (merged.state === 'merged') return board.lineMerged(current, task.id, merged.head, now, { from, worker: by, files: merged.files })
     return runOf(board.addIntegrateTask(current, task.id, integrateDetail(current, task, merged), now), current)
   })
   if (merged.state === 'merged') return
@@ -484,7 +485,7 @@ async function readBoard(io: Store & Runner, id: WorkerId, now: number): Promise
   let nudge: Task | undefined
   await io.write(run => {
     if (!run) return run
-    const seen = board.boardFor(run, id)
+    const seen = board.boardFor(run, id, now)
     const briefed = seen.run.workers.find(worker => worker.id === id)?.briefed ?? true
     view = briefed ? seen.view : { ...seen.view, rules: workerRules(seen.run, id) }
     const counted = countedCall(briefed ? seen.run : board.markBriefed(seen.run, id), id, now)
@@ -517,7 +518,7 @@ async function statusView(io: Store & Clock): Promise<unknown> {
         claims: claimsOf(run, worker).map(task => task.id),
         secondsSinceCall: Math.round((now - worker.activityAt) / 1000),
       })),
-      log: run.log.filter(entry => entry.id > seen).map(({ id, at, by, kind, text, commit, passed }) => ({ id, at, by, kind, text, commit, passed })),
+      log: run.log.filter(entry => entry.id > seen && !board.isQuiet(entry)).map(({ id, at, by, kind, text, commit, passed }) => ({ id, at, by, kind, text, commit, passed })),
     }
     return { ...run, sessionSeen: run.log.at(-1)?.id ?? seen }
   })
@@ -549,7 +550,7 @@ async function overview(io: Store): Promise<unknown> {
     integrator: run.integrator,
     nudges: run.nudges,
     final: run.final,
-    log: run.log.slice(-10),
+    log: run.log.filter(entry => !board.isQuiet(entry)).slice(-10),
   }
 }
 
