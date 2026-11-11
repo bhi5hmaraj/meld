@@ -1,4 +1,4 @@
-import type { Task, TaskSize, WorkerId } from '../types'
+import type { Task, TaskSize } from '../types'
 import { childrenOf } from './tasks'
 
 export const SIZE_WEIGHT: Readonly<Record<TaskSize, number>> = { S: 1, M: 3, L: 8 }
@@ -41,12 +41,6 @@ export function percentLabel(percent: number): string {
 /** The whole number at or below the value, when the value is a sum of shares in floating point. */
 export function floored(value: number): number {
   return Math.floor(value + ROUNDING)
-}
-
-/** The workers that claim a leaf of the task, or the task when it is a leaf, each one time. */
-export function ownersOf(tasks: readonly Task[], task: Task): WorkerId[] {
-  const owners = leavesOf(tasks, task).flatMap(leaf => (leaf.state === 'claimed' && leaf.owner ? [leaf.owner] : []))
-  return [...new Set(owners)].sort()
 }
 
 /** The sum of each member's parts times its weight, divided one time by the total weight: all parts done is 1, not 0.9999. */

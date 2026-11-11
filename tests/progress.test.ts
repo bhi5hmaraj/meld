@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { leavesOf, ownersOf, partsOf, percentLabel, requestParts, requestPercent, SIZE_WEIGHT, topTasks, weightOf } from '../core/progress'
+import { leavesOf, partsOf, percentLabel, requestParts, requestPercent, SIZE_WEIGHT, topTasks, weightOf } from '../core/progress'
 import type { Task } from '../types'
 
 function task(id: number, fields: Partial<Task> = {}): Task {
@@ -79,16 +79,6 @@ test('the parts of the request add up the top-level tasks by their size', () => 
   expect(rounded(parts.done)).toBe(rounded((8 / 12) * (1 / 12) + 1 / 12))
   expect(rounded(parts.claimed)).toBe(rounded((8 / 12) * (8 / 12)))
   expect(rounded(parts.open)).toBe(rounded((8 / 12) * (3 / 12) + 3 / 12))
-})
-
-test('the owners of a task are the workers that claim its leaves, each one time and in worker order', () => {
-  expect(ownersOf(DEEP, task(1))).toEqual(['w1', 'w3'])
-  expect(ownersOf(TREE, task(1, { size: 'L' }))).toEqual(['w2'])
-})
-
-test('a leaf that is done or open has no owner dots', () => {
-  expect(ownersOf(TREE, task(5, { size: 'S', state: 'done', owner: 'w3' }))).toEqual([])
-  expect(ownersOf(TREE, task(6, { needs: [1] }))).toEqual([])
 })
 
 test('a percent shows as the whole number at or below it, so 100% means that all is done', () => {

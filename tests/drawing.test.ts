@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { barCells, laneSvg, partsBarSvg, ROW_BAR_WIDTH } from '../hooks/drawing'
+import { barCells, laneSvg, partsBarSvg } from '../hooks/drawing'
 
 const LANE = { id: 'w2' as const, commits: [{ commit: 'f'.repeat(40), subject: 'Add add()', parents: 1, conflict: false }], edits: true }
 
@@ -16,8 +16,8 @@ test('the parts bar names its progress class apart from the lanes', () => {
   expect(partsBarSvg({ done: 1, claimed: 1, open: 1 })).toContain('class="progress"')
 })
 
-test('the bar of a row has the width it is given', () => {
-  expect(partsBarSvg({ done: 0.5, claimed: 0, open: 0.5 }, ROW_BAR_WIDTH)).toContain(`width="${ROW_BAR_WIDTH}"`)
+test('a parts bar has the width it is given', () => {
+  expect(partsBarSvg({ done: 0.5, claimed: 0, open: 0.5 }, 64)).toContain('width="64"')
 })
 
 test('the done cells of a text bar are cut down, so a full bar means that all is done', () => {

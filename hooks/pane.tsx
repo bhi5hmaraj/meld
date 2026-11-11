@@ -6,14 +6,14 @@ import { CONTEXT_CAP, currentContext, NOT_STARTED, SPLIT_CALLS } from '../core/b
 import { activityOf, sharedContextOf } from '../core/metrics'
 import type { SharedContext } from '../core/metrics'
 import { STEER_PRESETS } from '../core/contract'
-import { agentColor, BAR_HEIGHT, BAR_WIDTH, barCells, LANE_HEIGHT, LANE_WIDTH, laneAlt, laneGlyphs, laneSvg, partsBarSvg, ROW_BAR_WIDTH, STATUS } from './drawing'
+import { agentColor, BAR_HEIGHT, BAR_WIDTH, barCells, LANE_HEIGHT, LANE_WIDTH, laneAlt, laneGlyphs, laneSvg, partsBarSvg, STATUS } from './drawing'
 import { FLOW_CELLS, FLOW_HEIGHT, FLOW_LEGEND, FLOW_WIDTH, flowCells, flowSvg, partsIn, partWords } from './drawing'
 import type { TimeSpan } from './drawing'
 import { efficiencyOf, lanesOf, progressOf } from '../core/metrics'
 import type { LanePart } from '../core/metrics'
 import type { Io } from '../core/ports'
 import { agentsOf, formatStart, isAcpSpec, MAX_AGENTS, MODELS, WORKER_TYPE } from '../core/options'
-import { leavesOf, ownersOf, partsOf, percentLabel, requestParts, requestPercent, topTasks } from '../core/progress'
+import { leavesOf, percentLabel, requestParts, requestPercent, topTasks } from '../core/progress'
 import type { Parts } from '../core/progress'
 import { childrenOf, claimable, waitsFor } from '../core/tasks'
 
@@ -67,15 +67,10 @@ const CHECK_CHIPS = 6
 const CARD_INDENT = 3
 const SUMMARY_WORDS = 24
 const REQUEST_BAR = { width: BAR_WIDTH, cells: 24 }
-const ROW_BAR = { width: ROW_BAR_WIDTH, cells: 8 }
 const ROW_INDENT = 2
 const TITLE_WORDS = 8
-/** A text bar has three runs at most: done, claimed and open. */
-const BAR_RUNS = 3
 /** The words of the rows: the progress block holds 100 words with its heading, the bar and percent of the request, and the count of the rows left out. */
 const ROW_WORDS = 90
-/** The words of the line "N done" that the done rows fold into. */
-const FOLD_WORDS = 2
 /** A ready task that waits longer than this while a worker is idle shows in the warning colour. */
 const READY_WARN_MS = 300_000
 const REQUEST_CHARS = 72
@@ -345,7 +340,7 @@ const GROUP_ORDER: Record<RowGroup, number> = { claimed: 0, ready: 1, waiting: 2
 /** The state of a leaf in words, or "N of M done" for a parent. */
 type Word = { text: string; color?: string }
 /** One row of the progress. isOpen: the rows of its children show under it. */
-type Row = { task: Task; depth: number; isParent: boolean; isOpen: boolean; group: RowGroup; owners: WorkerId[]; word: Word }
+type Row = { task: Task; depth: number; isParent: boolean; isOpen: boolean; group: RowGroup; word: Word }
 /** What each row of the tree reads: the run, its ready leaves, the choices of the person, and whether a worker is idle. */
 type Tree = { run: Run; ready: ReadonlySet<number>; view: PaneView; now: number; idle: boolean }
 
@@ -360,16 +355,17 @@ function progressSection(input: PaneInput, run: Run) {
     )
   }
   const tree: Tree = { run, ready: new Set(claimable(run.tasks).map(task => task.id)), view: input.view, now: input.now, idle: run.workers.some(worker => worker.state === 'idle') }
-  const rows = rowsOf(tree, topTasks(run.tasks), 0)
-  const fits = rows.reduce((sum, row) => sum + rowWords(row), 0) <= ROW_WORDS
-  const live = rows.filter(row => row.group !== 'done')
-  const folded = fits ? 0 : rows.length - live.length
-  const shown = fits ? rows : rowsWithin(live, ROW_WORDS - (folded ? FOLD_WORDS : 0))
+  const all = rowsOf(tree, topTasks(run.tasks), 0)
+  const done = all.filter(row => row.depth === 0 && row.group === 'done' && !row.isOpen)
+  const [first] = done
+  const fold = first && done.length > 1 && done.length < all.length ? `${taskName(first.task)}, and ${done.length - 1} more done` : undefined
+  const rows = fold ? all.filter(row => !done.includes(row)) : all
+  const shown = rowsWithin(rows, ROW_WORDS - (fold ? wordCount(fold) : 0))
   const percent = percentLabel(requestPercent(run.tasks))
   return (
     <Box key="sec-progress" flexDirection="column" gap="sm">
       <Box key="progress-all" flexDirection="row" justifyContent="space-between" alignItems="center" gap="md">
-        <Text bold>Progress</Text>
+        <Text bold>Plan</Text>
         <Box flexDirection="row" gap="sm" alignItems="center">
           <Text bold tabular>
             {percent}
@@ -378,16 +374,16 @@ function progressSection(input: PaneInput, run: Run) {
         </Box>
       </Box>
       <Box flexDirection="column" gap="xs">
-        {shown.map(row => taskRow(input, run, row))}
-        {folded > 0 && <Text dimColor>{`${folded} done`}</Text>}
-        {shown.length + folded < rows.length && <Text dimColor>{`${rows.length - folded - shown.length} more`}</Text>}
+        {shown.map(row => taskRow(input, row))}
+        {fold && <Text dimColor>{fold}</Text>}
+        {shown.length < rows.length && <Text dimColor>{`${rows.length - shown.length} more`}</Text>}
       </Box>
     </Box>
   )
 }
 
-/** The title on the left; the word, and for a parent the owners and a small bar, on the right. A press on a parent opens or closes it. */
-function taskRow(input: PaneInput, run: Run, row: Row) {
+/** The title on the left and the word on the right. A press on a parent opens or closes it. */
+function taskRow(input: PaneInput, row: Row) {
   const { Box, Text, Button } = input.table
   const { task, word } = row
   return (
@@ -399,17 +395,9 @@ function taskRow(input: PaneInput, run: Run, row: Row) {
       ) : (
         <Text wrap="truncate-end">{rowLabel(row)}</Text>
       )}
-      <Box flexDirection="row" gap="sm" alignItems="center">
-        <Text color={word.color} dimColor={!word.color}>
-          {word.text}
-        </Text>
-        {row.owners.map(owner => (
-          <Text key={`dot-${task.id}-${owner}`} color={agentColor(run.workers.findIndex(worker => worker.id === owner)).light}>
-            ●
-          </Text>
-        ))}
-        {row.isParent && partsBar(input, String(task.id), partsOf(run.tasks, task), ROW_BAR, `#${task.id}: ${word.text}`)}
-      </Box>
+      <Text color={word.color} dimColor={!word.color}>
+        {word.text}
+      </Text>
     </Box>
   )
 }
@@ -442,9 +430,9 @@ function rowOf(tree: Tree, task: Task, depth: number): Row {
   const leaves = leavesOf(run.tasks, task)
   const group = groupOf(tree, leaves)
   const opens = view.open?.includes(task.id) || (!view.closed?.includes(task.id) && (group === 'claimed' || group === 'ready'))
-  if (!isParent) return { task, depth, isParent, isOpen: false, group, owners: [], word: leafWord(tree, task) }
+  if (!isParent) return { task, depth, isParent, isOpen: false, group, word: leafWord(tree, task) }
   const done = leaves.filter(leaf => leaf.state === 'done').length
-  return { task, depth, isParent, isOpen: opens, group, owners: ownersOf(run.tasks, task), word: { text: `${done} of ${leaves.length} done` } }
+  return { task, depth, isParent, isOpen: opens, group, word: { text: `${done} of ${leaves.length} done` } }
 }
 
 function groupOf(tree: Tree, leaves: readonly Task[]): RowGroup {
@@ -453,14 +441,11 @@ function groupOf(tree: Tree, leaves: readonly Task[]): RowGroup {
   return leaves.every(leaf => leaf.state === 'done') ? 'done' : 'waiting'
 }
 
-/** A leaf in words: its worker working and for how long, ready and for how long, the task it waits for, or a tick and its short commit. */
+/** A leaf in words: its worker working, ready and for how long, the task it waits for, or done. The card of the worker gives its time on the task. */
 function leafWord(tree: Tree, task: Task): Word {
   const { run, now } = tree
-  if (task.state === 'claimed') {
-    const time = task.claimedAt === undefined ? '' : ` ${ago(now - task.claimedAt)}`
-    return { text: `${task.owner} working${time}`, color: agentColor(run.workers.findIndex(worker => worker.id === task.owner)).light }
-  }
-  if (task.state === 'done') return { text: `${TICK} ${(task.commit ?? '').slice(0, 7)}`.trim(), color: 'success' }
+  if (task.state === 'claimed') return { text: `${task.owner} working`, color: agentColor(run.workers.findIndex(worker => worker.id === task.owner)).light }
+  if (task.state === 'done') return { text: `${TICK} done`, color: 'success' }
   if (tree.ready.has(task.id)) {
     if (task.readyAt === undefined) return { text: 'ready' }
     const waited = now - task.readyAt
@@ -482,14 +467,18 @@ function rowsWithin(rows: readonly Row[], limit: number): Row[] {
   return shown
 }
 
-/** The words of a row as the limit of a block counts them, with a text bar on every surface. */
+/** The words of a row as the limit of a block counts them. */
 function rowWords(row: Row): number {
-  return wordCount(rowLabel(row)) + wordCount(row.word.text) + row.owners.length + (row.isParent ? BAR_RUNS : 0)
+  return wordCount(rowLabel(row)) + wordCount(row.word.text)
 }
 
 function rowLabel(row: Row): string {
   const mark = row.isParent ? (row.isOpen ? '▾' : '▸') : '·'
-  return `${mark} #${row.task.id} ${cutWords(row.task.title, TITLE_WORDS)}`
+  return `${mark} ${taskName(row.task)}`
+}
+
+function taskName(task: Task): string {
+  return `#${task.id} ${cutWords(task.title, TITLE_WORDS)}`
 }
 
 function waitText(id: number): string {

@@ -598,32 +598,31 @@ test('the progress section shows a bar and a percent for the whole request on ev
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   for (const surface of ALL_SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(textsOf(await ui.find({ key: 'progress-all' })).slice(0, 2)).toEqual(['Progress', '33%'])
+    expect(textsOf(await ui.find({ key: 'progress-all' })).slice(0, 2)).toEqual(['Plan', '33%'])
     await ui.unmount()
   }
 })
 
-test('a graphic surface draws the bar of the request and of each row as a picture', async ($, on) => {
+test('a graphic surface draws the bar of the request as a picture, and no row draws a bar', async ($, on) => {
   const state = new FakeState().load(treeRun(), null)
   on('clock.now', () => ({ value: NOW }))
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   for (const surface of GRAPHIC_SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
     const alts = (await ui.findAll({ type: 'Svg' })).map(svg => String(svg.props.alt)).filter(alt => !/^w\d+: /.test(alt))
-    expect(alts).toEqual(['The request: 33% done', '#1: 1 of 2 done'])
+    expect(alts).toEqual(['The request: 33% done'])
     await ui.unmount()
   }
 })
 
-test('the terminal draws the bars in text, with one shape for each part, in the order done, claimed, open', async ($, on) => {
+test('the terminal draws the bar of the request in text, one shape for each part in the order done, claimed, open, and no row draws a bar', async ($, on) => {
   const state = new FakeState().load(treeRun(), null)
   on('clock.now', () => ({ value: NOW }))
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.findAll({ type: 'Svg' })).toHaveLength(0)
   expect(partsOf(await ui.find({ key: 'bar-all' }))).toEqual(['█'.repeat(8), '▓'.repeat(14), '░'.repeat(2)])
-  expect(partsOf(await ui.find({ key: 'bar-1' }))).toEqual(['█'.repeat(4), '▓'.repeat(4)])
-  expect(await ui.find({ key: 'bar-3' })).toBeUndefined()
+  expect(await ui.find({ key: 'bar-1' })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -656,16 +655,16 @@ function timedTreeRun(readyFor: number): Run {
   return { ...run, tasks: [...tasks, task(6, 'Contrast check', { readyAt: NOW - readyFor })] }
 }
 
-test('a leaf shows a word: its worker working and the time, ready and the time, waits for #N, or a tick and its short commit', async ($, on) => {
+test('a leaf shows a word: its worker working, ready and the time, waits for #N, or done', async ($, on) => {
   const state = new FakeState().load(timedTreeRun(3 * 60_000), null)
   on('clock.now', () => ({ value: NOW }))
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   for (const surface of ALL_SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(textsOf(await ui.find({ key: 'task-2' }))).toEqual(['· #2 Toggle in the header', 'w2 working 5m'])
+    expect(textsOf(await ui.find({ key: 'task-2' }))).toEqual(['· #2 Toggle in the header', 'w2 working'])
     expect(textsOf(await ui.find({ key: 'task-6' }))).toEqual(['· #6 Contrast check', 'ready 3m'])
     expect(textsOf(await ui.find({ key: 'task-3' }))).toEqual(['· #3 Docs for the theme', 'waits for #1'])
-    expect(textsOf(await ui.find({ key: 'task-4' })).join(' ')).toContain('fffffff')
+    expect(textsOf(await ui.find({ key: 'task-4' }))).toEqual(['· #4 Colour tokens', '✓ done'])
     await ui.unmount()
   }
 })
@@ -679,27 +678,26 @@ test('a ready task that waits more than 5 minutes while a worker is idle shows i
   await ui.unmount()
 })
 
-test('when the rows pass the word limit, the done rows fold into one line', async ($, on) => {
-  const done = Array.from({ length: 12 }, (_, index) => task(index + 2, LONG_TITLE, { state: 'done', owner: 'w2', version: 3, commit: FULL }))
-  const state = new FakeState().load({ ...workingRun(2), tasks: [task(1, LONG_TITLE, { state: 'claimed', owner: 'w1', version: 2 }), ...done] }, null)
+test('while a task is live, the top-level done tasks fold into one line that names the first', async ($, on) => {
+  const done = ['Toggle', 'Docs', 'Tests'].map((title, index) => task(index + 2, title, { state: 'done', owner: 'w2', version: 3, commit: FULL }))
+  const state = new FakeState().load({ ...workingRun(2), tasks: [task(1, 'Theme tokens', { state: 'claimed', owner: 'w1', version: 2 }), ...done] }, null)
   on('clock.now', () => ({ value: NOW }))
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(rowKeys(await ui.findAll({ type: 'Box' }))).toEqual(['task-1'])
-  expect(await ui.find({ type: 'Text', text: '12 done' })).toBeDefined()
-  await ui.unmount()
+  for (const surface of ALL_SURFACES) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(rowKeys(await ui.findAll({ type: 'Box' }))).toEqual(['task-1'])
+    expect(await ui.find({ type: 'Text', text: '#2 Toggle, and 2 more done' })).toBeDefined()
+    await ui.unmount()
+  }
 })
 
-test('a parent shows a dot in the colour of each worker that claims a part of it, and a claimed leaf its worker in that colour', async ($, on) => {
+test('a claimed leaf names its worker in the colour of the worker, and no row shows a dot', async ($, on) => {
   const state = new FakeState().load(treeRun(), null)
   on('clock.now', () => ({ value: NOW }))
   on('state.get', ($, e) => ({ value: state.get(e.key) }))
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  const dots = (await ui.findAll({ type: 'Text', text: '●' })).map(dot => dot.props.color)
-  expect(dots).toContain(agentColor(2).light)
-  expect(JSON.stringify(await ui.find({ key: 'task-1' }))).toContain(agentColor(2).light)
-  expect(JSON.stringify(await ui.find({ key: 'task-2' }))).toContain(agentColor(1).light)
-  expect(JSON.stringify(await ui.find({ key: 'task-3' }))).not.toContain('●')
+  expect((await ui.find({ type: 'Text', text: 'w2 working' }))?.props.color).toBe(agentColor(1).light)
+  expect(JSON.stringify(await ui.find({ key: 'sec-progress' }))).not.toContain('●')
   await ui.unmount()
 })
 
@@ -806,8 +804,8 @@ test('a split task shows as a parent row, and its parts open under it with their
   for (const surface of ALL_SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
     expect(rowKeys(await ui.findAll({ type: 'Box' }))).toEqual(['task-1', 'task-5', 'task-6', 'task-2', 'task-3', 'task-4'])
-    expect(textsOf(await ui.find({ key: 'task-1' })).slice(0, 3)).toEqual(['▾ #1 Theme tokens in theme.css', '0 of 2 done', '●'])
-    expect(textsOf(await ui.find({ key: 'task-5' }))).toEqual(['· #5 Colour tokens', 'w1 working 0s'])
+    expect(textsOf(await ui.find({ key: 'task-1' }))).toEqual(['▾ #1 Theme tokens in theme.css', '0 of 2 done'])
+    expect(textsOf(await ui.find({ key: 'task-5' }))).toEqual(['· #5 Colour tokens', 'w1 working'])
     expect(textsOf(await ui.find({ key: 'task-6' }))).toEqual(['· #6 Spacing tokens', 'ready 0s'])
     await ui.unmount()
   }
