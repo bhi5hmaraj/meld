@@ -4,7 +4,7 @@ import { MemoryStore } from '../core/memory-store'
 import type { AgentState, Runner, SpawnArgs, Spawned } from '../core/ports'
 import type { BoardServer } from '../core/remote-store'
 import type { Run } from '../types'
-import { boardVerdict, noBoardWarning, problemOf, sessionRunner, sessionStore, storeNote, withNote, workerOffer } from '../hooks/board-store'
+import { boardVerdict, noBoardWarning, problemOf, sessionRunner, sessionStore, storeNote, valueOf, withNote, workerOffer } from '../hooks/board-store'
 
 const SERVER = 'plugin:meld:board'
 const READ = 'mcp__plugin_meld_board__read_board'
@@ -134,4 +134,9 @@ test('a run on the board of meld mcp, a start with no started worker and an old 
   expect(noBoardWarning(none, null, null)).toBe('')
   expect(noBoardWarning(none, null, { id: 'r2', workers: [{ id: 'w1' }] } as unknown as Run)).toBe('')
   expect(noBoardWarning(none, started, started)).toBe('')
+})
+
+test('a reply of meld mcp that is no JSON fails with its first words, not with a parse error', () => {
+  const reply = { content: [{ type: 'text' as const, text: 'Error: result (58.6 KB) exceeds maximum allowed tokens.' }], isError: false }
+  expect(() => valueOf(reply)).toThrow('meld mcp gave no JSON: Error: result (58.6 KB) exceeds maximum allowed tokens.')
 })

@@ -4,13 +4,13 @@ import type { AgentStatus, HookFailure, Register } from 'claude-code'
 import { compactWorker, controlRun, countStep, guardCall, markWorker, noteTime, refreshFacts, restartIdleWorkers, serveTool, spawnVerdict, startFromView, startRun, steerRun, stopAll, timeCall, vcsVerdict } from '../core/actions'
 import { CONTEXT_CAP } from '../core/board'
 import { cleanFolders } from '../core/clean'
-import type { Action, BoardRead, Boards, BoardSummary, Committed } from '../core/remote-store'
+import type { Action, Boards, BoardSummary, Committed } from '../core/remote-store'
 import { reportCommand } from '../core/report'
 import { resumeRun } from '../core/resume'
 import { BOARD_TOOLS, COMMAND_CONTROLS, SESSION_TOOLS, STEER_PRESETS, TOOL, TOOL_PREFIX, TOOL_SPECS, WORKER_SYSTEM } from '../core/contract'
 import type { AgentState, FactsStore, Files, Io, RunRecord, RunRecords, Spawned, Store } from '../core/ports'
 import { MAX_AGENTS, parseStart, WORKER_TYPE } from '../core/options'
-import { adoptedOf, BOARD_STORE_TOOLS, boardVerdict, connectBoard, copyFromChannel, noBoardWarning, sessionRunner, sessionStore, storeNote, valueOf, withNote, workerOffer } from './board-store'
+import { adoptedOf, BOARD_STORE_TOOLS, boardVerdict, connectBoard, copyFromChannel, noBoardWarning, readRow, sessionRunner, sessionStore, storeNote, valueOf, withNote, workerOffer } from './board-store'
 import type { SessionBoard } from './board-store'
 import { DEFAULT_VIEW, paneTree } from './pane'
 
@@ -95,7 +95,7 @@ export const register: Register = on => {
       ...sessionStore(
         board,
         {
-          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
         },
         sessionState,
@@ -180,7 +180,7 @@ export const register: Register = on => {
       ...sessionStore(
         board,
         {
-          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
         },
         {
@@ -258,7 +258,7 @@ export const register: Register = on => {
       ...sessionStore(
         board,
         {
-          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
         },
         {
@@ -318,7 +318,7 @@ export const register: Register = on => {
         ...sessionStore(
           board,
           {
-            read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+            read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
             commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
           },
           {
@@ -379,7 +379,7 @@ export const register: Register = on => {
       ...sessionStore(
         board,
         {
-          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
         },
         {
@@ -436,7 +436,7 @@ export const register: Register = on => {
       ...sessionStore(
         board,
         {
-          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
         },
         {
@@ -483,7 +483,7 @@ export const register: Register = on => {
     const io: Store = sessionStore(
       board,
       {
-        read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+        read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
         commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
       },
       {
@@ -508,7 +508,7 @@ export const register: Register = on => {
       ...sessionStore(
         board,
         {
-          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
         },
         {
@@ -563,7 +563,7 @@ export const register: Register = on => {
       ...sessionStore(
         board,
         {
-          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
         },
         {
@@ -620,7 +620,7 @@ export const register: Register = on => {
       ...sessionStore(
         board,
         {
-          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
         },
         {
@@ -677,7 +677,7 @@ export const register: Register = on => {
       ...sessionStore(
         board,
         {
-          read: async () => valueOf<BoardRead>(await $.mcp.call(board.server, 'read_board', { board: board.id })),
+          read: () => readRow(board, url => $.http.fetch(url, { socketPath: board.channel }), () => $.mcp.call(board.server, 'read_board', { board: board.id })),
           commit: async (run, version) => valueOf<{ result: Committed }>(await $.mcp.call(board.server, 'commit_board', { board: board.id, run, version, owner: board.owner })).result,
         },
         {

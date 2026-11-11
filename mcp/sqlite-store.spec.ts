@@ -9,7 +9,7 @@ import { LOCAL_PARTY } from '../core/party'
 import type { ContextEntry, Entry, Run, RunState } from '../types'
 import { MEMBER_CHECKS, ROW_CHECKS } from '../tests/party-conformance'
 import { STORE_CHECKS } from '../tests/store-conformance'
-import { LEASE_MS, NOTHING_PRUNED, RETENTION_MS, SCHEMA_VERSION, SqliteBoards } from './sqlite-store'
+import { LEASE_MS, LISTED_REQUEST_CHARS, NOTHING_PRUNED, RETENTION_MS, SCHEMA_VERSION, SqliteBoards } from './sqlite-store'
 
 const HEAD = 'abc1234def5678abc1234def5678abc1234def56'
 const NOW = 1_800_000_000_000
@@ -227,6 +227,12 @@ test('a commit of another session while the owner holds its lease is refused, an
   expect(boards.commit('b1', newRun(), 1, 's1', NOW + LEASE_MS + 1)).toBe('stale')
   expect(boards.commit('b1', newRun(), 2, 's1', NOW + LEASE_MS + 1)).toBe('taken')
   expect(boards.commit('b1', newRun(), 2, 's2', NOW + LEASE_MS + 1)).toBe('committed')
+})
+
+test('the list gives the start of a long request, so the list of many boards stays small', () => {
+  const boards = new SqliteBoards(':memory:')
+  boards.commit('b1', { ...newRun(), request: 'x'.repeat(LISTED_REQUEST_CHARS + 500) }, 0, 's1', NOW)
+  expect(boards.list()[0]?.request).toBe('x'.repeat(LISTED_REQUEST_CHARS))
 })
 
 test('the list gives each board with a run: its run, state and request, its owner, and when it changed', () => {

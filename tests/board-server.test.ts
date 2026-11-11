@@ -60,9 +60,12 @@ class FakeMcp {
   calls: Call[] = []
   actions: Action[] = []
   channel = CHANNEL
+  /** The text that the engine gives for a tool result over its size limit, in place of the result. */
+  overLimit = ''
 
   answer(tool: string, args: Record<string, unknown>): McpToolResult {
     this.calls.push({ tool, args })
+    if (tool === 'read_board' && this.overLimit) return { content: [{ type: 'text', text: this.overLimit }], isError: false }
     return { content: [{ type: 'text', text: JSON.stringify(this.value(tool, args)) }], isError: false }
   }
 
@@ -493,4 +496,21 @@ test('a run that lives in the session state stays there when meld mcp comes up l
   await $.command.run({ command: 'meld-stop', args: '', ...TYPED })
   expect(mcp.calls.map(call => call.tool)).not.toContain('lead_board')
   expect((stored as { value: Run }).value.state).toBe('stopped')
+})
+
+const OVER_LIMIT = 'Error: result (58.6 KB) exceeds maximum allowed tokens. Output has been saved to a file.'
+
+test('a board read comes over the channel, so a run past the size limit of an MCP result still reads', async ($, on) => {
+  const mcp = new FakeMcp()
+  mcp.overLimit = OVER_LIMIT
+  answerTheEngine(on, mcp)
+  on('state.get', () => ({ value: { value: undefined, version: 0 } }))
+  on('state.set', () => ({ value: { isSet: true, version: 1 } }))
+  on('agent.list', () => ({ value: [] }))
+  on('http.fetch', ($, e) => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify(mcp.boards[decodeURIComponent(e.url.split('/').pop() ?? '')]) } }))
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  mcp.boards[SESSION] = { run: working(), version: 4, owner: SESSION, ownerAt: NOW }
+  const replied = await $.command.run({ command: 'meld-stop', args: '', ...TYPED })
+  expect(replied.text).toContain('Stopped.')
+  expect(mcp.boards[SESSION]?.run?.state).toBe('stopped')
 })

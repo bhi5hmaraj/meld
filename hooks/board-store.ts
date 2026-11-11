@@ -81,7 +81,25 @@ export function sessionRunner(session: SessionBoard, engine: Runner, acp: Runner
 export function valueOf<T>(result: McpToolResult): T {
   const text = result.content.find(block => block.type === 'text')?.text ?? ''
   if (result.isError) throw new Error(`meld mcp: ${text}`)
-  return JSON.parse(text) as T
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    // The engine gives a short text in place of a result over its size limit.
+    throw new Error(`meld mcp gave no JSON: ${text.slice(0, NO_JSON_CHARS)}`)
+  }
+}
+
+/** The most characters of a reply that is no JSON in its error. */
+const NO_JSON_CHARS = 120
+
+/**
+ * The row of the board of the session. It comes over the channel of meld mcp when there is one: the engine limits the
+ * size of an MCP result, and a run with many tasks passes that limit. Without a channel, or when the channel fails, the
+ * row comes from the read_board tool.
+ */
+export async function readRow(session: SessionBoard, fetch: (url: string) => Promise<HttpResponse>, call: () => Promise<McpToolResult>): Promise<BoardRead> {
+  const answer = session.channel ? await fetch(`http://meld/boards/${encodeURIComponent(session.id)}`).catch(() => undefined) : undefined
+  return answer?.ok ? (JSON.parse(answer.text) as BoardRead) : valueOf<BoardRead>(await call())
 }
 
 /** What adopt_board answers, as the resume reads it. */
