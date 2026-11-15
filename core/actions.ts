@@ -1,7 +1,7 @@
 import type { Activity, ActivityTimes, AgentContext, Change, Facts, Failure, Final, NewTask, PaneView, Run, Task, TaskSize, TokenSums, VcsKind, Worker, WorkerId, WorkerState } from '../types'
 import * as board from './board'
 import { activityOf } from './metrics'
-import { COMPACT_KEEP, CONTROL_TOOLS, HAND_BACK, integrateDetail, integrateStep, missingWorkText, splitNudge, STATUS_VIEW, TOOL, wakeText, workerPrompt, workerRules } from './contract'
+import { COMPACT_KEEP, CONTROL_TOOLS, HAND_BACK, OWN_EDITS, integrateDetail, integrateStep, missingWorkText, splitNudge, STATUS_VIEW, TOOL, wakeText, workerPrompt, workerRules } from './contract'
 import type { Control } from './contract'
 import { command, dirtyFiles, GIT_MIN, gitVersion, headCommit, isDirty, isOldGit, repoRoot } from './git'
 import type { Archive, Clock, CodeHost, CommandReply, FactsStore, Io, Runner, Spawned, Store, Surface, TokenUsage, ToolCall, ToolReply } from './ports'
@@ -593,7 +593,9 @@ function retire(io: Runner, agentId: string): void {
 /**
  * The run of an idle worker has ended (the engine drops a spawned agent at its hand-back), so meld starts a new agent
  * for that worker, in its folder, with the step in its prompt. When the person stopped the worker or the run during the
- * start, the new agent takes no place: it ends, and the worker stays as the person left it.
+ * start, the new agent takes no place: it ends, and the worker stays as the person left it. When the worker works
+ * again by the time the new agent is there, another start or a resume came first: a worker has one live session, so
+ * the new agent ends too.
  */
 async function restart(io: Store & Clock & Runner & Surface, worker: Worker, step: string): Promise<boolean> {
   const run = await readRun(io)
@@ -601,15 +603,18 @@ async function restart(io: Store & Clock & Runner & Surface, worker: Worker, ste
   if (await resumed(io, run, worker, step)) return true
   pendingSpawns += 1
   try {
-    const spawned = await spawnOne(io, run, worker, step)
+    const spawned = await spawnOne(io, run, worker, `${step} ${OWN_EDITS}`)
     const now = await io.now()
     const agentId = spawned.agentId
     if (!agentId) {
-      io.toast(`meld: ${worker.id} could not start again: ${spawned.deny ?? 'the engine started no agent'}.`)
+      const reason = spawned.deny ?? 'the engine started no agent'
+      io.toast(`meld: ${worker.id} could not start again: ${reason}.`)
+      await writeRunOf(io, run.id, current => board.startFailed(current, worker.id, reason, now))
       return false
     }
     let bound = false
     await writeRunOf(io, run.id, current => {
+      if (current.workers.find(one => one.id === worker.id)?.state === 'working') return board.secondStartRefused(current, worker.id, now)
       const restarted = board.restartWorker(current, worker.id, agentId, now)
       bound = !board.isFailure(restarted)
       return board.isFailure(restarted) ? current : restarted.run
@@ -1052,7 +1057,7 @@ export async function restartIdleWorkers(io: Store & Clock & Runner & Surface, o
     await settleEnded(io, owns)
     const run = await readRun(io)
     if (!run || run.state !== 'working' || run.nudges > NUDGE_LIMIT) return []
-    const restarts = restartsFor(run).filter(restart => owns(restart.worker))
+    const restarts = restartsFor(run, undefined, owns).filter(restart => owns(restart.worker))
     if (!restarts.length) return []
     await writeRun(io, current => board.countBeat(current, offeredIn(restarts)))
     if (run.nudges === NUDGE_LIMIT) {
@@ -1123,10 +1128,14 @@ function everyWorker(): boolean {
  * Of the idle workers, those with the fewest offers go first (Worker.offers): a worker that meld started for the open
  * tasks, and that stopped with no claim, has left them to the others.
  *
+ * `owns` are the workers that the host which asks can start: the main session its Claude workers, meld mcp its ACP
+ * workers. The takers and the lead come from them, so a host does not pick a worker that only the other host can start
+ * and then start nobody.
+ *
  * `stopping` is the worker whose agent is about to stop (see stepAtStop). Its agent is there and can go on at once,
  * so with as many offers as an idle worker it takes the open task, and with no integrator yet it leads.
  */
-function restartsFor(run: Run, stopping?: WorkerId): Restart[] {
+function restartsFor(run: Run, stopping?: WorkerId, owns: (worker: Worker) => boolean = everyWorker): Restart[] {
   const live = run.workers.filter(worker => worker.state !== 'stopped')
   const idle = live.filter(worker => worker.state === 'idle')
   const everyoneIdle = idle.length === live.length
@@ -1134,7 +1143,7 @@ function restartsFor(run: Run, stopping?: WorkerId): Restart[] {
   const owners = idle.filter(worker => claimsOf(run, worker).length && (everyoneIdle || hasNews(run, worker)))
   const pending = live.filter(worker => isPending(run, worker)).length
   const takers = idle
-    .filter(worker => !claimsOf(run, worker).length)
+    .filter(worker => !claimsOf(run, worker).length && owns(worker))
     .sort((one, other) => (one.offers ?? 0) - (other.offers ?? 0) || Number(other.id === stopping) - Number(one.id === stopping))
     .slice(0, Math.max(0, open.length - pending))
   const restarts = [
@@ -1142,7 +1151,7 @@ function restartsFor(run: Run, stopping?: WorkerId): Restart[] {
     ...takers.map(worker => ({ worker, step: `These tasks are open: ${titles(open)}. Claim one and do it.`, offer: true })),
   ]
   if (restarts.length || !everyoneIdle) return restarts
-  const lead = live.find(worker => worker.id === run.integrator) ?? live.find(worker => worker.id === stopping) ?? live[0]
+  const lead = live.find(worker => worker.id === run.integrator) ?? live.find(worker => worker.id === stopping) ?? live.find(owns) ?? live[0]
   return lead ? [{ worker: lead, step: leadStep(run, lead) }] : []
 }
 
@@ -1334,25 +1343,42 @@ function nextWorkerId(run: Run): WorkerId {
 }
 
 /**
- * Merges the final commit into the branch of the person. The run is delivered before meld removes its folder, as a
- * board file keeps no delivered run: a worker that ends its turn during the removal does not make the folder again.
+ * Merges the final commit into the branch of the person, once. A Deliver while another runs, or after it, merges nothing:
+ * two merges into one checkout fail on its index, and the second then said that nothing changed.
  */
+/** The runs whose delivery runs now in this session: a second Deliver of one of them merges nothing. */
+const delivering = new Set<string>()
+
 export async function deliver(io: Store & CodeHost & Clock & Archive): Promise<string> {
   const run = await readRun(io)
+  if (run?.state === 'delivered' && run.final) return `Run ${run.id} is delivered: ${run.final.commit.slice(0, 7)} is in your branch.`
+  if (run && delivering.has(run.id)) return `Run ${run.id} is being delivered now: wait for that delivery to end.`
   if (!run || run.state !== 'ready' || !run.final) return 'There is no final commit to deliver.'
-  const missing = lackingWork(run, await heldInFinal(io, run, run.final.commit))
-  if (missing.length) return lackingDelivery(run.final.commit, missing)
+  delivering.add(run.id)
+  try {
+    return await deliverFinal(io, run, run.final.commit)
+  } finally {
+    delivering.delete(run.id)
+  }
+}
+
+/**
+ * Merges the final commit, and keeps the workspaces: the files that no commit holds, such as the outputs of a run, can
+ * be the evidence of the result. Discard removes them.
+ */
+async function deliverFinal(io: Store & CodeHost & Clock & Archive, run: Run, commit: string): Promise<string> {
+  const missing = lackingWork(run, await heldInFinal(io, run, commit))
+  if (missing.length) return lackingDelivery(commit, missing)
   const vcs = vcsFor(run.vcs)
-  const held = await changesInTheWay(io, run, vcs, run.final.commit)
+  const held = await changesInTheWay(io, run, vcs, commit)
   if (held.length) return `Commit or stash your changes in ${listed(held)} first, then deliver: the result changes ${held.length === 1 ? 'that file' : 'those files'} too.`
   const now = await io.now()
   const unarchived = await archiveRun(io, board.markDelivered(run, now))
   if (unarchived) return unarchived
-  const merged = await vcs.deliver(io, run, run.final.commit, deliveryMessage(run))
+  const merged = await vcs.deliver(io, run, commit, deliveryMessage(run))
   if (!merged.ok) return `The merge stopped, and nothing changed: ${merged.err || merged.out}`
   await writeRunOf(io, run.id, current => board.markDelivered(current, now))
-  await vcs.remove(io, run)
-  return `Merged ${run.final.commit.slice(0, 7)} into your branch.`
+  return `Merged ${commit.slice(0, 7)} into your branch. The workspaces stay in ${runHome(run.id)}, with every file that the agents left there: /meld-discard removes them.`
 }
 
 /**
@@ -1382,7 +1408,7 @@ export async function discard(io: Store & CodeHost & FactsStore & Clock & Runner
 }
 
 /**
- * Archives the run, drops it and its facts, then removes the workspaces of a run that meld did not deliver. The run goes
+ * Archives the run, drops it and its facts, then removes its workspaces, also those that Deliver kept. The run goes
  * first: a worker that ends its turn during the removal then writes no run, so no board file makes its folder again.
  * Its agents retire, so the guard refuses the calls of an agent that still runs during the removal. When meld cannot
  * write the archive, the run and its workspaces stay, and the reason comes back.
@@ -1394,7 +1420,7 @@ async function dropRun(io: Store & FactsStore & CodeHost & Archive, run: Run): P
   for (const worker of run.workers) if (worker.agentId) retired.add(worker.agentId)
   await io.write(() => null)
   await io.writeFacts(null)
-  if (run.state !== 'delivered') await vcsFor(run.vcs).remove(io, run)
+  await vcsFor(run.vcs).remove(io, run)
   return undefined
 }
 

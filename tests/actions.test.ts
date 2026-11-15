@@ -1,8 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 import type { ToolCallInput } from 'claude-code'
 
-import { compactWorker, costTokens, deliver, discard, guardCall, markWorker, recordSleep, refreshFacts, restartIdleWorkers, sawCheck, serveTool, SLEEP_GAP_MS, SPAWN_APPROVAL, spawnVerdict, startFromView, startRun, steerRun, stepAtStop, stopOne, VCS_APPROVAL, vcsVerdict, VIEW_APPROVAL, viewVerdict } from '../core/actions'
-import { addTasks, bindWorker, claimTask, CONTEXT_CAP, declareFinal, isFailure, setActivity, shareEntry, startRun as startBoard, steer, stopRun, stopWorker, takeIntegration } from '../core/board'
+import { compactWorker, costTokens, deliver, discard, guardCall, markWorker, ownedByAcp, recordSleep, refreshFacts, restartIdleWorkers, sawCheck, serveTool, SLEEP_GAP_MS, SPAWN_APPROVAL, spawnVerdict, startFromView, startRun, steerRun, stepAtStop, stopOne, VCS_APPROVAL, vcsVerdict, VIEW_APPROVAL, viewVerdict } from '../core/actions'
+import { addTasks, bindWorker, claimTask, CONTEXT_CAP, declareFinal, isFailure, resumeWorker, setActivity, shareEntry, startRun as startBoard, steer, stopRun, stopWorker, takeIntegration } from '../core/board'
 import { COMPACT_KEEP } from '../core/contract'
 import { JJ_LANE_TEMPLATE, JJ_RESOLVE_TEMPLATE } from '../core/vcs'
 import type { AgentSpec, Change, Run, VcsKind, WorkerId } from '../types'
@@ -714,6 +714,43 @@ test('a permission check between the calls of the workers keeps the run as it is
   expect(io.current?.unchecked).toBeUndefined()
 })
 
+test('a start of a worker that another host resumed during the spawn binds no second agent, and the run says so', async () => {
+  const io = ioWith(runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }] }, NOW)))
+  await markWorker(io, 'agent-1', 'idle')
+  await markWorker(io, 'agent-2', 'idle')
+  io.during['meld w1'] = run => runOf(resumeWorker(run, 'w1', NOW))
+  expect(await restartIdleWorkers(io)).toEqual([])
+  expect(io.current?.workers[0]).toMatchObject({ agentId: 'agent-1', state: 'working' })
+  expect(io.sent.filter(sent => sent.startsWith('spawned-1: '))).toEqual(['spawned-1: meld stopped you. End your turn now.'])
+  expect(io.current?.log.at(-1)?.text).toBe('w1 has a live session, so meld stopped the second agent that it started for w1')
+})
+
+test('a worker that could not start again says why on the board', async () => {
+  const io = ioWith(runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }] }, NOW)))
+  await markWorker(io, 'agent-1', 'idle')
+  await markWorker(io, 'agent-2', 'idle')
+  io.spawnDeny = 'codex-acp exited with code 1'
+  await restartIdleWorkers(io)
+  expect(io.current?.log.at(-1)?.text).toBe('w1 could not start again: codex-acp exited with code 1')
+})
+
+test('a fresh agent of a worker that worked before hears that the uncommitted edits in its folder are its own', async () => {
+  const io = ioWith(runOf(addTasks(working(), 'w1', { seen: 0, tasks: [{ title: 'Tokens' }] }, NOW)))
+  await markWorker(io, 'agent-1', 'idle')
+  await markWorker(io, 'agent-2', 'idle')
+  await restartIdleWorkers(io)
+  expect(io.spawned[0]?.prompt).toContain('Uncommitted edits in your folder are the work of your own earlier session: go on with them.')
+})
+
+test('in a run of a Claude and a Codex worker, meld mcp starts the idle Codex worker for an open task, even when the Claude worker is first in the list', async () => {
+  const mixed = { ...working(), workers: working().workers.map(worker => (worker.id === 'w2' ? { ...worker, agent: { type: 'acp:codex' } } : worker)) }
+  const io = ioWith(runOf(addTasks(mixed, 'w1', { seen: 0, tasks: [{ title: 'Tokens' }] }, NOW)))
+  await markWorker(io, 'agent-1', 'idle')
+  await markWorker(io, 'agent-2', 'idle')
+  await restartIdleWorkers(io, ownedByAcp)
+  expect(io.spawned.map(spawn => spawn.description)).toEqual(['meld w2'])
+})
+
 test('the agent of no worker stops as it likes', async () => {
   expect(await stepAtStop(stopping(), 'agent-9')).toBeUndefined()
 })
@@ -934,7 +971,7 @@ test('deliver merges when the uncommitted changes are in files that the result d
   const io = ioWith(runOf(declareFinal(runOf(takeIntegration(working(), 'w2', NOW)), 'w2', FULL, 'Done', NOW)))
   io.dirty = true
   io.answers[RESULT_FILES] = 'src/b.ts'
-  expect(await deliver(io)).toBe(`Merged ${FULL.slice(0, 7)} into your branch.`)
+  expect(await deliver(io)).toBe(`Merged ${FULL.slice(0, 7)} into your branch. The workspaces stay in /tmp/meld/r1, with every file that the agents left there: /meld-discard removes them.`)
 })
 
 test('deliver refuses each uncommitted change when git cannot list the files of the result', async () => {
@@ -945,12 +982,12 @@ test('deliver refuses each uncommitted change when git cannot list the files of 
   expect(io.ran('git merge')).toBe(false)
 })
 
-test('deliver merges the final commit, then removes the workspaces', async () => {
+test('deliver merges the final commit and keeps the workspaces', async () => {
   const io = ioWith(runOf(declareFinal(runOf(takeIntegration(working(), 'w2', NOW)), 'w2', FULL, 'Done', NOW)))
   const merge = `git merge --no-ff -m meld: Done\n\nAdd a dark theme ${FULL}`
-  expect(await deliver(io)).toBe(`Merged ${FULL.slice(0, 7)} into your branch.`)
+  expect(await deliver(io)).toBe(`Merged ${FULL.slice(0, 7)} into your branch. The workspaces stay in /tmp/meld/r1, with every file that the agents left there: /meld-discard removes them.`)
   expect(io.commands).toContain(merge)
-  expect(io.commands.indexOf('rm -rf -- /tmp/meld/r1')).toBeGreaterThan(io.commands.indexOf(merge))
+  expect(io.ran('rm -rf -- /tmp/meld/r1')).toBe(false)
   expect(io.current?.state).toBe('delivered')
 })
 

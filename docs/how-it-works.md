@@ -11,7 +11,7 @@ A `meld:worker` starts with a short list of tools: the shell, the file tools and
 A `meld:worker` has no Skill tool, as the list of all skills was a third of its first request. At a start, meld lists your skills in `~/.claude/skills`, and the rules of each agent name them. An agent reads the `SKILL.md` of the skill that fits its task. It has no subagents and no tools of your other MCP servers. For an agent with all the tools of your session, give another type, for example `--agents general-purpose`.
 
 - **Claude agents** run as subagents of your session.
-- **Codex** runs through ACP with `npx -y @agentclientprotocol/codex-acp`, which needs Node and an OpenAI login. `meld mcp` runs it, so it needs Bun.
+- **Codex** runs through ACP with `npx -y @agentclientprotocol/codex-acp`, which needs Node and an OpenAI login. `meld mcp` runs it, so it needs Bun. Its sandbox is the permission profile `meld-worker` (`mcp/codex-sandbox.sh`): the workspace profile of Codex, with the network, local ports, `~/.cache` and `~/.npm` open. In the default sandbox of Codex, each check that needed one of these failed once, and passed only after an approved escalation. `ps` and `sysctl` stay refused, and the board says so when the first Codex agent starts ([#22](https://github.com/bhi5hmaraj/meld/issues/22)).
 - **Gemini and Cursor** run through ACP with `npx -y @google/gemini-cli --acp` and `agent acp`. Each needs its own login. Neither has a live check yet.
 - **Your own ACP agent** runs with `--agents acp:<name>`. Set `MELD_ACP_AGENTS` in the environment of Claude Code to a JSON object from a name to its command, for example `{"mine":["node","/path/to/agent.js"]}`. A name of the table, such as `codex`, gets the command that you give.
 
@@ -51,7 +51,7 @@ Some places show no meld pane, for example a cloud session in the Claude app. Ea
 |---|---|---|
 | `/meld-steer <instruction>` | `steer` | Gives every agent the instruction. |
 | `/meld-stop` | `stop` | Stops every agent. The workspaces stay. |
-| `/meld-deliver` | `deliver` | Merges the final commit into your branch, and removes the workspaces. |
+| `/meld-deliver` | `deliver` | Merges the final commit into your branch. The workspaces stay. |
 | `/meld-discard` | `discard` | Stops the run, and removes its workspaces with their commits. |
 | `/meld-add [agent]` | `add_worker` | Adds an agent to a run at work. |
 
@@ -63,7 +63,9 @@ Name the model or type as `/meld --agents` does: `opus`, `Explore`, or `general-
 
 ## Deliver, archives and old runs
 
-Deliver merges the final commit into your branch with a merge commit, and removes the workspaces. Your checkout can have uncommitted changes in files that the result does not change. With a change in a file that the result changes too, Deliver refuses and names the file. If the merge stops, meld aborts it, and nothing changes.
+Deliver merges the final commit into your branch with a merge commit. The workspaces stay, with the files that no commit holds, such as the outputs of a run: they can be the evidence of the result. Discard removes them, and after a new start `/meld-clean` does.
+
+Your checkout can have uncommitted changes in files that the result does not change. With a change in a file that the result changes too, Deliver refuses and names the file. If the merge stops, meld aborts it, and nothing changes. A Deliver while another runs, or after it, merges nothing and says so ([#19](https://github.com/bhi5hmaraj/meld/issues/19)).
 
 Deliver refuses a final commit that lacks the commit of a task that is done on the board. The reply names the tasks, and you steer the run so that an agent merges them. The subject of the merge commit is `meld: ` and the summary of the final commit, cut at a space to 72 characters at most. With no summary, it is the first line of the request. The body holds the full request.
 
@@ -71,7 +73,7 @@ Ask for changes gives the agents your instruction, and they change the result. m
 
 ### Archive
 
-Before Deliver, Discard or a new start removes the folder of a run, meld writes the record of the run to `~/.meld/archive/<run>.json`, with mode 600. The record holds the run, the board (the request, the steers and the tasks), the events and the context entries. With `MELD_DB`, `meld mcp` writes it to the folder `archive` next to the board file. When meld cannot write the record, Deliver merges nothing and Discard removes nothing. The run and its workspaces stay, and the reply tells why.
+meld writes the record of a run when Deliver merges it, and before Discard or a new start removes its folder. The record goes to `~/.meld/archive/<run>.json`, with mode 600. The record holds the run, the board (the request, the steers and the tasks), the events and the context entries. With `MELD_DB`, `meld mcp` writes it to the folder `archive` next to the board file. When meld cannot write the record, Deliver merges nothing and Discard removes nothing. The run and its workspaces stay, and the reply tells why.
 
 ### Old runs
 
@@ -170,7 +172,7 @@ Only meld calls the tools of `meld mcp`. The permission check allows the calls o
 
 The desktop app can start a session parked, before its MCP servers run. So each meld command, start tool and press of the pane connects again while the session has no board server. A run that lives in the session state stays there.
 
-Deliver marks the run delivered, and Discard drops it, before they remove its folder. So no restart gives a new agent to a run whose folder goes.
+Discard drops the run before it removes its folder. So no restart gives a new agent to a run whose folder goes.
 
 ### Backups
 
@@ -223,6 +225,12 @@ Claude Code ends an agent when the agent returns its result. At the end of each 
 - **Every live agent is idle.** meld restarts the owners of unfinished tasks, and idle agents for the open tasks. With no open task, meld restarts the lead, the integrator or the first live agent, to plan, to take your new instruction, or to integrate.
 
 A restarted agent reads its rules at its first board read. meld reads the agent list of Claude Code, so it finds an agent that ended when meld did not see the end. meld does not restart a stopped agent. After three restarts in a row that finish no task, meld stops the restarts and tells you. A finished task or a steer starts the count from zero. A steer goes as a message to each running agent, and it restarts the agents that ended.
+
+An agent has one live session. A start finds the agent working again when another start or a resume came first: then the new agent stops, and the board says so. meld mcp also starts no second ACP agent in a folder where one still runs ([#21](https://github.com/bhi5hmaraj/meld/issues/21)). A new agent of an agent that worked before hears that the uncommitted edits in its folder are its own. When an agent cannot start again, the board gives the reason.
+
+Each host starts only its own agents: your session the Claude agents, and meld mcp the ACP agents. So it picks the agents for open tasks from its own. Before, meld mcp could pick a Claude agent and start no one. Then a run of a Claude and a Codex agent stopped with open work ([#20](https://github.com/bhi5hmaraj/meld/issues/20)).
+
+While its run works, meld mcp keeps a Mac from idle sleep with `caffeinate -i`, and the board says so. It lets the Mac sleep again when the run is ready, stopped or delivered. A sleep had ended the sessions of the agents in the middle of their tasks ([#23](https://github.com/bhi5hmaraj/meld/issues/23)).
 
 Of the idle agents with no claim, meld starts first the agent that it started for open tasks the fewest times since its last claim. So an agent that stopped with no claim leaves the next start to another agent.
 

@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { deliver, deliveryMessage } from '../core/actions'
+import { deliver, deliveryMessage, discard } from '../core/actions'
 import { bindWorker, declareFinal, isFailure, startRun, takeIntegration } from '../core/board'
 import type { Change, Run } from '../types'
 import { FakeIo, HEAD } from './fake-io'
@@ -45,4 +45,37 @@ test('deliver merges with that message', async () => {
   io.current = ready('A dark theme')
   await deliver(io)
   expect(io.commands).toContain(`git merge --no-ff -m meld: A dark theme\n\n${REQUEST} ${FULL}`)
+})
+
+const KEPT_FILES = 'The workspaces stay in /tmp/meld/r1, with every file that the agents left there: /meld-discard removes them.'
+
+test('Deliver keeps the workspaces, with the files that no commit holds, and says where they are and how to remove them', async () => {
+  const io = new FakeIo()
+  io.current = ready('A dark theme')
+  expect(await deliver(io)).toBe(`Merged ${FULL.slice(0, 7)} into your branch. ${KEPT_FILES}`)
+  expect(io.ran('rm -rf -- /tmp/meld/r1')).toBe(false)
+  expect(io.ran('git worktree remove')).toBe(false)
+})
+
+test('a second Deliver while one runs merges nothing and says that the delivery is going on', async () => {
+  const io = new FakeIo()
+  io.current = ready('A dark theme')
+  const replies = await Promise.all([deliver(io), deliver(io)])
+  expect(replies).toEqual([`Merged ${FULL.slice(0, 7)} into your branch. ${KEPT_FILES}`, 'Run r1 is being delivered now: wait for that delivery to end.'])
+  expect(io.commands.filter(command => command.startsWith('git merge')).length).toBe(1)
+})
+
+test('a Deliver after the delivery says that the run is delivered, with its commit', async () => {
+  const io = new FakeIo()
+  io.current = ready('A dark theme')
+  await deliver(io)
+  expect(await deliver(io)).toBe(`Run r1 is delivered: ${FULL.slice(0, 7)} is in your branch.`)
+})
+
+test('Discard after Deliver removes the workspaces that Deliver kept', async () => {
+  const io = new FakeIo()
+  io.current = ready('A dark theme')
+  await deliver(io)
+  expect(await discard(io)).toBe('The run and its workspaces are gone.')
+  expect(io.ran('rm -rf -- /tmp/meld/r1')).toBe(true)
 })

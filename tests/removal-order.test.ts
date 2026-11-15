@@ -54,17 +54,18 @@ function ioWith(run: Run): RemovalIo {
   return io
 }
 
-test('Deliver marks the run delivered before it removes the folder, and a worker that ends its turn then changes nothing', async () => {
+test('Deliver marks the run delivered and removes no folder', async () => {
   const io = ioWith(ready())
-  expect(await deliver(io)).toBe(`Merged ${FULL.slice(0, 7)} into your branch.`)
-  expect(io.atRemoval?.state).toBe('delivered')
+  expect(await deliver(io)).toBe(`Merged ${FULL.slice(0, 7)} into your branch. The workspaces stay in /tmp/meld/r1, with every file that the agents left there: /meld-discard removes them.`)
+  expect(io.atRemoval).toBeUndefined()
   expect(io.current?.state).toBe('delivered')
 })
 
-test('Deliver on jj marks the run delivered before it removes the folder', async () => {
+test('Deliver on jj marks the run delivered and removes no folder', async () => {
   const io = ioWith(ready('jj'))
-  expect(await deliver(io)).toBe(`Merged ${FULL.slice(0, 7)} into your branch.`)
-  expect(io.atRemoval?.state).toBe('delivered')
+  expect(await deliver(io)).toBe(`Merged ${FULL.slice(0, 7)} into your branch. The workspaces stay in /tmp/meld/r1, with every file that the agents left there: /meld-discard removes them.`)
+  expect(io.atRemoval).toBeUndefined()
+  expect(io.current?.state).toBe('delivered')
 })
 
 test('Discard clears the run and its facts before it removes the folder, and a worker that ends its turn then writes no run', async () => {

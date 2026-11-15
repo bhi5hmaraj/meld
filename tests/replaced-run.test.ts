@@ -82,7 +82,7 @@ test('a run that replaces the run during the merge of its delivery stays as it i
   const io = ioWith(runOf(declareFinal(runOf(takeIntegration(bound('r1'), 'w2', NOW)), 'w2', FULL, 'Done', NOW)))
   const other = bound('r2')
   io.during[`git merge --no-ff -m meld: Done\n\nAdd a dark theme ${FULL}`] = () => other
-  expect(await deliver(io)).toBe(`Merged ${FULL.slice(0, 7)} into your branch.`)
+  expect(await deliver(io)).toBe(`Merged ${FULL.slice(0, 7)} into your branch. The workspaces stay in /tmp/meld/r1, with every file that the agents left there: /meld-discard removes them.`)
   expect(io.current).toEqual(other)
 })
 

@@ -2,13 +2,14 @@ import { join } from 'node:path'
 
 import type { Activity, Run } from '../types'
 import { acpRefusal, markWorker, noteTime, ownedByAcp, recordActivity, recordContext, recordSleep, restartIdleWorkers } from '../core/actions'
-import { workerOf } from '../core/board'
+import { hostEntry, workerOf } from '../core/board'
 import { activityOf } from '../core/metrics'
 import { WORKER_SYSTEM } from '../core/contract'
 import { ACP_AGENT_PREFIX, ACP_AGENTS, ACP_PREFIX } from '../core/options'
 import type { AgentState, Runner, SpawnArgs, Spawned } from '../core/ports'
 import { viewFiles, viewRoot } from '../core/view'
 import { AcpAgent } from './acp'
+import { agentEnv, CODEX_SANDBOX_NOTE } from './codex-sandbox'
 import type { AcpUpdate, McpServerSpec, PermissionAsk } from './acp'
 import { mcpIo } from './io'
 import { writeMirror } from './mirror'
@@ -28,13 +29,18 @@ export type RunnerOptions = {
   commands?: Readonly<Record<string, readonly string[]>>
   onUpdate?: (agentId: string, update: AcpUpdate) => void
   pollMs?: number
+  /** Keeps the machine awake until the returned stop runs; undefined where it cannot. None: the runner keeps nothing awake. */
+  keepAwake?: () => (() => void) | undefined
 }
+
+/** What the board says while meld keeps the machine awake for the run. */
+const AWAKE_NOTE = 'meld keeps this machine awake while the run works: idle sleep waits until the run is ready, stopped or delivered.'
 
 /**
  * An agent of the runner. said keeps the text that the agent wrote since its last tool call or the end of its last prompt;
  * tools holds the start and class of each tool call that has not completed, and toolMs the tool time of the prompt.
  */
-type Held = { agent: AcpAgent; board: string; started: boolean; queue: string[]; said: string; tools: Map<string, { at: number; activity: Activity }>; toolMs: number }
+type Held = { agent: AcpAgent; board: string; cwd: string; started: boolean; queue: string[]; said: string; tools: Map<string, { at: number; activity: Activity }>; toolMs: number }
 /** The board whose ACP workers this runner keeps going, for the session that owns it. */
 type Lead = { board: string; owner: string }
 /** A board whose restarts run now, and whether another prompt ended in the meantime. */
@@ -57,6 +63,8 @@ export class AcpRunner {
   private lastBeat = Date.now()
   /** The version of the led board that its files show. */
   private mirrored: number | undefined
+  /** Ends the hold on the sleep of the machine, while the led run works. */
+  private release: (() => void) | undefined
 
   constructor(
     private readonly boards: SqliteBoards,
@@ -72,13 +80,16 @@ export class AcpRunner {
 
   /** Starts an agent for a worker of the board. Its first prompt waits for the bind of the worker to the returned agent id. */
   async spawn(board: string, args: SpawnArgs): Promise<Spawned> {
-    const command = (this.options.commands ?? ACP_AGENTS)[args.subagentType.slice(ACP_PREFIX.length)]
+    const name = args.subagentType.slice(ACP_PREFIX.length)
+    const command = (this.options.commands ?? ACP_AGENTS)[name]
     if (!args.subagentType.startsWith(ACP_PREFIX) || !command) return { deny: `meld knows no ACP agent ${args.subagentType}` }
+    if (this.runsIn(board, args.cwd)) return { deny: `an agent of meld still runs in ${args.cwd}` }
     const agentId = `${ACP_AGENT_PREFIX}${hex(crypto.getRandomValues(new Uint8Array(6)))}`
     try {
       const agent = await AcpAgent.start({
         command: [...command],
         cwd: args.cwd,
+        env: agentEnv(name, process.env),
         mcpServers: [this.workerServer(board, agentId)],
         onUpdate: update => this.updated(board, agentId, update),
         decide: ask => this.decided(board, agentId, ask),
@@ -87,12 +98,23 @@ export class AcpRunner {
         await agent.stop()
         return { deny: 'meld mcp is closing' }
       }
-      this.held.set(agentId, { agent, board, started: false, queue: [], said: '', tools: new Map(), toolMs: 0 })
+      this.held.set(agentId, { agent, board, cwd: args.cwd, started: false, queue: [], said: '', tools: new Map(), toolMs: 0 })
+      if (name === 'codex') await this.noteOnce(board, CODEX_SANDBOX_NOTE)
       void this.firstPrompt(board, agentId, `${WORKER_SYSTEM}\n\n${args.prompt}`)
       return { agentId }
     } catch (error) {
       return { deny: error instanceof Error ? error.message : String(error) }
     }
+  }
+
+  /** Puts a note on the board of the run, when its log does not hold it yet. */
+  private async noteOnce(board: string, text: string): Promise<void> {
+    await this.boards.board(board).write(run => (run && !run.log.some(entry => entry.text === text) ? hostEntry(run, text, Date.now()) : run))
+  }
+
+  /** An agent of the board starts or runs a prompt in the folder: a folder has one live session, so no second agent starts there. */
+  private runsIn(board: string, cwd: string): boolean {
+    return [...this.held.values()].some(held => held.board === board && held.cwd === cwd && (!held.started || held.agent.state === 'busy'))
   }
 
   /** A message to an agent: a new prompt in its session, or the next prompt when it is busy or still starting. */
@@ -122,6 +144,7 @@ export class AcpRunner {
   async stopAll(): Promise<void> {
     this.closed = true
     clearInterval(this.poll)
+    this.holdAwake(undefined, false)
     for (const agentId of [...this.held.keys()]) await this.stop(agentId)
   }
 
@@ -230,6 +253,19 @@ export class AcpRunner {
     await this.deliverMessages()
     if (this.leading) await this.restartIdle(this.leading.board)
     if (this.leading && this.leads(this.leading.board)) this.mirror(this.leading.board)
+    const led = this.leading && this.leads(this.leading.board) ? this.leading.board : undefined
+    this.holdAwake(led, led !== undefined && this.boards.read(led).run?.state === 'working')
+  }
+
+  /** Holds the machine awake while the led run works, and lets it sleep again when the run is ready, stopped or delivered. */
+  private holdAwake(board: string | undefined, working: boolean): void {
+    if (working && !this.release && board) {
+      this.release = this.options.keepAwake?.()
+      if (this.release) void this.noteOnce(board, AWAKE_NOTE)
+    } else if (!working && this.release) {
+      this.release()
+      this.release = undefined
+    }
   }
 
   /** Writes the files of the board when its version changed: the agents search them, so a board reply stays short. */
