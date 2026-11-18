@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.10.4
+
+These fixes come from the issues of 14 and 15 November 2026. A live run of a Sonnet and a Codex worker checked them.
 
 - **One live session for each agent.** A resumed agent got a second session about a second later, and both edited one workspace. This happened at almost every restart of an ACP agent in the archived runs. Now a start binds its new agent only while the agent is still idle. meld mcp also starts no second ACP agent in a folder where one runs. The board says when meld stops a second agent. ([#21](https://github.com/bhi5hmaraj/meld/issues/21))
 - **Deliver keeps the workspaces.** The files that no commit holds, such as the outputs of a run, can be the evidence of the result. Discard removes them. A Deliver while another runs, or after it, merges nothing and says so. ([#19](https://github.com/bhi5hmaraj/meld/issues/19))
