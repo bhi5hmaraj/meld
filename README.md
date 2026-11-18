@@ -28,7 +28,7 @@ The speedup has a limit. The part of a request that must happen in order, such a
 
 meld takes its idea from [DeLM](https://github.com/Decentralized-LM/delm-agent-plugin) (Decentralized Language Models, by Yuzhen Mao and Azalia Mirhoseini, MIT license): a task queue and a shared context, with no planner in charge. In the DeLM paper, the main agent of Claude Code waited for its subagents 73% of the time on one long task. DeLM removes that wait. meld is a new tool, not a port, and [docs/how-it-works.md](docs/how-it-works.md#what-meld-changes-from-delm) lists the changes.
 
-[The design notes](docs/meld-design.html) give the background in one page: DeLM, the task queue and the shared context, the workspaces, how you see a run, and a local run in detail.
+[The design notes](docs/meld-design.html) give the background in one page, also [as a PDF](docs/meld-design.pdf): DeLM, the task queue and the shared context, the workspaces, how you see a run, and a local run in detail.
 
 ## Install
 
@@ -169,7 +169,7 @@ A thick border marks the parts of meld, and a dashed arrow a call of the board t
 
 - [CHANGELOG.md](CHANGELOG.md) gives the changes of each release.
 - [docs/development.md](docs/development.md) maps the code, the tests and the checks.
-- [docs/meld-design.html](docs/meld-design.html) gives the design notes in one page.
+- [docs/meld-design.html](docs/meld-design.html) gives the design notes in one page, and [docs/meld-design.pdf](docs/meld-design.pdf) the same as a PDF.
 - [docs/design](docs/design/README.md) holds the draft design notes by topic, and the build plan.
 - [The handover of 5 November 2026](docs/handover-2026-11-05.md) gives the state, the open work and the traps, for a new maintainer.
 
