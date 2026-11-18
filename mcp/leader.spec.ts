@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { addTasks, bindWorker, isFailure, startRun } from '../core/board'
+import { addTasks, bindWorker, isFailure, startRun, stopRun } from '../core/board'
 import type { Change, Run, WorkerId } from '../types'
 import type { AcpUpdate } from './acp'
 import { AcpRunner } from './leader'
@@ -140,12 +140,60 @@ test('an idle ACP worker whose agent reports a small context goes on in the same
   expect(one.boards.read(BOARD).run?.workers[0]).toMatchObject({ agentId: first, context: { used: 20_000, size: 200_000 } })
 })
 
+test('a worker that goes on in its session gets no second agent: the log has no start after the resume', async () => {
+  const one = await setup()
+  const first = await spawnBound(one, 'Read the board [small]')
+  await until(() => texts(one.updates).some(text => text.startsWith('turn 2:')))
+  await Bun.sleep(3_000)
+  const log = (one.boards.read(BOARD).run?.log ?? []).map(entry => entry.text)
+  expect(log.filter(text => text === 'w1 starts again')).toEqual([])
+  expect(one.boards.read(BOARD).run?.workers[0]?.agentId).toBe(first)
+}, 15_000)
+
 test('an ACP worker whose agent reports a full context gets a fresh agent, and the old agent stops', async () => {
   const one = await setup()
   const first = await spawnBound(one, 'Read the board [full]')
   await until(() => one.boards.read(BOARD).run?.workers[0]?.agentId !== first)
   await until(() => one.runner.states().get(first) === undefined)
   expect(texts(one.updates).some(text => text.startsWith('turn 2:'))).toBe(false)
+})
+
+test('the runner starts no second agent in the folder of an agent that runs a prompt', async () => {
+  const one = await setup()
+  const first = await spawnBound(one, 'Read the board [wait]')
+  await until(() => one.runner.states().get(first) === 'live')
+  const second = await one.runner.spawn(BOARD, { prompt: 'Read the board', description: 'meld w1', subagentType: 'acp:stub', cwd: one.folder })
+  expect(second.deny).toBe(`an agent of meld still runs in ${one.folder}`)
+})
+
+test('the first Codex worker of a board puts the sandbox of Codex workers on the board, once', async () => {
+  const one = await setup()
+  const codex = new AcpRunner(one.boards, { commands: { codex: STUB.stub }, pollMs: 20, viewRoot: () => join(one.folder, 'board') })
+  runners.push(codex)
+  for (const folder of ['a', 'b']) mkdirSync(join(one.folder, folder))
+  await codex.spawn(BOARD, { prompt: 'Read the board [wait]', description: 'meld w1', subagentType: 'acp:codex', cwd: `${one.folder}/a` })
+  await codex.spawn(BOARD, { prompt: 'Read the board [wait]', description: 'meld w2', subagentType: 'acp:codex', cwd: `${one.folder}/b` })
+  const notes = (one.boards.read(BOARD).run?.log ?? []).filter(entry => entry.text.startsWith('Codex workers run in the sandbox profile'))
+  expect(notes.length).toBe(1)
+})
+
+test('the leader keeps the machine awake while the run that it leads works, and lets it sleep when the run stops', async () => {
+  const folder = mkdtempSync(join(tmpdir(), 'meld-leader-'))
+  folders.push(folder)
+  const boards = new SqliteBoards(':memory:')
+  const workers = [{ id: 'w1' as WorkerId, path: folder, ref: 'meld/r1/w1', agent: { type: 'meld:worker' } }]
+  await boards.board(BOARD).write(() => runOf(bindWorker(startRun({ id: 'r1', request: 'Add a greeting', repo: folder, base: 'a'.repeat(40), vcs: 'git', now: Date.now(), workers }), 'w1', 'agent-1', Date.now())))
+  const held: string[] = []
+  const runner = new AcpRunner(boards, { commands: STUB, pollMs: 20, viewRoot: () => join(folder, 'board'), keepAwake: () => (held.push('held'), () => held.push('released')) })
+  runner.lead(BOARD, BOARD)
+  runners.push(runner)
+  await until(() => held.length === 1)
+  await Bun.sleep(QUIET_MS)
+  expect(held).toEqual(['held'])
+  expect((boards.read(BOARD).run?.log ?? []).filter(entry => entry.text.startsWith('meld keeps this machine awake')).length).toBe(1)
+  await boards.board(BOARD).write(run => run && stopRun(run, Date.now()))
+  await until(() => held.length === 2)
+  expect(held).toEqual(['held', 'released'])
 })
 
 test('a stop ends the agent of an ACP worker', async () => {

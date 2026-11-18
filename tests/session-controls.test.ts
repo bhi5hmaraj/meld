@@ -49,7 +49,7 @@ function parsed(result: unknown): unknown {
 test('the main session delivers a ready run with the deliver tool', async () => {
   const io = ioWith(ready())
   const replied = await serveTool(io, call({ tool: TOOL.deliver }))
-  expect(parsed(replied.result)).toEqual({ text: `Merged ${FULL.slice(0, 7)} into your branch.` })
+  expect(parsed(replied.result)).toEqual({ text: `Merged ${FULL.slice(0, 7)} into your branch. The workspaces stay in /tmp/meld/r1, with every file that the agents left there: /meld-discard removes them.` })
   expect(io.current?.state).toBe('delivered')
 })
 

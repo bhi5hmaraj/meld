@@ -45,9 +45,9 @@ function ioWith(run: Run): FakeIo {
   return io
 }
 
-test('Deliver writes the archive of the delivered run, open to its user only, before it removes the folder', async () => {
+test('Deliver writes the archive of the delivered run, open to its user only, and removes no folder', async () => {
   const io = ioWith(ready())
-  expect(await deliver(io)).toBe(`Merged ${FULL.slice(0, 7)} into your branch.`)
+  expect(await deliver(io)).toBe(`Merged ${FULL.slice(0, 7)} into your branch. The workspaces stay in /tmp/meld/r1, with every file that the agents left there: /meld-discard removes them.`)
   const record = JSON.parse(io.files[FILE] ?? '{}')
   expect(record.run.id).toBe('r1')
   expect(record.run.state).toBe('delivered')
@@ -58,7 +58,7 @@ test('Deliver writes the archive of the delivered run, open to its user only, be
   expect(record.context.map((entry: { text: string }) => entry.text)).toEqual([FACT])
   expect(io.commands.indexOf(MAKE_FOLDER)).toBeGreaterThan(-1)
   expect(io.commands.indexOf(OWNER_ONLY)).toBeGreaterThan(-1)
-  expect(io.commands.indexOf(OWNER_ONLY)).toBeLessThan(io.commands.indexOf(REMOVE_HOME))
+  expect(io.ran(REMOVE_HOME)).toBe(false)
 })
 
 test('Discard writes the archive before it removes the folder', async () => {

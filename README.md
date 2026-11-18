@@ -119,7 +119,7 @@ The report then takes the place of the agents, the conversation, the learnings a
 
 The final commit has four buttons:
 
-- **Deliver** (`d`) merges the final commit into your branch as one merge commit, and removes the workspaces. Your checkout must be clean.
+- **Deliver** (`d`) merges the final commit into your branch as one merge commit. The workspaces stay, with every file that the agents left there, and Discard removes them.
 - **Show diff** (`v`) opens the diff.
 - **Ask for changes** opens the steer box: your instruction goes to the agents, and they change the result.
 - **Discard** removes the workspaces with no merge.

@@ -427,6 +427,21 @@ export function lineMerged(run: Run, id: number, head: string, now: number, merg
 }
 
 /** The machine slept from `from` to `now`: a host entry at the wake records it, so the lanes show the sleep. */
+/** A note of meld itself on the log of the run. */
+export function hostEntry(run: Run, text: string, now: number): Run {
+  return withEntry(run, { at: now, by: 'you', kind: 'host', text })
+}
+
+/** A start of a worker found it working again: another start or a resume came first, so meld stopped the new agent. */
+export function secondStartRefused(run: Run, id: WorkerId, now: number): Run {
+  return withEntry(run, { at: now, by: 'you', kind: 'host', text: `${id} has a live session, so meld stopped the second agent that it started for ${id}` })
+}
+
+/** A start of a worker failed: the reason goes on the board, where the person and the other workers see it. */
+export function startFailed(run: Run, id: WorkerId, reason: string, now: number): Run {
+  return withEntry(run, { at: now, by: 'you', kind: 'host', text: `${id} could not start again: ${reason}` })
+}
+
 export function machineSlept(run: Run, from: number, now: number): Run {
   return withEntry(run, { at: now, by: 'you', kind: 'host', from, text: `the machine slept for ${Math.round((now - from) / 60_000)} min` })
 }

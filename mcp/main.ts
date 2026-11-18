@@ -10,6 +10,7 @@ import { BoardChannel } from './channel'
 import { chatTools } from './chat'
 import { mcpIo } from './io'
 import { AcpRunner } from './leader'
+import { keepAwake } from './keep-awake'
 import { serveStdio } from './protocol'
 import type { ServedTool } from './protocol'
 import { SqliteBoards } from './sqlite-store'
@@ -52,7 +53,7 @@ if (mode === 'worker') {
   await serveStdio(workerTools(mcpIo(boards, place.board), place), info)
 } else {
   keepUp(boards)
-  const runner = new AcpRunner(boards, { commands: acpCommands(process.env.MELD_ACP_AGENTS) })
+  const runner = new AcpRunner(boards, { commands: acpCommands(process.env.MELD_ACP_AGENTS), keepAwake })
   const channel = mode === 'plugin' ? BoardChannel.open(boards, join(dirname(path), 'channels')) : undefined
   let closing: Promise<void> | undefined
   const close = () => (closing ??= runner.stopAll().finally(() => channel?.stop()))

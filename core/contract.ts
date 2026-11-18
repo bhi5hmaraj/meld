@@ -284,6 +284,9 @@ export const TOOL_SPECS: ToolSpec[] = [
 ]
 
 /** What meld gives each worker at its spawn: who it is, where to start, what meld asks of it now, and how to end. Its rules come with its first board read. */
+/** What a fresh agent of a worker that worked before hears: one worker has one live session, so the edits are its own. */
+export const OWN_EDITS = 'Uncommitted edits in your folder are the work of your own earlier session: go on with them.'
+
 export function workerPrompt(run: Run, id: WorkerId, step?: string): string {
   const asked = step ? `\n\nWhat meld asks of you now: ${step}` : ''
   return `You are meld worker ${id} of run ${run.id}. Call ${TOOL.board} first: its reply gives your rules, your folder, the other workers and the tasks.
@@ -327,7 +330,7 @@ The rules for a meld worker:
 12. A board reply is short. tasks has one line for each task, and yours has the tasks that you claim, in full. A long item comes as its first words with a ref. Get the whole item with ${TOOL.board} and its ref, or search the files of the board that the reply names in more, with rg, jq, sed -n or head. Do not print a whole file.
 
 Share the machine. The other workers run on this machine too. A type check, a type-aware lint, a test runner or a build can start a worker for each core and hold gigabytes of memory. Your folder has its own dependencies, so two such commands share no memory. When memory runs out, the machine swaps, and a type check runs many times slower, so the slow commands overlap more and starve each other.
-- Before a heavy command, look at the machine: the load against the number of cores (uptime, and nproc or sysctl -n hw.ncpu), the free memory and the swap (free -m, or vm_stat and sysctl vm.swapusage).
+- Before a heavy command, look at the machine: the load against the number of cores (uptime, and getconf _NPROCESSORS_ONLN), the free memory and the swap (free -m, or vm_stat and sysctl vm.swapusage). When the sandbox refuses a command, use another of these.
 - Start it only when the load is under the number of cores and the swap does not grow. Else run a smaller command, such as the tests of your change, limit its workers, or wait. Tell the others with ${TOOL.note} when a heavy command starts and when it ends.
 - Watch your own commands. A command that runs much slower than it should, or that makes the swap grow, starves the machine: stop it, and run it again when the machine has room.
 - Run the full checks once, before you finish a task. Between steps, run only the tests of your change.
